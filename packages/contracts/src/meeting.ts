@@ -68,3 +68,5 @@ export type CreateMeetingInput = z.infer<typeof CreateMeetingInputSchema>;
 export type Meeting = z.infer<typeof MeetingSchema>;
 export type CreateFolderInput = z.infer<typeof CreateFolderInputSchema>;
 export type Folder = z.infer<typeof FolderSchema>;
+export type MeetingListQuery = z.output<typeof MeetingListQuerySchema>;
+export type MeetingListQueryInput = z.input<typeof MeetingListQuerySchema>;

@@ -53,6 +53,42 @@ describe("meeting contracts", () => {
     ).toThrow();
   });
 
+  test("accepts a fully valid meeting", () => {
+    expect(MeetingSchema.parse({
+      id: meetingId,
+      title: "Ready meeting",
+      folderId,
+      status: "ready",
+      startedAt: timestamp,
+      endedAt: timestamp,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      trashedAt: null,
+      syncVersion: 1,
+    })).toMatchObject({ id: meetingId, status: "ready", syncVersion: 1 });
+  });
+
+  test("rejects invalid meeting timestamps, statuses, and sync versions", () => {
+    const validMeeting = {
+      id: meetingId,
+      title: "Ready meeting",
+      folderId: null,
+      status: "ready",
+      startedAt: null,
+      endedAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      trashedAt: null,
+      syncVersion: 0,
+    };
+
+    expect(() => MeetingSchema.parse({ ...validMeeting, createdAt: "not-a-date" })).toThrow();
+    expect(() => MeetingSchema.parse({ ...validMeeting, createdAt: "2025-01-01T18:00:00+08:00" })).toThrow();
+    expect(() => MeetingSchema.parse({ ...validMeeting, status: "complete" })).toThrow();
+    expect(() => MeetingSchema.parse({ ...validMeeting, syncVersion: -1 })).toThrow();
+    expect(() => MeetingSchema.parse({ ...validMeeting, syncVersion: 0.5 })).toThrow();
+  });
+
   test("defaults and strictly parses meeting list query booleans", () => {
     expect(MeetingListQuerySchema.parse({})).toEqual({ search: "", includeTrashed: false });
     expect(MeetingListQuerySchema.parse({ includeTrashed: false }).includeTrashed).toBe(false);
