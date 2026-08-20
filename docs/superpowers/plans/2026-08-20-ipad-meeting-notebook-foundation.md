@@ -79,9 +79,11 @@ Keep later recording, ink, transcript, AI, and export files out of this phase. T
 - Create: `packages/contracts/src/index.ts`
 - Create: `apps/api/package.json`
 - Create: `apps/api/tsconfig.json`
+- Create: `apps/api/src/server.ts`
 - Create: `apps/web/package.json`
 - Create: `apps/web/tsconfig.json`
 - Create: `apps/web/vite.config.ts`
+- Create: `apps/web/src/main.tsx`
 
 - [ ] **Step 1: Create the root workspace manifest**
 
@@ -279,6 +281,7 @@ export default defineConfig({
 ```
 
 Initialize `packages/contracts/src/index.ts` with `export {};` so the package is a valid module before Task 2.
+Initialize both `apps/api/src/server.ts` and `apps/web/src/main.tsx` with `export {};`; Tasks 5 and 7 replace those minimal module bodies with the real process and browser entry points.
 
 - [ ] **Step 5: Document required local configuration and ignored runtime data**
 
@@ -723,7 +726,7 @@ git commit -m "feat: add private single-user sessions"
 
 **Files:**
 - Modify: `apps/api/src/app.ts`
-- Create: `apps/api/src/server.ts`
+- Modify: `apps/api/src/server.ts`
 - Create: `apps/api/src/meetings/routes.ts`
 - Create: `apps/api/src/folders/routes.ts`
 - Create: `apps/api/test/helpers.ts`
@@ -1027,7 +1030,7 @@ git commit -m "feat: add offline meeting catalog storage"
 
 **Files:**
 - Create: `apps/web/index.html`
-- Create: `apps/web/src/main.tsx`
+- Modify: `apps/web/src/main.tsx`
 - Create: `apps/web/src/app/App.tsx`
 - Create: `apps/web/src/app/styles.css`
 - Create: `apps/web/src/auth/api.ts`
