@@ -13,10 +13,12 @@ export function migrate(db: Database.Database): void {
       name TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      sync_version INTEGER NOT NULL DEFAULT 0 CHECK (sync_version >= 0)
+      sync_version INTEGER NOT NULL DEFAULT 0 CHECK (
+        sync_version >= 0 AND typeof(sync_version) = 'integer'
+      )
     );
 
-    CREATE UNIQUE INDEX IF NOT EXISTS folders_name_nocase
+    CREATE UNIQUE INDEX IF NOT EXISTS folders_name_idx
       ON folders (name COLLATE NOCASE);
 
     CREATE TABLE IF NOT EXISTS meetings (
@@ -36,12 +38,14 @@ export function migrate(db: Database.Database): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       trashed_at TEXT,
-      sync_version INTEGER NOT NULL DEFAULT 0 CHECK (sync_version >= 0)
+      sync_version INTEGER NOT NULL DEFAULT 0 CHECK (
+        sync_version >= 0 AND typeof(sync_version) = 'integer'
+      )
     );
 
-    CREATE INDEX IF NOT EXISTS meetings_updated_at_desc
+    CREATE INDEX IF NOT EXISTS meetings_updated_at_idx
       ON meetings (updated_at DESC);
-    CREATE INDEX IF NOT EXISTS meetings_trashed_at
+    CREATE INDEX IF NOT EXISTS meetings_trashed_at_idx
       ON meetings (trashed_at);
   `);
 }

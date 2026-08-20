@@ -9,6 +9,7 @@ import { z } from "zod";
 
 const FolderNameSchema = z.string().trim().min(1).max(80);
 const IsoDateTimeSchema = z.iso.datetime();
+const FolderIdSchema = CreateFolderInputSchema.shape.id;
 
 type FolderRow = {
   id: string;
@@ -64,29 +65,31 @@ export class SqliteFolderRepository implements FolderRepository {
   }
 
   rename(id: string, name: string, now: string): Folder {
+    const folderId = FolderIdSchema.parse(id);
     const normalizedName = FolderNameSchema.parse(name);
     const timestamp = IsoDateTimeSchema.parse(now);
     const result = this.db.prepare(`
       UPDATE folders
       SET name = ?, updated_at = ?, sync_version = sync_version + 1
       WHERE id = ?
-    `).run(normalizedName, timestamp, id);
-    if (result.changes === 0) throw new FolderNotFoundError(id);
-    return this.require(id);
+    `).run(normalizedName, timestamp, folderId);
+    if (result.changes === 0) throw new FolderNotFoundError(folderId);
+    return this.require(folderId);
   }
 
   remove(id: string, now: string): void {
+    const folderId = FolderIdSchema.parse(id);
     const timestamp = IsoDateTimeSchema.parse(now);
     this.db.transaction(() => {
-      const existing = this.db.prepare("SELECT id FROM folders WHERE id = ?").get(id);
-      if (!existing) throw new FolderNotFoundError(id);
+      const existing = this.db.prepare("SELECT id FROM folders WHERE id = ?").get(folderId);
+      if (!existing) throw new FolderNotFoundError(folderId);
 
       this.db.prepare(`
         UPDATE meetings
         SET folder_id = NULL, updated_at = ?, sync_version = sync_version + 1
         WHERE folder_id = ?
-      `).run(timestamp, id);
-      this.db.prepare("DELETE FROM folders WHERE id = ?").run(id);
+      `).run(timestamp, folderId);
+      this.db.prepare("DELETE FROM folders WHERE id = ?").run(folderId);
     })();
   }
 

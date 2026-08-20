@@ -1,5 +1,6 @@
 import { FolderSchema, MeetingSchema } from "@meeting/contracts";
 import { afterEach, describe, expect, test } from "vitest";
+import { ZodError } from "zod";
 
 import { openDatabase } from "../../src/db/database.js";
 import {
@@ -70,5 +71,23 @@ describe("SqliteFolderRepository", () => {
     const meeting = meetings.get(MEETING_ONE);
     expect(meeting).toMatchObject({ folderId: null, updatedAt: LATER, syncVersion: 1 });
     expect(MeetingSchema.parse(meeting)).toEqual(meeting);
+  });
+
+  test("validates folder inputs before mutations and reserves typed not-found errors for valid IDs", () => {
+    const { folders } = repositories();
+    const invalidId = "not-a-uuid";
+
+    expect(() => folders.create({ id: invalidId, name: "Folder", clientCreatedAt: CREATED_AT })).toThrow(ZodError);
+    expect(() => folders.create({ id: FOLDER_ONE, name: " ", clientCreatedAt: CREATED_AT })).toThrow(ZodError);
+    expect(() => folders.create({ id: FOLDER_ONE, name: "Folder", clientCreatedAt: "not-a-date" })).toThrow(ZodError);
+    expect(() => folders.rename(invalidId, " ", "not-a-date")).toThrow(ZodError);
+    expect(() => folders.rename(invalidId, "Folder", LATER)).toThrow(ZodError);
+    expect(() => folders.rename(FOLDER_ONE, " ", LATER)).toThrow(ZodError);
+    expect(() => folders.rename(FOLDER_ONE, "Folder", "not-a-date")).toThrow(ZodError);
+    expect(() => folders.remove(invalidId, "not-a-date")).toThrow(ZodError);
+    expect(() => folders.remove(invalidId, LATER)).toThrow(ZodError);
+    expect(() => folders.remove(FOLDER_ONE, "not-a-date")).toThrow(ZodError);
+    expect(() => folders.rename(FOLDER_THREE, "Missing", LATER)).toThrow(FolderNotFoundError);
+    expect(() => folders.remove(FOLDER_THREE, LATER)).toThrow(FolderNotFoundError);
   });
 });

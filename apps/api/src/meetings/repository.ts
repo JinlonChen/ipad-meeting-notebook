@@ -10,6 +10,7 @@ import { z } from "zod";
 
 const MeetingTitleSchema = z.string().trim().min(1).max(120);
 const IsoDateTimeSchema = z.iso.datetime();
+const MeetingIdSchema = CreateMeetingInputSchema.shape.id;
 
 type MeetingRow = {
   id: string;
@@ -77,7 +78,8 @@ export class SqliteMeetingRepository implements MeetingRepository {
   }
 
   get(id: string): Meeting | null {
-    const row = this.db.prepare("SELECT * FROM meetings WHERE id = ?").get(id) as MeetingRow | undefined;
+    const meetingId = MeetingIdSchema.parse(id);
+    const row = this.db.prepare("SELECT * FROM meetings WHERE id = ?").get(meetingId) as MeetingRow | undefined;
     return row ? mapMeeting(row) : null;
   }
 
@@ -102,20 +104,22 @@ export class SqliteMeetingRepository implements MeetingRepository {
   }
 
   rename(id: string, title: string, now: string): Meeting {
+    const meetingId = MeetingIdSchema.parse(id);
     const normalizedTitle = MeetingTitleSchema.parse(title);
     const timestamp = IsoDateTimeSchema.parse(now);
     const result = this.db.prepare(`
       UPDATE meetings
       SET title = ?, updated_at = ?, sync_version = sync_version + 1
       WHERE id = ?
-    `).run(normalizedTitle, timestamp, id);
-    if (result.changes === 0) throw new MeetingNotFoundError(id);
-    return this.require(id);
+    `).run(normalizedTitle, timestamp, meetingId);
+    if (result.changes === 0) throw new MeetingNotFoundError(meetingId);
+    return this.require(meetingId);
   }
 
   trash(id: string, now: string): Meeting {
+    const meetingId = MeetingIdSchema.parse(id);
     const timestamp = IsoDateTimeSchema.parse(now);
-    const current = this.require(id);
+    const current = this.require(meetingId);
     if (current.status === "trashed") return current;
 
     this.db.prepare(`
@@ -123,13 +127,14 @@ export class SqliteMeetingRepository implements MeetingRepository {
       SET status = 'trashed', status_before_trash = status, trashed_at = ?,
           updated_at = ?, sync_version = sync_version + 1
       WHERE id = ?
-    `).run(timestamp, timestamp, id);
-    return this.require(id);
+    `).run(timestamp, timestamp, meetingId);
+    return this.require(meetingId);
   }
 
   restore(id: string, now: string): Meeting {
+    const meetingId = MeetingIdSchema.parse(id);
     const timestamp = IsoDateTimeSchema.parse(now);
-    const current = this.require(id);
+    const current = this.require(meetingId);
     if (current.status !== "trashed") return current;
 
     this.db.prepare(`
@@ -137,8 +142,8 @@ export class SqliteMeetingRepository implements MeetingRepository {
       SET status = COALESCE(status_before_trash, 'draft'), status_before_trash = NULL,
           trashed_at = NULL, updated_at = ?, sync_version = sync_version + 1
       WHERE id = ?
-    `).run(timestamp, id);
-    return this.require(id);
+    `).run(timestamp, meetingId);
+    return this.require(meetingId);
   }
 
   purgeTrashedBefore(cutoff: string): number {
