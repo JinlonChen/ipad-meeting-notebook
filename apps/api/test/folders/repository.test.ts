@@ -1,0 +1,74 @@
+import { FolderSchema, MeetingSchema } from "@meeting/contracts";
+import { afterEach, describe, expect, test } from "vitest";
+
+import { openDatabase } from "../../src/db/database.js";
+import {
+  FolderNotFoundError,
+  SqliteFolderRepository,
+} from "../../src/folders/repository.js";
+import { SqliteMeetingRepository } from "../../src/meetings/repository.js";
+
+const CREATED_AT = "2026-08-20T10:00:00.000Z";
+const LATER = "2026-08-20T11:00:00.000Z";
+const FOLDER_ONE = "00000000-0000-4000-8000-000000000011";
+const FOLDER_TWO = "00000000-0000-4000-8000-000000000012";
+const FOLDER_THREE = "00000000-0000-4000-8000-000000000013";
+const MEETING_ONE = "00000000-0000-4000-8000-000000000014";
+
+const databases: ReturnType<typeof openDatabase>[] = [];
+
+function repositories() {
+  const db = openDatabase(":memory:");
+  databases.push(db);
+  return {
+    folders: new SqliteFolderRepository(db),
+    meetings: new SqliteMeetingRepository(db),
+  };
+}
+
+afterEach(() => {
+  while (databases.length > 0) databases.pop()?.close();
+});
+
+describe("SqliteFolderRepository", () => {
+  test("creates idempotently, lists case-insensitively, renames, and returns contract folders", () => {
+    const { folders } = repositories();
+    const created = folders.create({ id: FOLDER_ONE, name: "  Zeta  ", clientCreatedAt: CREATED_AT });
+    const repeated = folders.create({ id: FOLDER_ONE, name: "Ignored", clientCreatedAt: LATER });
+    folders.create({ id: FOLDER_TWO, name: "alpha", clientCreatedAt: CREATED_AT });
+
+    expect(repeated).toEqual(created);
+    expect(folders.list().map((folder) => folder.name)).toEqual(["alpha", "Zeta"]);
+    const renamed = folders.rename(FOLDER_ONE, "  Beta  ", LATER);
+    expect(renamed).toMatchObject({ name: "Beta", updatedAt: LATER, syncVersion: 1 });
+    expect(FolderSchema.parse(renamed)).toEqual(renamed);
+  });
+
+  test("rejects names duplicated only by case and throws typed not-found errors", () => {
+    const { folders } = repositories();
+    folders.create({ id: FOLDER_ONE, name: "Projects", clientCreatedAt: CREATED_AT });
+
+    let duplicateNameError: unknown;
+    try {
+      folders.create({ id: FOLDER_TWO, name: "projects", clientCreatedAt: CREATED_AT });
+    } catch (error) {
+      duplicateNameError = error;
+    }
+    expect(duplicateNameError).toMatchObject({ code: "SQLITE_CONSTRAINT_UNIQUE" });
+    expect(() => folders.rename(FOLDER_THREE, "Missing", LATER)).toThrow(FolderNotFoundError);
+    expect(() => folders.remove(FOLDER_THREE, LATER)).toThrow(FolderNotFoundError);
+  });
+
+  test("removes folders atomically while retaining linked meetings with cleared folders and updated versions", () => {
+    const { folders, meetings } = repositories();
+    folders.create({ id: FOLDER_ONE, name: "Project", clientCreatedAt: CREATED_AT });
+    meetings.create({ id: MEETING_ONE, title: "Standup", folderId: FOLDER_ONE, clientCreatedAt: CREATED_AT });
+
+    folders.remove(FOLDER_ONE, LATER);
+
+    expect(folders.list()).toEqual([]);
+    const meeting = meetings.get(MEETING_ONE);
+    expect(meeting).toMatchObject({ folderId: null, updatedAt: LATER, syncVersion: 1 });
+    expect(MeetingSchema.parse(meeting)).toEqual(meeting);
+  });
+});
