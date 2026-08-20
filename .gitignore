@@ -1,6 +1,8 @@
 .superpowers/
 .worktrees/
 .env
+.env.local
+.env.*.local
 data/
 dist/
 coverage/
