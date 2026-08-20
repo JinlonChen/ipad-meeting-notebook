@@ -6,6 +6,8 @@
     "packages/*"
   ],
   "scripts": {
+    "postinstall": "npm run build -w @meeting/contracts",
+    "predev": "npm run build -w @meeting/contracts",
     "dev": "concurrently -n api,web -c blue,green \"npm run dev -w @meeting/api\" \"npm run dev -w @meeting/web\"",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present && npm run typecheck:test -w @meeting/api",

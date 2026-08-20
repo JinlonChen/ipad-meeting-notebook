@@ -4,10 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "npm run build -w @meeting/contracts",
     "dev": "tsx watch src/server.ts",
+    "prebuild": "npm run build -w @meeting/contracts",
     "build": "tsup src/server.ts --format esm --sourcemap --out-dir dist",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
+    "pretest": "npm run build -w @meeting/contracts",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {

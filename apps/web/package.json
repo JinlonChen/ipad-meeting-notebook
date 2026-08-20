@@ -4,10 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "npm run build -w @meeting/contracts",
     "dev": "vite",
+    "prebuild": "npm run build -w @meeting/contracts",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false",
+    "pretest": "npm run build -w @meeting/contracts",
     "test": "vitest run --passWithNoTests",
+    "pretest:e2e": "npm run build -w @meeting/contracts",
     "test:e2e": "playwright test"
   },
   "dependencies": {
