@@ -337,7 +337,7 @@ git commit -m "chore: scaffold meeting notebook workspace"
 
 ```ts
 import { describe, expect, it } from "vitest";
-import { CreateMeetingInputSchema, MeetingSchema } from "./meeting";
+import { CreateMeetingInputSchema, MeetingListQuerySchema, MeetingSchema } from "./meeting";
 
 describe("meeting contracts", () => {
   it("accepts a client-generated id for idempotent offline creation", () => {
@@ -363,6 +363,10 @@ describe("meeting contracts", () => {
       syncVersion: 1
     });
     expect(result.success).toBe(false);
+  });
+
+  it("parses the query string false as boolean false", () => {
+    expect(MeetingListQuerySchema.parse({ includeTrashed: "false" }).includeTrashed).toBe(false);
   });
 });
 ```
@@ -425,7 +429,10 @@ export const MeetingSchema = z.object({
 
 export const MeetingListQuerySchema = z.object({
   search: z.string().trim().max(120).default(""),
-  includeTrashed: z.coerce.boolean().default(false)
+  includeTrashed: z.preprocess(
+    value => value === "true" ? true : value === "false" ? false : value,
+    z.boolean().default(false)
+  )
 });
 
 export type MeetingStatus = z.infer<typeof MeetingStatusSchema>;
