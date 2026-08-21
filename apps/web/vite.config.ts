@@ -3,6 +3,11 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   plugins: [react()],
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./test/setup.ts"],
+    restoreMocks: true,
+  },
   server: {
     port: 5173,
     proxy: {
