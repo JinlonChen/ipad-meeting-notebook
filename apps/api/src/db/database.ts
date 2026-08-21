@@ -4,12 +4,15 @@ import { dirname } from "node:path";
 import { CreateMeetingInputSchema } from "@meeting/contracts";
 import Database from "better-sqlite3";
 
-export const CURRENT_DATABASE_VERSION = 1;
+export const CURRENT_DATABASE_VERSION = 2;
 
 const IsoDateTimeSchema = CreateMeetingInputSchema.shape.clientCreatedAt;
 const ActiveStatuses = "'draft', 'recording', 'recoverable', 'uploading', 'processing', 'ready', 'failed'";
 const AllStatuses = `${ActiveStatuses}, 'trashed'`;
-const migrations = [{ version: 1, migrate: migrateVersionZero }];
+const migrations = [
+  { version: 1, migrate: migrateVersionZero },
+  { version: 2, migrate: migrateVersionTwo },
+];
 
 export function canonicalizeTimestamp(value: string): string {
   // JavaScript Date intentionally stores sub-millisecond input at millisecond precision.
@@ -77,12 +80,28 @@ function migrateVersionZero(db: Database.Database): void {
       if (db.prepare("PRAGMA foreign_key_check").get()) {
         throw new Error("Foreign key check failed during database migration");
       }
-      db.pragma(`user_version = ${CURRENT_DATABASE_VERSION}`);
+      db.pragma("user_version = 1");
     })();
     migrated = true;
   } finally {
     db.pragma(`foreign_keys = ${migrated || foreignKeysWereEnabled ? "ON" : "OFF"}`);
   }
+}
+
+function migrateVersionTwo(db: Database.Database): void {
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE sessions (
+        token_hash TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL CHECK (user_id = 'owner'),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      );
+
+      CREATE INDEX sessions_expires_at_idx ON sessions (expires_at);
+    `);
+    db.pragma("user_version = 2");
+  })();
 }
 
 function createCurrentSchema(db: Database.Database): void {

@@ -22,7 +22,7 @@ describe("SQLite migrations", () => {
       expect(existsSync(path)).toBe(true);
       expect(db.pragma("journal_mode", { simple: true })).toBe("wal");
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
-      expect(db.pragma("user_version", { simple: true })).toBe(1);
+      expect(db.pragma("user_version", { simple: true })).toBe(2);
       migrate(db);
       const schemaObjects = db.prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')").all() as { name: string }[];
       expect(schemaObjects.map((object) => object.name)).toEqual(expect.arrayContaining([
@@ -31,6 +31,8 @@ describe("SQLite migrations", () => {
         "folders_name_idx",
         "meetings_updated_at_idx",
         "meetings_trashed_at_idx",
+        "sessions",
+        "sessions_expires_at_idx",
       ]));
     } finally {
       db?.close();
@@ -55,7 +57,7 @@ describe("SQLite migrations", () => {
 
       migrate(db);
 
-      expect(db.pragma("user_version", { simple: true })).toBe(1);
+      expect(db.pragma("user_version", { simple: true })).toBe(2);
       expect(db.prepare("SELECT sync_version FROM folders WHERE id = ?").get(FOLDER_ID)).toEqual({ sync_version: 0 });
       expect(db.prepare("SELECT folder_id, status_before_trash, sync_version FROM meetings WHERE id = ?").get(MEETING_ID)).toEqual({
         folder_id: FOLDER_ID,
@@ -73,10 +75,40 @@ describe("SQLite migrations", () => {
     }
   });
 
+  test("upgrades version-one data to sessions version two without rebuilding meetings or folders", () => {
+    const db = new Database(":memory:");
+    try {
+      db.exec(`
+        CREATE TABLE folders (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+        CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT NOT NULL, folder_id TEXT);
+      `);
+      db.prepare("INSERT INTO folders VALUES (?, ?)").run(FOLDER_ID, "Preserved");
+      db.prepare("INSERT INTO meetings VALUES (?, ?, ?)").run(MEETING_ID, "Preserved meeting", FOLDER_ID);
+      db.pragma("user_version = 1");
+
+      migrate(db);
+
+      expect(db.pragma("user_version", { simple: true })).toBe(2);
+      expect(db.prepare("SELECT * FROM folders WHERE id = ?").get(FOLDER_ID)).toEqual({ id: FOLDER_ID, name: "Preserved" });
+      expect(db.prepare("SELECT * FROM meetings WHERE id = ?").get(MEETING_ID)).toEqual({ id: MEETING_ID, title: "Preserved meeting", folder_id: FOLDER_ID });
+      expect(db.prepare("PRAGMA table_info(sessions)").all()).toEqual([
+        { cid: 0, name: "token_hash", type: "TEXT", notnull: 0, dflt_value: null, pk: 1 },
+        { cid: 1, name: "user_id", type: "TEXT", notnull: 1, dflt_value: null, pk: 0 },
+        { cid: 2, name: "created_at", type: "TEXT", notnull: 1, dflt_value: null, pk: 0 },
+        { cid: 3, name: "expires_at", type: "TEXT", notnull: 1, dflt_value: null, pk: 0 },
+      ]);
+      expect(db.prepare("PRAGMA index_list(sessions)").all()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "sessions_expires_at_idx" }),
+      ]));
+    } finally {
+      db.close();
+    }
+  });
+
   test("rejects databases newer than the supported migration version", () => {
     const db = new Database(":memory:");
     try {
-      db.pragma("user_version = 2");
+      db.pragma("user_version = 3");
       expect(() => migrate(db)).toThrow(/newer/);
     } finally {
       db.close();
