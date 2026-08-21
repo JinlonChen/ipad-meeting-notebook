@@ -23,16 +23,23 @@ function statusOf(error: unknown): number | undefined {
 }
 
 export class CatalogSync {
+  private queue: Promise<void> = Promise.resolve();
   private flushPromise: Promise<SyncResult> | undefined;
   private refreshPromise: Promise<SyncResult> | undefined;
   private authPaused = false;
 
   constructor(private readonly repository: MeetingCatalogRepository, private readonly api: MeetingCatalogApi) {}
 
+  private enqueue<T>(work: () => Promise<T>): Promise<T> {
+    const queued = this.queue.then(work, work);
+    this.queue = queued.then(() => undefined, () => undefined);
+    return queued;
+  }
+
   flush(): Promise<SyncResult> {
     if (this.authPaused) return Promise.resolve({ state: "paused_auth" });
     if (!this.flushPromise) {
-      this.flushPromise = this.flushInternal().finally(() => { this.flushPromise = undefined; });
+      this.flushPromise = this.enqueue(() => this.flushInternal()).finally(() => { this.flushPromise = undefined; });
     }
     return this.flushPromise;
   }
@@ -42,6 +49,7 @@ export class CatalogSync {
   }
 
   private async flushInternal(): Promise<SyncResult> {
+    if (this.authPaused) return { state: "paused_auth" };
     const operations = await this.repository.pendingOperations();
     for (const operation of operations) {
       try {
@@ -67,13 +75,13 @@ export class CatalogSync {
 
   refresh(): Promise<SyncResult> {
     if (!this.refreshPromise) {
-      this.refreshPromise = this.refreshInternal().finally(() => { this.refreshPromise = undefined; });
+      this.refreshPromise = this.enqueue(() => this.refreshInternal()).finally(() => { this.refreshPromise = undefined; });
     }
     return this.refreshPromise;
   }
 
   private async refreshInternal(): Promise<SyncResult> {
-    const flushed = await this.flush();
+    const flushed = await this.flushInternal();
     if (flushed.state !== "idle") return flushed;
     try {
       const [folders, meetings] = await Promise.all([this.api.listFolders(), this.api.listMeetings()]);

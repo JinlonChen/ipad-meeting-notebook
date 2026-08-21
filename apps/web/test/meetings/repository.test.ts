@@ -114,7 +114,7 @@ describe("MeetingCatalogRepository", () => {
 
   test("rolls back an entity when its durable outbox write fails", async () => {
     const catalog = new MeetingCatalogRepository(`meeting-catalog-failing-outbox-${databaseNumber++}`, {
-      writeOutbox: async () => { throw new Error("outbox unavailable"); },
+      beforeOutboxWrite: () => { throw new Error("outbox unavailable"); },
     });
     repositories.push(catalog);
 
@@ -123,6 +123,25 @@ describe("MeetingCatalogRepository", () => {
     await expect(catalog.list({ includeTrashed: true })).resolves.toEqual([]);
     await expect(catalog.pendingOperations()).resolves.toEqual([]);
   });
+
+  test("always writes the outbox row after a non-throwing synchronous hook", async () => {
+    const catalog = new MeetingCatalogRepository(`meeting-catalog-outbox-hook-${databaseNumber++}`, {
+      beforeOutboxWrite: () => undefined,
+    });
+    repositories.push(catalog);
+
+    const meeting = await catalog.create("Durable", null, now);
+
+    await expect(catalog.pendingOperations()).resolves.toEqual([
+      expect.objectContaining({ entityId: meeting.id, kind: "meeting.create" }),
+    ]);
+  });
+
+  const invalidAsyncOutboxHook: import("../../src/meetings/repository.js").MeetingCatalogRepositoryOptions = {
+    // @ts-expect-error Hooks are deliberately synchronous so no external async work can escape the Dexie transaction.
+    beforeOutboxWrite: async () => undefined,
+  };
+  void invalidAsyncOutboxHook;
 
   test("writes exact ordered payloads for meeting and folder mutations", async () => {
     const catalog = repository();

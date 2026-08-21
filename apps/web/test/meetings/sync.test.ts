@@ -94,6 +94,59 @@ describe("CatalogSync", () => {
     expect(sent).toHaveLength(2);
   });
 
+  test("serializes a stale refresh ahead of flush so pending local data and the later acknowledgement win", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    const meeting = {
+      id: crypto.randomUUID(), title: "Version one", folderId: null, status: "draft" as const,
+      startedAt: null, endedAt: null, createdAt: now, updatedAt: now, trashedAt: null, syncVersion: 1,
+    };
+    let resolveMeetings: ((value: typeof meeting[]) => void) | undefined;
+    const stalePull = new Promise<typeof meeting[]>((resolve) => { resolveMeetings = resolve; });
+    const client: MeetingCatalogApi = {
+      send: vi.fn(async (operation) => ({ meeting: { ...meeting, title: "Version two", syncVersion: 2, updatedAt: operation.createdAt } })),
+      listFolders: vi.fn().mockResolvedValue([]),
+      listMeetings: vi.fn().mockResolvedValueOnce([meeting]).mockImplementationOnce(() => stalePull),
+    };
+    const sync = new CatalogSync(store, client);
+    await sync.refresh();
+    const refreshing = sync.refresh();
+    await vi.waitFor(() => expect(client.listMeetings).toHaveBeenCalledTimes(2));
+    await store.rename(meeting.id, "Local rename", "2026-08-21T00:01:00.000Z");
+    const flushing = sync.flush();
+    expect(client.send).not.toHaveBeenCalled();
+    resolveMeetings?.([meeting]);
+
+    await expect(refreshing).resolves.toEqual({ state: "idle" });
+    await expect(store.get(meeting.id)).resolves.toMatchObject({ title: "Local rename", syncVersion: 2 });
+    await expect(flushing).resolves.toEqual({ state: "idle" });
+    await expect(store.get(meeting.id)).resolves.toMatchObject({ title: "Version two", syncVersion: 2 });
+    await expect(store.pendingOperations()).resolves.toEqual([]);
+  });
+
+  test("queues refresh behind an active flush", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    const meeting = await store.create("Pending", null, now);
+    let release: (() => void) | undefined;
+    const sent = new Promise<void>((resolve) => { release = resolve; });
+    const client: MeetingCatalogApi = {
+      send: vi.fn(async () => { await sent; return { meeting }; }),
+      listFolders: vi.fn().mockResolvedValue([]),
+      listMeetings: vi.fn().mockResolvedValue([]),
+    };
+    const sync = new CatalogSync(store, client);
+    const flushing = sync.flush();
+    await vi.waitFor(() => expect(client.send).toHaveBeenCalledTimes(1));
+    const refreshing = sync.refresh();
+
+    expect(client.listFolders).not.toHaveBeenCalled();
+    release?.();
+    await Promise.all([flushing, refreshing]);
+    expect(client.listFolders).toHaveBeenCalledTimes(1);
+    expect(client.listMeetings).toHaveBeenCalledTimes(1);
+  });
+
   test("pauses on unauthorized and exposes conflicts without losing operations", async () => {
     const store = catalog();
     catalogs.push(store);

@@ -49,23 +49,21 @@ export type MeetingListOptions = {
 };
 
 export type MeetingCatalogRepositoryOptions = {
-  writeOutbox?: (
-    operation: OutboxOperation,
-    write: (operation: OutboxOperation) => Promise<number | undefined>,
-  ) => Promise<number | undefined>;
+  beforeOutboxWrite?: (operation: OutboxOperation) => undefined;
 };
 
 export class MeetingCatalogRepository {
   private readonly db: MeetingCatalogDatabase;
-  private readonly writeOutbox: NonNullable<MeetingCatalogRepositoryOptions["writeOutbox"]>;
+  private readonly beforeOutboxWrite: NonNullable<MeetingCatalogRepositoryOptions["beforeOutboxWrite"]>;
 
   constructor(name?: string, options: MeetingCatalogRepositoryOptions = {}) {
     this.db = new MeetingCatalogDatabase(name);
-    this.writeOutbox = options.writeOutbox ?? ((item, write) => write(item));
+    this.beforeOutboxWrite = options.beforeOutboxWrite ?? (() => undefined);
   }
 
   private enqueueOutbox(item: OutboxOperation): Promise<number | undefined> {
-    return this.writeOutbox(item, (value) => this.db.outbox.add(value));
+    this.beforeOutboxWrite(item);
+    return this.db.outbox.add(item);
   }
 
   async deleteDatabase(): Promise<void> {
