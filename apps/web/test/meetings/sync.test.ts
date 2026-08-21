@@ -147,6 +147,77 @@ describe("CatalogSync", () => {
     expect(client.listMeetings).toHaveBeenCalledTimes(1);
   });
 
+  test("coalesces a refresh requested during a failed flush without retrying the retained operation", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    await store.create("Pending", null, now);
+    let rejectSend: ((error: Error) => void) | undefined;
+    const sendFailure = new Promise<never>((_, reject) => { rejectSend = reject; });
+    const client: MeetingCatalogApi = {
+      send: vi.fn(() => sendFailure), listFolders: vi.fn(), listMeetings: vi.fn(),
+    };
+    const sync = new CatalogSync(store, client);
+    const flushing = sync.flush();
+    await vi.waitFor(() => expect(client.send).toHaveBeenCalledTimes(1));
+    const refreshing = sync.refresh();
+    rejectSend?.(new Error("offline"));
+
+    await expect(flushing).resolves.toEqual({ state: "error" });
+    await expect(refreshing).resolves.toEqual({ state: "error" });
+    expect(client.send).toHaveBeenCalledTimes(1);
+    expect(client.listFolders).not.toHaveBeenCalled();
+    expect(client.listMeetings).not.toHaveBeenCalled();
+    await expect(store.pendingOperations()).resolves.toEqual([expect.objectContaining({ attempts: 1 })]);
+  });
+
+  test("coalesces a flush requested during a refresh whose internal flush fails", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    await store.create("Pending", null, now);
+    let rejectSend: ((error: Error) => void) | undefined;
+    const sendFailure = new Promise<never>((_, reject) => { rejectSend = reject; });
+    const client: MeetingCatalogApi = {
+      send: vi.fn(() => sendFailure), listFolders: vi.fn(), listMeetings: vi.fn(),
+    };
+    const sync = new CatalogSync(store, client);
+    const refreshing = sync.refresh();
+    await vi.waitFor(() => expect(client.send).toHaveBeenCalledTimes(1));
+    const flushing = sync.flush();
+    rejectSend?.(new Error("offline"));
+
+    await expect(refreshing).resolves.toEqual({ state: "error" });
+    await expect(flushing).resolves.toEqual({ state: "error" });
+    expect(client.send).toHaveBeenCalledTimes(1);
+    expect(client.listFolders).not.toHaveBeenCalled();
+    expect(client.listMeetings).not.toHaveBeenCalled();
+    await expect(store.pendingOperations()).resolves.toEqual([expect.objectContaining({ attempts: 1 })]);
+  });
+
+  test.each([
+    [new CatalogApiError(401, "AUTH_REQUIRED"), { state: "paused_auth" }],
+    [new CatalogApiError(409, "MEETING_CONFLICT"), { state: "conflict" }],
+  ] as const)("coalesces %s without immediately retrying", async (error, expected) => {
+    const store = catalog();
+    catalogs.push(store);
+    await store.create("Pending", null, now);
+    let rejectSend: ((error: CatalogApiError) => void) | undefined;
+    const sendFailure = new Promise<never>((_, reject) => { rejectSend = reject; });
+    const client: MeetingCatalogApi = {
+      send: vi.fn(() => sendFailure), listFolders: vi.fn(), listMeetings: vi.fn(),
+    };
+    const sync = new CatalogSync(store, client);
+    const flushing = sync.flush();
+    await vi.waitFor(() => expect(client.send).toHaveBeenCalledTimes(1));
+    const refreshing = sync.refresh();
+    rejectSend?.(error);
+
+    await expect(flushing).resolves.toEqual(expected);
+    await expect(refreshing).resolves.toEqual(expected);
+    expect(client.send).toHaveBeenCalledTimes(1);
+    expect(client.listFolders).not.toHaveBeenCalled();
+    expect(client.listMeetings).not.toHaveBeenCalled();
+  });
+
   test("pauses on unauthorized and exposes conflicts without losing operations", async () => {
     const store = catalog();
     catalogs.push(store);

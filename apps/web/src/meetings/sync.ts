@@ -10,6 +10,8 @@ export interface MeetingCatalogApi {
 }
 
 export type SyncResult = { state: "idle" | "paused_auth" | "conflict" | "error" };
+type SyncRequestKind = "flush" | "refresh";
+type SyncTask = { kind: SyncRequestKind; promise: Promise<SyncResult> };
 
 export class CatalogApiError extends Error {
   constructor(public readonly status: number, public readonly code?: string) {
@@ -24,8 +26,7 @@ function statusOf(error: unknown): number | undefined {
 
 export class CatalogSync {
   private queue: Promise<void> = Promise.resolve();
-  private flushPromise: Promise<SyncResult> | undefined;
-  private refreshPromise: Promise<SyncResult> | undefined;
+  private currentTask: SyncTask | undefined;
   private authPaused = false;
 
   constructor(private readonly repository: MeetingCatalogRepository, private readonly api: MeetingCatalogApi) {}
@@ -36,12 +37,34 @@ export class CatalogSync {
     return queued;
   }
 
-  flush(): Promise<SyncResult> {
-    if (this.authPaused) return Promise.resolve({ state: "paused_auth" });
-    if (!this.flushPromise) {
-      this.flushPromise = this.enqueue(() => this.flushInternal()).finally(() => { this.flushPromise = undefined; });
+  private request(kind: SyncRequestKind): Promise<SyncResult> {
+    const current = this.currentTask;
+    if (current) {
+      if (current.kind === kind) return current.promise;
+      return this.startTask(kind, current);
     }
-    return this.flushPromise;
+    if (this.authPaused) return Promise.resolve({ state: "paused_auth" });
+    return this.startTask(kind);
+  }
+
+  private startTask(kind: SyncRequestKind, predecessor?: SyncTask): Promise<SyncResult> {
+    const promise = this.enqueue(async () => {
+      if (predecessor) {
+        const result = await predecessor.promise;
+        if (result.state !== "idle") return result;
+      }
+      return kind === "flush" ? this.flushInternal() : this.refreshInternal();
+    });
+    const task: SyncTask = { kind, promise };
+    this.currentTask = task;
+    void promise.finally(() => {
+      if (this.currentTask === task) this.currentTask = undefined;
+    });
+    return promise;
+  }
+
+  flush(): Promise<SyncResult> {
+    return this.request("flush");
   }
 
   resumeAfterLogin(): void {
@@ -74,10 +97,7 @@ export class CatalogSync {
   }
 
   refresh(): Promise<SyncResult> {
-    if (!this.refreshPromise) {
-      this.refreshPromise = this.enqueue(() => this.refreshInternal()).finally(() => { this.refreshPromise = undefined; });
-    }
-    return this.refreshPromise;
+    return this.request("refresh");
   }
 
   private async refreshInternal(): Promise<SyncResult> {
