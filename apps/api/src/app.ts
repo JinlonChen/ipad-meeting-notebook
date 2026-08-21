@@ -1,7 +1,6 @@
 import cookie from "@fastify/cookie";
 import type Database from "better-sqlite3";
 import Fastify, { type FastifyInstance, type onRequestHookHandler } from "fastify";
-import { ZodError } from "zod";
 
 import { registerAuthRoutes, type LoginRateLimitOptions } from "./auth/routes.js";
 import { Argon2VerificationGate, AuthRequiredError, AuthService, type AuthServiceOptions } from "./auth/service.js";
@@ -51,8 +50,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     registerMeetingRoutes(app, { meetings: new SqliteMeetingRepository(db), ...routeOptions });
     registerFolderRoutes(app, { folders: new SqliteFolderRepository(db), ...routeOptions });
     app.setErrorHandler((error, _request, reply) => {
-      const isBadRequest = error instanceof ZodError || (typeof error === "object" && error !== null && "statusCode" in error && error.statusCode === 400);
-      return reply.code(isBadRequest ? 400 : 500).send({ code: isBadRequest ? "INVALID_REQUEST" : "INTERNAL_ERROR" });
+      const statusCode = typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number" ? error.statusCode : undefined;
+      const isClientError = statusCode !== undefined && statusCode >= 400 && statusCode < 500;
+      return reply.code(isClientError ? statusCode : 500).send({ code: isClientError ? "INVALID_REQUEST" : "INTERNAL_ERROR" });
     });
     await app.ready();
     return app;

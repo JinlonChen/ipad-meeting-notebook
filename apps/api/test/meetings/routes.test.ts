@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 
-import { createTestApp, login } from "../helpers.js";
+import { buildApp } from "../../src/app.js";
+import { openDatabase } from "../../src/db/database.js";
+import { createTestApp, login, NOW, PASSWORD } from "../helpers.js";
 
 const MEETING_ONE = "00000000-0000-4000-8000-000000000101";
 const MEETING_TWO = "00000000-0000-4000-8000-000000000102";
@@ -70,12 +72,34 @@ describe("meeting routes", () => {
       expect(conflict.statusCode).toBe(409);
       expect(conflict.json()).toEqual({ code: "MEETING_CONFLICT" });
 
+      expect((await server.inject({ method: "POST", url: "/api/meetings?extra=true", headers: { cookie }, payload: input })).json()).toEqual({ code: "INVALID_REQUEST" });
+      expect((await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_ONE}?extra=true`, headers: { cookie }, payload: { title: "Ignored" } })).json()).toEqual({ code: "INVALID_REQUEST" });
+
       const updated = await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_ONE}`, headers: { cookie }, payload: { title: "Renamed" } });
       expect(updated.statusCode).toBe(200);
       const replay = await server.inject({ method: "POST", url: "/api/meetings", headers: { cookie }, payload: input });
       expect(replay.statusCode).toBe(200);
       expect(replay.json()).toMatchObject({ title: "Renamed" });
       expect((await server.inject({ method: "POST", url: "/api/meetings", headers: { cookie }, payload: { ...input, clientCreatedAt: "2026-08-20T10:00:01.000Z" } })).json()).toEqual({ code: "MEETING_CONFLICT" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("returns stable client errors for media parsing but treats corrupted repository output as internal", async () => {
+    const database = openDatabase(":memory:");
+    const server = await buildApp({ databasePath: ":memory:", adminPassword: PASSWORD, cookieSecure: false, now: () => NOW, databaseFactory: () => database });
+    try {
+      const cookie = await login(server);
+      const unsupported = await server.inject({ method: "POST", url: "/api/meetings", headers: { cookie, "content-type": "application/xml" }, payload: "not json" });
+      expect(unsupported).toMatchObject({ statusCode: 415, body: '{"code":"INVALID_REQUEST"}' });
+      await server.inject({ method: "POST", url: "/api/meetings", headers: { cookie }, payload: { id: MEETING_ONE, title: "Valid", folderId: null, clientCreatedAt: CREATED_AT } });
+      database.pragma("ignore_check_constraints = ON");
+      database.prepare("UPDATE meetings SET status = 'invalid' WHERE id = ?").run(MEETING_ONE);
+      database.pragma("ignore_check_constraints = OFF");
+      const corrupted = await server.inject({ method: "GET", url: "/api/meetings", headers: { cookie } });
+      expect(corrupted).toMatchObject({ statusCode: 500, body: '{"code":"INTERNAL_ERROR"}' });
+      expect(corrupted.body).not.toContain("invalid");
     } finally {
       await server.close();
     }

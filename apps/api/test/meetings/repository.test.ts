@@ -181,6 +181,16 @@ describe("SqliteMeetingRepository", () => {
     expect(meetings.purgeTrashedBefore("2026-08-20T10:00:00.500Z")).toBe(1);
   });
 
+  test("keeps a purged meeting creation tombstone and rejects every replay", () => {
+    const { meetings } = repository();
+    const input = { id: ID_ONE, title: "Purged", folderId: null, clientCreatedAt: CREATED_AT };
+    meetings.createOrReplay(input);
+    meetings.trash(ID_ONE, LATER);
+    expect(meetings.purgeTrashedBefore("2026-08-20T12:00:00.000Z")).toBe(1);
+    expect(() => meetings.createOrReplay(input)).toThrow("conflicts");
+    expect(() => meetings.createOrReplay({ ...input, title: "Different" })).toThrow("conflicts");
+  });
+
   test("rejects meetings whose folder does not exist", () => {
     const { meetings } = repository();
 

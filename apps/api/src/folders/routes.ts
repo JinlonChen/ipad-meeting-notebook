@@ -28,10 +28,11 @@ export function registerFolderRoutes(app: FastifyInstance, options: {
 
   app.get("/api/folders", { onRequest: options.onRequest }, async (request, reply) => {
     if (!EmptyQuerySchema.safeParse(request.query).success || !NoBodySchema.safeParse(request.body).success || hasUnexpectedBody(request)) return invalid(reply);
-    return reply.send(options.folders.list());
+    return reply.send(z.array(FolderSchema).parse(options.folders.list()));
   });
 
   app.post("/api/folders", { onRequest: options.onRequest }, async (request, reply) => {
+    if (!EmptyQuerySchema.safeParse(request.query).success) return invalid(reply);
     const parsed = CreateSchema.safeParse(request.body);
     if (!parsed.success) return invalid(reply);
     try {
@@ -47,7 +48,7 @@ export function registerFolderRoutes(app: FastifyInstance, options: {
   app.patch("/api/folders/:id", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
     const patch = PatchSchema.safeParse(request.body);
-    if (!params.success || !patch.success) return invalid(reply);
+    if (!params.success || !patch.success || !EmptyQuerySchema.safeParse(request.query).success) return invalid(reply);
     try {
       return reply.send(FolderSchema.parse(options.folders.rename(params.data.id, patch.data.name, now().toISOString())));
     } catch (error) {

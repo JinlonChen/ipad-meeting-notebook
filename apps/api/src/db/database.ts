@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { CreateMeetingInputSchema } from "@meeting/contracts";
 import Database from "better-sqlite3";
 
-export const CURRENT_DATABASE_VERSION = 3;
+export const CURRENT_DATABASE_VERSION = 4;
 
 const IsoDateTimeSchema = CreateMeetingInputSchema.shape.clientCreatedAt;
 const ActiveStatuses = "'draft', 'recording', 'recoverable', 'uploading', 'processing', 'ready', 'failed'";
@@ -13,6 +13,7 @@ const migrations = [
   { version: 1, migrate: migrateVersionZero },
   { version: 2, migrate: migrateVersionTwo },
   { version: 3, migrate: migrateVersionThree },
+  { version: 4, migrate: migrateVersionFour },
 ];
 
 export function canonicalizeTimestamp(value: string): string {
@@ -133,6 +134,34 @@ function migrateVersionThree(db: Database.Database): void {
       FROM folders;
     `);
     db.pragma("user_version = 3");
+  })();
+}
+
+function migrateVersionFour(db: Database.Database): void {
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE meeting_creation_requests_v4 (
+        meeting_id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        folder_id TEXT,
+        client_created_at TEXT NOT NULL
+      );
+      INSERT INTO meeting_creation_requests_v4
+      SELECT meeting_id, title, folder_id, client_created_at FROM meeting_creation_requests;
+      DROP TABLE meeting_creation_requests;
+      ALTER TABLE meeting_creation_requests_v4 RENAME TO meeting_creation_requests;
+
+      CREATE TABLE folder_creation_requests_v4 (
+        folder_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        client_created_at TEXT NOT NULL
+      );
+      INSERT INTO folder_creation_requests_v4
+      SELECT folder_id, name, client_created_at FROM folder_creation_requests;
+      DROP TABLE folder_creation_requests;
+      ALTER TABLE folder_creation_requests_v4 RENAME TO folder_creation_requests;
+    `);
+    db.pragma("user_version = 4");
   })();
 }
 

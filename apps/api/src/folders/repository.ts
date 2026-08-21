@@ -73,10 +73,12 @@ export class SqliteFolderRepository implements FolderRepository {
         FROM folder_creation_requests WHERE folder_id = ?
       `).get(value.id) as { name: string; client_created_at: string } | undefined;
       if (request) {
+        const folder = this.get(value.id);
+        if (!folder) throw new FolderConflictError();
         if (rejectConflict && (request.name !== value.name || request.client_created_at !== clientCreatedAt)) {
           throw new FolderConflictError();
         }
-        return { folder: this.require(value.id), created: false };
+        return { folder, created: false };
       }
 
       this.db.prepare(`

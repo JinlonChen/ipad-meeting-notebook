@@ -98,10 +98,12 @@ export class SqliteMeetingRepository implements MeetingRepository {
         FROM meeting_creation_requests WHERE meeting_id = ?
       `).get(value.id) as { title: string; folder_id: string | null; client_created_at: string } | undefined;
       if (request) {
+        const meeting = this.get(value.id);
+        if (!meeting) throw new MeetingConflictError();
         if (rejectConflict && (request.title !== value.title || request.folder_id !== value.folderId || request.client_created_at !== clientCreatedAt)) {
           throw new MeetingConflictError();
         }
-        return { meeting: this.require(value.id), created: false };
+        return { meeting, created: false };
       }
 
       this.db.prepare(`

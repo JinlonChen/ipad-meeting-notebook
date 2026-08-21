@@ -240,10 +240,11 @@ function trackedDatabase(): { database: Database.Database; closed: () => boolean
   return { database: proxy, closed: () => closed };
 }
 
-void buildApp({
+const buildAppOptions = {
   databasePath: ":memory:",
   adminPassword: PASSWORD,
   cookieSecure: false,
   // @ts-expect-error Proxy trust is not configurable during the local deployment phase.
   trustProxy: true,
-});
+} satisfies import("../../src/app.js").BuildAppOptions;
+void buildAppOptions;

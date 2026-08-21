@@ -35,14 +35,28 @@ export async function start(dependencies: ServerDependencies = defaults): Promis
   }
 }
 
-export function installShutdownHandlers(app: FastifyInstance, target: SignalTarget = process): () => void {
-  const close = () => { void app.close(); };
-  target.once("SIGINT", close);
-  target.once("SIGTERM", close);
-  return () => {
+export function installShutdownHandlers(
+  app: FastifyInstance,
+  target: SignalTarget = process,
+  log: (message: string) => void = console.error,
+): () => void {
+  let stopping = false;
+  let installed = true;
+  const remove = () => {
+    if (!installed) return;
+    installed = false;
     target.removeListener("SIGINT", close);
     target.removeListener("SIGTERM", close);
   };
+  const close = () => {
+    if (stopping) return;
+    stopping = true;
+    remove();
+    void app.close().catch(() => log("Unable to stop API server"));
+  };
+  target.once("SIGINT", close);
+  target.once("SIGTERM", close);
+  return remove;
 }
 
 export async function run(

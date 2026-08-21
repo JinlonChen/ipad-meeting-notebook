@@ -58,6 +58,8 @@ describe("folder routes", () => {
       expect(created.json()).toMatchObject({ id: FOLDER_ONE, name: "Projects", syncVersion: 0 });
       expect((await server.inject({ method: "POST", url: "/api/folders", headers: { cookie }, payload: input })).statusCode).toBe(200);
       expect((await server.inject({ method: "POST", url: "/api/folders", headers: { cookie }, payload: { ...input, name: "Other" } })).json()).toEqual({ code: "FOLDER_CONFLICT" });
+      expect((await server.inject({ method: "POST", url: "/api/folders?extra=true", headers: { cookie }, payload: input })).json()).toEqual({ code: "INVALID_REQUEST" });
+      expect((await server.inject({ method: "PATCH", url: `/api/folders/${FOLDER_ONE}?extra=true`, headers: { cookie }, payload: { name: "Ignored" } })).json()).toEqual({ code: "INVALID_REQUEST" });
       const duplicate = await server.inject({ method: "POST", url: "/api/folders", headers: { cookie }, payload: { id: FOLDER_TWO, name: "projects", clientCreatedAt: CREATED_AT } });
       expect(duplicate.statusCode).toBe(409);
       expect(duplicate.json()).toEqual({ code: "FOLDER_NAME_CONFLICT" });
@@ -68,6 +70,20 @@ describe("folder routes", () => {
       expect(replay.statusCode).toBe(200);
       expect(replay.json()).toMatchObject({ name: "Archive" });
       expect((await server.inject({ method: "POST", url: "/api/folders", headers: { cookie }, payload: { ...input, clientCreatedAt: "2026-08-20T10:00:01.000Z" } })).json()).toEqual({ code: "FOLDER_CONFLICT" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("keeps a deleted folder's creation tombstone and rejects all replays", async () => {
+    const server = await createTestApp();
+    try {
+      const cookie = await login(server);
+      const input = { id: FOLDER_ONE, name: "Deleted", clientCreatedAt: CREATED_AT };
+      expect((await server.inject({ method: "POST", url: "/api/folders", headers: { cookie }, payload: input })).statusCode).toBe(201);
+      expect((await server.inject({ method: "DELETE", url: `/api/folders/${FOLDER_ONE}`, headers: { cookie } })).statusCode).toBe(204);
+      expect((await server.inject({ method: "POST", url: "/api/folders", headers: { cookie }, payload: input })).json()).toEqual({ code: "FOLDER_CONFLICT" });
+      expect((await server.inject({ method: "POST", url: "/api/folders", headers: { cookie }, payload: { ...input, name: "Different" } })).json()).toEqual({ code: "FOLDER_CONFLICT" });
     } finally {
       await server.close();
     }

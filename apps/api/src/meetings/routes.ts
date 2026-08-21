@@ -45,10 +45,11 @@ export function registerMeetingRoutes(app: FastifyInstance, options: {
   app.get("/api/meetings", { onRequest: options.onRequest }, async (request, reply) => {
     const parsed = QuerySchema.safeParse(request.query);
     if (!parsed.success || !NoBodySchema.safeParse(request.body).success || hasUnexpectedBody(request)) return invalid(reply);
-    return reply.send(options.meetings.list(parsed.data));
+    return reply.send(z.array(MeetingSchema).parse(options.meetings.list(parsed.data)));
   });
 
   app.post("/api/meetings", { onRequest: options.onRequest }, async (request, reply) => {
+    if (!EmptyQuerySchema.safeParse(request.query).success) return invalid(reply);
     const parsed = CreateSchema.safeParse(request.body);
     if (!parsed.success) return invalid(reply);
     try {
@@ -64,7 +65,7 @@ export function registerMeetingRoutes(app: FastifyInstance, options: {
   app.patch("/api/meetings/:id", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
     const patch = PatchSchema.safeParse(request.body);
-    if (!params.success || !patch.success) return invalid(reply);
+    if (!params.success || !patch.success || !EmptyQuerySchema.safeParse(request.query).success) return invalid(reply);
     try {
       return reply.send(MeetingSchema.parse(options.meetings.update(params.data.id, patch.data, now().toISOString())));
     } catch (error) {

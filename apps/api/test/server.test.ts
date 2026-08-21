@@ -30,17 +30,24 @@ test("run sets a nonzero exit code and logs a sanitized startup failure", async 
   expect(log).not.toHaveBeenCalledWith(expect.stringContaining("secret"));
 });
 
-test("installs removable signal handlers that close the app", async () => {
+test("closes once, removes listeners, and logs sanitized shutdown failures", async () => {
   const server = await import("../src/server.js");
-  const close = vi.fn(async () => undefined);
+  const close = vi.fn(async () => { throw new Error("private shutdown details"); });
   const listeners = new Map<string, () => void>();
   const target = {
     once: vi.fn((signal: string, listener: () => void) => listeners.set(signal, listener)),
     removeListener: vi.fn((signal: string) => listeners.delete(signal)),
   };
-  const remove = server.installShutdownHandlers({ close } as unknown as FastifyInstance, target);
-  listeners.get("SIGINT")?.();
+  const log = vi.fn();
+  const remove = server.installShutdownHandlers({ close } as unknown as FastifyInstance, target, log);
+  const signal = listeners.get("SIGINT");
+  signal?.();
+  signal?.();
+  await Promise.resolve();
   expect(close).toHaveBeenCalledOnce();
+  expect(target.removeListener).toHaveBeenCalledTimes(2);
+  expect(log).toHaveBeenCalledWith("Unable to stop API server");
+  expect(log).not.toHaveBeenCalledWith(expect.stringContaining("private"));
   remove();
   expect(target.removeListener).toHaveBeenCalledTimes(2);
 });

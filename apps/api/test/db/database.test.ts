@@ -22,7 +22,7 @@ describe("SQLite migrations", () => {
       expect(existsSync(path)).toBe(true);
       expect(db.pragma("journal_mode", { simple: true })).toBe("wal");
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
-      expect(db.pragma("user_version", { simple: true })).toBe(3);
+      expect(db.pragma("user_version", { simple: true })).toBe(4);
       migrate(db);
       const schemaObjects = db.prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')").all() as { name: string }[];
       expect(schemaObjects.map((object) => object.name)).toEqual(expect.arrayContaining([
@@ -57,7 +57,7 @@ describe("SQLite migrations", () => {
 
       migrate(db);
 
-      expect(db.pragma("user_version", { simple: true })).toBe(3);
+      expect(db.pragma("user_version", { simple: true })).toBe(4);
       expect(db.prepare("SELECT sync_version FROM folders WHERE id = ?").get(FOLDER_ID)).toEqual({ sync_version: 0 });
       expect(db.prepare("SELECT folder_id, status_before_trash, sync_version FROM meetings WHERE id = ?").get(MEETING_ID)).toEqual({
         folder_id: FOLDER_ID,
@@ -88,7 +88,7 @@ describe("SQLite migrations", () => {
 
       migrate(db);
 
-      expect(db.pragma("user_version", { simple: true })).toBe(3);
+      expect(db.pragma("user_version", { simple: true })).toBe(4);
       expect(db.prepare("SELECT * FROM folders WHERE id = ?").get(FOLDER_ID)).toEqual({ id: FOLDER_ID, name: "Preserved" });
       expect(db.prepare("SELECT * FROM meetings WHERE id = ?").get(MEETING_ID)).toEqual({ id: MEETING_ID, title: "Preserved meeting", folder_id: FOLDER_ID });
       expect(db.prepare("PRAGMA table_info(sessions)").all()).toEqual([
@@ -108,7 +108,7 @@ describe("SQLite migrations", () => {
   test("rejects databases newer than the supported migration version", () => {
     const db = new Database(":memory:");
     try {
-      db.pragma("user_version = 4");
+      db.pragma("user_version = 5");
       expect(() => migrate(db)).toThrow(/newer/);
     } finally {
       db.close();
@@ -152,9 +152,42 @@ describe("SQLite migrations", () => {
 
       migrate(db);
 
-      expect(db.pragma("user_version", { simple: true })).toBe(3);
+      expect(db.pragma("user_version", { simple: true })).toBe(4);
       expect(db.prepare("SELECT title, folder_id, client_created_at FROM meeting_creation_requests WHERE meeting_id = ?").get(MEETING_ID)).toEqual({ title: "Original meeting", folder_id: FOLDER_ID, client_created_at: CREATED_AT });
       expect(db.prepare("SELECT name, client_created_at FROM folder_creation_requests WHERE folder_id = ?").get(FOLDER_ID)).toEqual({ name: "Original folder", client_created_at: CREATED_AT });
+    } finally {
+      db.close();
+    }
+  });
+
+  test("upgrades version-three creation ledgers without foreign keys or cascades", () => {
+    const db = new Database(":memory:");
+    try {
+      db.exec(`
+        CREATE TABLE folders (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+        CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT NOT NULL);
+        CREATE TABLE meeting_creation_requests (
+          meeting_id TEXT PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+          title TEXT NOT NULL, folder_id TEXT, client_created_at TEXT NOT NULL
+        );
+        CREATE TABLE folder_creation_requests (
+          folder_id TEXT PRIMARY KEY REFERENCES folders(id) ON DELETE CASCADE,
+          name TEXT NOT NULL, client_created_at TEXT NOT NULL
+        );
+      `);
+      db.prepare("INSERT INTO folders VALUES (?, 'Original folder')").run(FOLDER_ID);
+      db.prepare("INSERT INTO meetings VALUES (?, 'Original meeting')").run(MEETING_ID);
+      db.prepare("INSERT INTO meeting_creation_requests VALUES (?, 'Original meeting', ?, ?)").run(MEETING_ID, FOLDER_ID, CREATED_AT);
+      db.prepare("INSERT INTO folder_creation_requests VALUES (?, 'Original folder', ?)").run(FOLDER_ID, CREATED_AT);
+      db.pragma("user_version = 3");
+
+      migrate(db);
+
+      expect(db.pragma("user_version", { simple: true })).toBe(4);
+      expect(db.prepare("SELECT * FROM meeting_creation_requests").all()).toEqual([{ meeting_id: MEETING_ID, title: "Original meeting", folder_id: FOLDER_ID, client_created_at: CREATED_AT }]);
+      expect(db.prepare("SELECT * FROM folder_creation_requests").all()).toEqual([{ folder_id: FOLDER_ID, name: "Original folder", client_created_at: CREATED_AT }]);
+      expect(db.prepare("PRAGMA foreign_key_list(meeting_creation_requests)").all()).toEqual([]);
+      expect(db.prepare("PRAGMA foreign_key_list(folder_creation_requests)").all()).toEqual([]);
     } finally {
       db.close();
     }
