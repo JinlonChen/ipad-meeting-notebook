@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type Database from "better-sqlite3";
 
 import { buildApp } from "../../src/app.js";
+import { Argon2VerificationGate } from "../../src/auth/service.js";
 import { openDatabase } from "../../src/db/database.js";
 
 const PASSWORD = "correct horse battery staple";
@@ -70,6 +71,89 @@ describe("auth routes", () => {
     try {
       const response = await server.inject({ method: "POST", url: "/api/auth/login", payload: { password: PASSWORD } });
       expect(response.headers["set-cookie"]).toContain("Secure");
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("limits valid login attempts per direct client IP, does not reset on success, and recovers after its window", async () => {
+    let clock = NOW;
+    const server = await buildApp({
+      databasePath: ":memory:",
+      adminPassword: PASSWORD,
+      cookieSecure: false,
+      now: () => clock,
+      loginRateLimit: { maxAttempts: 2, windowMs: 60_000, now: () => clock },
+    });
+    const firstIp = "198.51.100.10";
+    const wrongPassword = "wrong password long enough";
+    try {
+      const failed = await server.inject({ method: "POST", url: "/api/auth/login", remoteAddress: firstIp, payload: { password: wrongPassword } });
+      expect(failed.statusCode).toBe(401);
+      expect(failed.body).not.toContain(wrongPassword);
+
+      const successful = await server.inject({ method: "POST", url: "/api/auth/login", remoteAddress: firstIp, payload: { password: PASSWORD } });
+      expect(successful.statusCode).toBe(204);
+
+      const limited = await server.inject({ method: "POST", url: "/api/auth/login", remoteAddress: firstIp, payload: { password: wrongPassword } });
+      expect(limited.statusCode).toBe(429);
+      expect(limited.json()).toEqual({ code: "LOGIN_RATE_LIMITED" });
+      expect(limited.headers["retry-after"]).toBe("60");
+      expect(limited.body).not.toContain(wrongPassword);
+
+      expect((await server.inject({ method: "POST", url: "/api/auth/login", remoteAddress: "198.51.100.11", payload: { password: wrongPassword } })).statusCode).toBe(401);
+      expect((await server.inject({ method: "POST", url: "/api/auth/login", remoteAddress: "198.51.100.12", headers: { "x-forwarded-for": firstIp }, payload: { password: wrongPassword } })).statusCode).toBe(401);
+
+      clock = new Date(clock.getTime() + 60_000);
+      expect((await server.inject({ method: "POST", url: "/api/auth/login", remoteAddress: firstIp, payload: { password: wrongPassword } })).statusCode).toBe(401);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("rejects excess concurrent Argon2 verification without exceeding the configured process gate", async () => {
+    const verificationGate = new Argon2VerificationGate(1);
+    const server = await buildApp({
+      databasePath: ":memory:",
+      adminPassword: PASSWORD,
+      cookieSecure: false,
+      verificationGate,
+      loginRateLimit: { maxAttempts: 5 },
+    });
+    try {
+      const responses = await Promise.all(["198.51.100.21", "198.51.100.22", "198.51.100.23"].map((remoteAddress) => server.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        remoteAddress,
+        payload: { password: PASSWORD },
+      })));
+      expect(responses.filter((response) => response.statusCode === 204)).toHaveLength(1);
+      expect(responses.filter((response) => response.statusCode === 429)).toHaveLength(2);
+      expect(verificationGate.peak).toBe(1);
+      expect(responses.every((response) => !response.body.includes(PASSWORD))).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("bounds tracked login IPs and evicts expired windows before admitting a new client", async () => {
+    let clock = NOW;
+    const server = await buildApp({
+      databasePath: ":memory:",
+      adminPassword: PASSWORD,
+      cookieSecure: false,
+      loginRateLimit: { maxAttempts: 5, maxTrackedIps: 2, windowMs: 60_000, now: () => clock },
+    });
+    const wrongPassword = "wrong password long enough";
+    try {
+      expect((await server.inject({ method: "POST", url: "/api/auth/login", remoteAddress: "198.51.100.31", payload: { password: wrongPassword } })).statusCode).toBe(401);
+      expect((await server.inject({ method: "POST", url: "/api/auth/login", remoteAddress: "198.51.100.32", payload: { password: wrongPassword } })).statusCode).toBe(401);
+      const full = await server.inject({ method: "POST", url: "/api/auth/login", remoteAddress: "198.51.100.33", payload: { password: wrongPassword } });
+      expect(full.statusCode).toBe(429);
+      expect(full.headers["retry-after"]).toBe("60");
+
+      clock = new Date(clock.getTime() + 60_000);
+      expect((await server.inject({ method: "POST", url: "/api/auth/login", remoteAddress: "198.51.100.33", payload: { password: wrongPassword } })).statusCode).toBe(401);
     } finally {
       await server.close();
     }

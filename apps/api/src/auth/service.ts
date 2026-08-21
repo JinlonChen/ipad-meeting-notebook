@@ -26,6 +26,37 @@ export class AuthRequiredError extends Error {
   }
 }
 
+export class LoginVerificationCapacityError extends Error {
+  constructor() {
+    super("Login verification capacity exceeded");
+    this.name = "LoginVerificationCapacityError";
+  }
+}
+
+export class Argon2VerificationGate {
+  private active = 0;
+  private maximumObserved = 0;
+
+  constructor(private readonly limit = 2) {
+    if (!Number.isInteger(limit) || limit < 1) throw new Error("Argon2 verification limit must be a positive integer");
+  }
+
+  get peak(): number {
+    return this.maximumObserved;
+  }
+
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.active >= this.limit) throw new LoginVerificationCapacityError();
+    this.active += 1;
+    this.maximumObserved = Math.max(this.maximumObserved, this.active);
+    try {
+      return await operation();
+    } finally {
+      this.active -= 1;
+    }
+  }
+}
+
 class InvalidAdminPasswordHashError extends Error {
   constructor() {
     super("Invalid Argon2id admin password hash");
@@ -38,9 +69,11 @@ export type AuthServiceOptions = {
   adminPassword: string;
   now?: () => Date;
   tokenBytes?: () => Buffer;
+  verificationGate?: Argon2VerificationGate;
 };
 
 type AuthServiceDependencies = Omit<AuthServiceOptions, "adminPassword">;
+const defaultVerificationGate = new Argon2VerificationGate();
 
 export class AuthService {
   private constructor(
@@ -48,6 +81,7 @@ export class AuthService {
     private readonly passwordHash: string,
     private readonly now: () => Date,
     private readonly tokenBytes: () => Buffer,
+    private readonly verificationGate: Argon2VerificationGate,
   ) {}
 
   static async create(options: AuthServiceOptions): Promise<AuthService> {
@@ -58,6 +92,7 @@ export class AuthService {
       passwordHash,
       dependencies.now ?? (() => new Date()),
       dependencies.tokenBytes ?? (() => secureRandomBytes(32)),
+      dependencies.verificationGate ?? defaultVerificationGate,
     );
   }
 
@@ -65,8 +100,9 @@ export class AuthService {
     LoginInputSchema.shape.password.parse(password);
     let passwordMatches: boolean;
     try {
-      passwordMatches = await argon2.verify(this.passwordHash, password);
-    } catch {
+      passwordMatches = await this.verificationGate.run(() => argon2.verify(this.passwordHash, password));
+    } catch (error) {
+      if (error instanceof LoginVerificationCapacityError) throw error;
       throw new InvalidCredentialsError();
     }
     if (!passwordMatches) throw new InvalidCredentialsError();
