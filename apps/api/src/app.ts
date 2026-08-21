@@ -16,13 +16,12 @@ export type BuildAppOptions = {
   authServiceFactory?: (options: AuthServiceOptions) => Promise<AuthService>;
   loginRateLimit?: LoginRateLimitOptions;
   verificationGate?: Argon2VerificationGate;
-  trustProxy?: boolean;
 };
 
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
   const db = (options.databaseFactory ?? openDatabase)(options.databasePath);
   try {
-    const app = Fastify({ logger: false, ...(options.trustProxy ? { trustProxy: true } : {}) });
+    const app = Fastify({ logger: false });
     const auth = await (options.authServiceFactory ?? AuthService.create)({
       db,
       adminPassword: options.adminPassword,

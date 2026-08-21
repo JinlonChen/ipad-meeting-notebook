@@ -111,6 +111,24 @@ describe("auth routes", () => {
     }
   });
 
+  test("does not trust rotating X-Forwarded-For values for one direct client", async () => {
+    const server = await buildApp({
+      databasePath: ":memory:",
+      adminPassword: PASSWORD,
+      cookieSecure: false,
+      loginRateLimit: { maxAttempts: 2 },
+    });
+    const wrongPassword = "wrong password long enough";
+    const remoteAddress = "198.51.100.15";
+    try {
+      expect((await server.inject({ method: "POST", url: "/api/auth/login", remoteAddress, headers: { "x-forwarded-for": "203.0.113.1" }, payload: { password: wrongPassword } })).statusCode).toBe(401);
+      expect((await server.inject({ method: "POST", url: "/api/auth/login", remoteAddress, headers: { "x-forwarded-for": "203.0.113.2" }, payload: { password: wrongPassword } })).statusCode).toBe(401);
+      expect((await server.inject({ method: "POST", url: "/api/auth/login", remoteAddress, headers: { "x-forwarded-for": "203.0.113.3" }, payload: { password: wrongPassword } })).statusCode).toBe(429);
+    } finally {
+      await server.close();
+    }
+  });
+
   test("rejects excess concurrent Argon2 verification without exceeding the configured process gate", async () => {
     const verificationGate = new Argon2VerificationGate(1);
     const server = await buildApp({
@@ -206,3 +224,11 @@ function trackedDatabase(): { database: Database.Database; closed: () => boolean
   });
   return { database: proxy, closed: () => closed };
 }
+
+void buildApp({
+  databasePath: ":memory:",
+  adminPassword: PASSWORD,
+  cookieSecure: false,
+  // @ts-expect-error Proxy trust is not configurable during the local deployment phase.
+  trustProxy: true,
+});
