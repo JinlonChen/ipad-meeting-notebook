@@ -57,9 +57,10 @@ export class CatalogSync {
     });
     const task: SyncTask = { kind, promise };
     this.currentTask = task;
-    void promise.finally(() => {
+    const clear = () => {
       if (this.currentTask === task) this.currentTask = undefined;
-    });
+    };
+    void promise.then(clear, clear);
     return promise;
   }
 

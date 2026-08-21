@@ -73,6 +73,26 @@ describe("CatalogSync", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  test("clears a rejected current task without creating an unhandled rejection", async () => {
+    const failure = new Error("indexeddb unavailable");
+    const repository = {
+      pendingOperations: vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce([]),
+    } as unknown as MeetingCatalogRepository;
+    const sync = new CatalogSync(repository, api(vi.fn()));
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await expect(sync.flush()).rejects.toBe(failure);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(unhandled).toEqual([]);
+      await expect(sync.flush()).resolves.toEqual({ state: "idle" });
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   test("flushes only its starting outbox snapshot and leaves in-flight additions for the next call", async () => {
     const store = catalog();
     catalogs.push(store);
