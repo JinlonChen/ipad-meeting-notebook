@@ -22,7 +22,7 @@ describe("SQLite migrations", () => {
       expect(existsSync(path)).toBe(true);
       expect(db.pragma("journal_mode", { simple: true })).toBe("wal");
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
-      expect(db.pragma("user_version", { simple: true })).toBe(2);
+      expect(db.pragma("user_version", { simple: true })).toBe(3);
       migrate(db);
       const schemaObjects = db.prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')").all() as { name: string }[];
       expect(schemaObjects.map((object) => object.name)).toEqual(expect.arrayContaining([
@@ -57,7 +57,7 @@ describe("SQLite migrations", () => {
 
       migrate(db);
 
-      expect(db.pragma("user_version", { simple: true })).toBe(2);
+      expect(db.pragma("user_version", { simple: true })).toBe(3);
       expect(db.prepare("SELECT sync_version FROM folders WHERE id = ?").get(FOLDER_ID)).toEqual({ sync_version: 0 });
       expect(db.prepare("SELECT folder_id, status_before_trash, sync_version FROM meetings WHERE id = ?").get(MEETING_ID)).toEqual({
         folder_id: FOLDER_ID,
@@ -88,7 +88,7 @@ describe("SQLite migrations", () => {
 
       migrate(db);
 
-      expect(db.pragma("user_version", { simple: true })).toBe(2);
+      expect(db.pragma("user_version", { simple: true })).toBe(3);
       expect(db.prepare("SELECT * FROM folders WHERE id = ?").get(FOLDER_ID)).toEqual({ id: FOLDER_ID, name: "Preserved" });
       expect(db.prepare("SELECT * FROM meetings WHERE id = ?").get(MEETING_ID)).toEqual({ id: MEETING_ID, title: "Preserved meeting", folder_id: FOLDER_ID });
       expect(db.prepare("PRAGMA table_info(sessions)").all()).toEqual([
@@ -108,7 +108,7 @@ describe("SQLite migrations", () => {
   test("rejects databases newer than the supported migration version", () => {
     const db = new Database(":memory:");
     try {
-      db.pragma("user_version = 3");
+      db.pragma("user_version = 4");
       expect(() => migrate(db)).toThrow(/newer/);
     } finally {
       db.close();
@@ -137,6 +137,24 @@ describe("SQLite migrations", () => {
         INSERT INTO meetings (id, title, status, created_at, updated_at, trashed_at)
         VALUES (?, 'Bad trash', 'trashed', ?, ?, ?)
       `).run("00000000-0000-4000-8000-000000000029", CREATED_AT, CREATED_AT, CREATED_AT)).toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  test("backfills immutable creation requests when upgrading a version-two database", () => {
+    const db = openDatabase(":memory:");
+    try {
+      db.exec("DROP TABLE meeting_creation_requests; DROP TABLE folder_creation_requests;");
+      db.prepare("INSERT INTO folders (id, name, created_at, updated_at, sync_version) VALUES (?, ?, ?, ?, 0)").run(FOLDER_ID, "Original folder", CREATED_AT, CREATED_AT);
+      db.prepare("INSERT INTO meetings (id, title, folder_id, status, created_at, updated_at, sync_version) VALUES (?, ?, ?, 'draft', ?, ?, 0)").run(MEETING_ID, "Original meeting", FOLDER_ID, CREATED_AT, CREATED_AT);
+      db.pragma("user_version = 2");
+
+      migrate(db);
+
+      expect(db.pragma("user_version", { simple: true })).toBe(3);
+      expect(db.prepare("SELECT title, folder_id, client_created_at FROM meeting_creation_requests WHERE meeting_id = ?").get(MEETING_ID)).toEqual({ title: "Original meeting", folder_id: FOLDER_ID, client_created_at: CREATED_AT });
+      expect(db.prepare("SELECT name, client_created_at FROM folder_creation_requests WHERE folder_id = ?").get(FOLDER_ID)).toEqual({ name: "Original folder", client_created_at: CREATED_AT });
     } finally {
       db.close();
     }

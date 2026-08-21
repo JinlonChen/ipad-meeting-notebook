@@ -22,10 +22,18 @@ type FolderRow = {
 
 export interface FolderRepository {
   create(input: CreateFolderInput): Folder;
+  createOrReplay(input: CreateFolderInput): { folder: Folder; created: boolean };
   get(id: string): Folder | null;
   list(): Folder[];
   rename(id: string, name: string, now: string): Folder;
   remove(id: string, now: string): void;
+}
+
+export class FolderConflictError extends Error {
+  constructor() {
+    super("Folder creation request conflicts with an existing folder");
+    this.name = "FolderConflictError";
+  }
 }
 
 export class FolderNotFoundError extends Error {
@@ -49,14 +57,38 @@ export class SqliteFolderRepository implements FolderRepository {
   constructor(private readonly db: Database.Database) {}
 
   create(input: CreateFolderInput): Folder {
+    return this.createInternal(input, false).folder;
+  }
+
+  createOrReplay(input: CreateFolderInput): { folder: Folder; created: boolean } {
+    return this.createInternal(input, true);
+  }
+
+  private createInternal(input: CreateFolderInput, rejectConflict: boolean): { folder: Folder; created: boolean } {
     const value = CreateFolderInputSchema.parse(input);
     const clientCreatedAt = canonicalizeTimestamp(value.clientCreatedAt);
-    this.db.prepare(`
-      INSERT INTO folders (id, name, created_at, updated_at, sync_version)
-      VALUES (?, ?, ?, ?, 0)
-      ON CONFLICT(id) DO NOTHING
-    `).run(value.id, value.name, clientCreatedAt, clientCreatedAt);
-    return this.require(value.id);
+    return this.db.transaction(() => {
+      const request = this.db.prepare(`
+        SELECT name, client_created_at
+        FROM folder_creation_requests WHERE folder_id = ?
+      `).get(value.id) as { name: string; client_created_at: string } | undefined;
+      if (request) {
+        if (rejectConflict && (request.name !== value.name || request.client_created_at !== clientCreatedAt)) {
+          throw new FolderConflictError();
+        }
+        return { folder: this.require(value.id), created: false };
+      }
+
+      this.db.prepare(`
+        INSERT INTO folders (id, name, created_at, updated_at, sync_version)
+        VALUES (?, ?, ?, ?, 0)
+      `).run(value.id, value.name, clientCreatedAt, clientCreatedAt);
+      this.db.prepare(`
+        INSERT INTO folder_creation_requests (folder_id, name, client_created_at)
+        VALUES (?, ?, ?)
+      `).run(value.id, value.name, clientCreatedAt);
+      return { folder: this.require(value.id), created: true };
+    }).immediate();
   }
 
   get(id: string): Folder | null {

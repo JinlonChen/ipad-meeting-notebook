@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type Database from "better-sqlite3";
+import Fastify from "fastify";
 
 import { buildApp } from "../../src/app.js";
 import { Argon2VerificationGate } from "../../src/auth/service.js";
@@ -206,6 +207,20 @@ describe("auth routes", () => {
       },
     })).rejects.toThrow("auth initialization failed");
     expect(tracked.closed()).toBe(true);
+  });
+
+  test("runs all Fastify close hooks when initialization fails after app creation", async () => {
+    const app = Fastify();
+    let hookRan = false;
+    app.addHook("onClose", async () => { hookRan = true; });
+    await expect(buildApp({
+      databasePath: ":memory:",
+      adminPassword: PASSWORD,
+      cookieSecure: false,
+      fastifyFactory: () => app,
+      authServiceFactory: async () => { throw new Error("initialization failure"); },
+    })).rejects.toThrow("initialization failure");
+    expect(hookRan).toBe(true);
   });
 });
 

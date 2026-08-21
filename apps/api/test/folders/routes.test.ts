@@ -28,6 +28,26 @@ describe("folder routes", () => {
     }
   });
 
+  test("authenticates before JSON parsing and rejects extra input for read and delete endpoints", async () => {
+    const server = await createTestApp();
+    try {
+      const malformed = { method: "POST" as const, url: "/api/folders", payload: "{", headers: { "content-type": "application/json" } };
+      expect(await server.inject(malformed)).toMatchObject({ statusCode: 401, body: '{"code":"AUTH_REQUIRED"}' });
+      const cookie = await login(server);
+      expect(await server.inject({ ...malformed, headers: { ...malformed.headers, cookie } })).toMatchObject({ statusCode: 400, body: '{"code":"INVALID_REQUEST"}' });
+      for (const request of [
+        { method: "GET" as const, url: "/api/folders?extra=true" },
+        { method: "GET" as const, url: "/api/folders", payload: { extra: true }, headers: { "content-type": "application/json", "content-length": "14" } },
+        { method: "DELETE" as const, url: `/api/folders/${FOLDER_ONE}?extra=true` },
+        { method: "DELETE" as const, url: `/api/folders/${FOLDER_ONE}`, payload: { extra: true }, headers: { "content-type": "application/json", "content-length": "14" } },
+      ]) {
+        expect(await server.inject({ ...request, headers: { ...request.headers, cookie } })).toMatchObject({ statusCode: 400, body: '{"code":"INVALID_REQUEST"}' });
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
   test("creates, retries, updates, and rejects name or client-id conflicts", async () => {
     const server = await createTestApp();
     try {
@@ -44,6 +64,10 @@ describe("folder routes", () => {
 
       const updated = await server.inject({ method: "PATCH", url: `/api/folders/${FOLDER_ONE}`, headers: { cookie }, payload: { name: " Archive " } });
       expect(updated.json()).toMatchObject({ name: "Archive", syncVersion: 1 });
+      const replay = await server.inject({ method: "POST", url: "/api/folders", headers: { cookie }, payload: input });
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json()).toMatchObject({ name: "Archive" });
+      expect((await server.inject({ method: "POST", url: "/api/folders", headers: { cookie }, payload: { ...input, clientCreatedAt: "2026-08-20T10:00:01.000Z" } })).json()).toEqual({ code: "FOLDER_CONFLICT" });
     } finally {
       await server.close();
     }

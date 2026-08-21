@@ -28,6 +28,7 @@ type MeetingRow = {
 
 export interface MeetingRepository {
   create(input: CreateMeetingInput): Meeting;
+  createOrReplay(input: CreateMeetingInput): { meeting: Meeting; created: boolean };
   get(id: string): Meeting | null;
   list(query: { search: string; includeTrashed: boolean }): Meeting[];
   rename(id: string, title: string, now: string): Meeting;
@@ -35,6 +36,13 @@ export interface MeetingRepository {
   trash(id: string, now: string): Meeting;
   restore(id: string, now: string): Meeting;
   purgeTrashedBefore(cutoff: string): number;
+}
+
+export class MeetingConflictError extends Error {
+  constructor() {
+    super("Meeting creation request conflicts with an existing meeting");
+    this.name = "MeetingConflictError";
+  }
 }
 
 export class MeetingFolderNotFoundError extends Error {
@@ -74,17 +82,40 @@ export class SqliteMeetingRepository implements MeetingRepository {
   constructor(private readonly db: Database.Database) {}
 
   create(input: CreateMeetingInput): Meeting {
+    return this.createInternal(input, false).meeting;
+  }
+
+  createOrReplay(input: CreateMeetingInput): { meeting: Meeting; created: boolean } {
+    return this.createInternal(input, true);
+  }
+
+  private createInternal(input: CreateMeetingInput, rejectConflict: boolean): { meeting: Meeting; created: boolean } {
     const value = CreateMeetingInputSchema.parse(input);
     const clientCreatedAt = canonicalizeTimestamp(value.clientCreatedAt);
-    this.db.prepare(`
-      INSERT INTO meetings (
-        id, title, folder_id, status, started_at, ended_at,
-        created_at, updated_at, trashed_at, sync_version
-      ) VALUES (?, ?, ?, 'draft', NULL, NULL, ?, ?, NULL, 0)
-      ON CONFLICT(id) DO NOTHING
-    `).run(value.id, value.title, value.folderId, clientCreatedAt, clientCreatedAt);
+    return this.db.transaction(() => {
+      const request = this.db.prepare(`
+        SELECT title, folder_id, client_created_at
+        FROM meeting_creation_requests WHERE meeting_id = ?
+      `).get(value.id) as { title: string; folder_id: string | null; client_created_at: string } | undefined;
+      if (request) {
+        if (rejectConflict && (request.title !== value.title || request.folder_id !== value.folderId || request.client_created_at !== clientCreatedAt)) {
+          throw new MeetingConflictError();
+        }
+        return { meeting: this.require(value.id), created: false };
+      }
 
-    return this.require(value.id);
+      this.db.prepare(`
+        INSERT INTO meetings (
+          id, title, folder_id, status, started_at, ended_at,
+          created_at, updated_at, trashed_at, sync_version
+        ) VALUES (?, ?, ?, 'draft', NULL, NULL, ?, ?, NULL, 0)
+      `).run(value.id, value.title, value.folderId, clientCreatedAt, clientCreatedAt);
+      this.db.prepare(`
+        INSERT INTO meeting_creation_requests (meeting_id, title, folder_id, client_created_at)
+        VALUES (?, ?, ?, ?)
+      `).run(value.id, value.title, value.folderId, clientCreatedAt);
+      return { meeting: this.require(value.id), created: true };
+    }).immediate();
   }
 
   get(id: string): Meeting | null {

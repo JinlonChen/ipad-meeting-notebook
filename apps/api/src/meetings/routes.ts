@@ -2,13 +2,14 @@ import {
   CreateMeetingInputSchema,
   MeetingSchema,
 } from "@meeting/contracts";
-import type { FastifyInstance, preHandlerHookHandler } from "fastify";
+import type { FastifyInstance, FastifyRequest, onRequestHookHandler } from "fastify";
 import { z } from "zod";
 
 import { FolderNotFoundError } from "../folders/repository.js";
 import {
   MeetingFolderNotFoundError,
   MeetingNotFoundError,
+  MeetingConflictError,
   type MeetingRepository,
 } from "./repository.js";
 
@@ -22,48 +23,45 @@ const QuerySchema = z.object({
   search: z.string().trim().max(120).optional().default(""),
   includeTrashed: z.enum(["true", "false"]).optional().default("false").transform((value) => value === "true"),
 }).strict();
+const EmptyQuerySchema = z.object({}).strict();
+const NoBodySchema = z.undefined();
 
 function invalid(reply: { code: (status: number) => { send: (body: unknown) => unknown } }) {
   return reply.code(400).send({ code: "INVALID_REQUEST" });
 }
 
-function sameCreation(existing: z.infer<typeof MeetingSchema>, input: z.infer<typeof CreateSchema>): boolean {
-  return existing.title === input.title
-    && existing.folderId === input.folderId
-    && existing.createdAt === new Date(input.clientCreatedAt).toISOString().replace(/\.(\d{3})\d*Z$/, ".$1Z");
+function hasUnexpectedBody(request: FastifyRequest): boolean {
+  const length = request.headers["content-length"];
+  return request.body !== undefined || request.headers["transfer-encoding"] !== undefined || (typeof length === "string" && Number(length) > 0);
 }
 
 export function registerMeetingRoutes(app: FastifyInstance, options: {
   meetings: MeetingRepository;
-  preHandler: preHandlerHookHandler;
+  onRequest: onRequestHookHandler;
   now?: () => Date;
 }): void {
   const now = options.now ?? (() => new Date());
 
-  app.get("/api/meetings", { preHandler: options.preHandler }, async (request, reply) => {
+  app.get("/api/meetings", { onRequest: options.onRequest }, async (request, reply) => {
     const parsed = QuerySchema.safeParse(request.query);
-    if (!parsed.success) return invalid(reply);
+    if (!parsed.success || !NoBodySchema.safeParse(request.body).success || hasUnexpectedBody(request)) return invalid(reply);
     return reply.send(options.meetings.list(parsed.data));
   });
 
-  app.post("/api/meetings", { preHandler: options.preHandler }, async (request, reply) => {
+  app.post("/api/meetings", { onRequest: options.onRequest }, async (request, reply) => {
     const parsed = CreateSchema.safeParse(request.body);
     if (!parsed.success) return invalid(reply);
-    const existing = options.meetings.get(parsed.data.id);
-    if (existing) {
-      return sameCreation(existing, parsed.data)
-        ? reply.code(200).send(MeetingSchema.parse(existing))
-        : reply.code(409).send({ code: "MEETING_CONFLICT" });
-    }
     try {
-      return reply.code(201).send(MeetingSchema.parse(options.meetings.create(parsed.data)));
+      const result = options.meetings.createOrReplay(parsed.data);
+      return reply.code(result.created ? 201 : 200).send(MeetingSchema.parse(result.meeting));
     } catch (error) {
+      if (error instanceof MeetingConflictError) return reply.code(409).send({ code: "MEETING_CONFLICT" });
       if (isForeignKeyError(error)) return reply.code(404).send({ code: "FOLDER_NOT_FOUND" });
       throw error;
     }
   });
 
-  app.patch("/api/meetings/:id", { preHandler: options.preHandler }, async (request, reply) => {
+  app.patch("/api/meetings/:id", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
     const patch = PatchSchema.safeParse(request.body);
     if (!params.success || !patch.success) return invalid(reply);
@@ -78,9 +76,9 @@ export function registerMeetingRoutes(app: FastifyInstance, options: {
     }
   });
 
-  app.delete("/api/meetings/:id", { preHandler: options.preHandler }, async (request, reply) => {
+  app.delete("/api/meetings/:id", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
-    if (!params.success) return invalid(reply);
+    if (!params.success || !EmptyQuerySchema.safeParse(request.query).success || !NoBodySchema.safeParse(request.body).success || hasUnexpectedBody(request)) return invalid(reply);
     try {
       return reply.send(MeetingSchema.parse(options.meetings.trash(params.data.id, now().toISOString())));
     } catch (error) {
@@ -89,9 +87,9 @@ export function registerMeetingRoutes(app: FastifyInstance, options: {
     }
   });
 
-  app.post("/api/meetings/:id/restore", { preHandler: options.preHandler }, async (request, reply) => {
+  app.post("/api/meetings/:id/restore", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
-    if (!params.success) return invalid(reply);
+    if (!params.success || !EmptyQuerySchema.safeParse(request.query).success || !NoBodySchema.safeParse(request.body).success || hasUnexpectedBody(request)) return invalid(reply);
     try {
       return reply.send(MeetingSchema.parse(options.meetings.restore(params.data.id, now().toISOString())));
     } catch (error) {

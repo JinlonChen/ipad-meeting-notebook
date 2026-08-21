@@ -1,49 +1,50 @@
 import { CreateFolderInputSchema, FolderSchema } from "@meeting/contracts";
-import type { FastifyInstance, preHandlerHookHandler } from "fastify";
+import type { FastifyInstance, FastifyRequest, onRequestHookHandler } from "fastify";
 import { z } from "zod";
 
-import { FolderNotFoundError, type FolderRepository } from "./repository.js";
+import { FolderConflictError, FolderNotFoundError, type FolderRepository } from "./repository.js";
 
 const IdParamsSchema = z.object({ id: z.uuid() }).strict();
 const CreateSchema = CreateFolderInputSchema.strict();
 const PatchSchema = z.object({ name: CreateFolderInputSchema.shape.name }).strict();
+const EmptyQuerySchema = z.object({}).strict();
+const NoBodySchema = z.undefined();
 
 function invalid(reply: { code: (status: number) => { send: (body: unknown) => unknown } }) {
   return reply.code(400).send({ code: "INVALID_REQUEST" });
 }
 
-function sameCreation(existing: z.infer<typeof FolderSchema>, input: z.infer<typeof CreateSchema>): boolean {
-  return existing.name === input.name
-    && existing.createdAt === new Date(input.clientCreatedAt).toISOString().replace(/\.(\d{3})\d*Z$/, ".$1Z");
+function hasUnexpectedBody(request: FastifyRequest): boolean {
+  const length = request.headers["content-length"];
+  return request.body !== undefined || request.headers["transfer-encoding"] !== undefined || (typeof length === "string" && Number(length) > 0);
 }
 
 export function registerFolderRoutes(app: FastifyInstance, options: {
   folders: FolderRepository;
-  preHandler: preHandlerHookHandler;
+  onRequest: onRequestHookHandler;
   now?: () => Date;
 }): void {
   const now = options.now ?? (() => new Date());
 
-  app.get("/api/folders", { preHandler: options.preHandler }, async (_request, reply) => reply.send(options.folders.list()));
+  app.get("/api/folders", { onRequest: options.onRequest }, async (request, reply) => {
+    if (!EmptyQuerySchema.safeParse(request.query).success || !NoBodySchema.safeParse(request.body).success || hasUnexpectedBody(request)) return invalid(reply);
+    return reply.send(options.folders.list());
+  });
 
-  app.post("/api/folders", { preHandler: options.preHandler }, async (request, reply) => {
+  app.post("/api/folders", { onRequest: options.onRequest }, async (request, reply) => {
     const parsed = CreateSchema.safeParse(request.body);
     if (!parsed.success) return invalid(reply);
-    const existing = options.folders.get(parsed.data.id);
-    if (existing) {
-      return sameCreation(existing, parsed.data)
-        ? reply.code(200).send(FolderSchema.parse(existing))
-        : reply.code(409).send({ code: "FOLDER_CONFLICT" });
-    }
     try {
-      return reply.code(201).send(FolderSchema.parse(options.folders.create(parsed.data)));
+      const result = options.folders.createOrReplay(parsed.data);
+      return reply.code(result.created ? 201 : 200).send(FolderSchema.parse(result.folder));
     } catch (error) {
+      if (error instanceof FolderConflictError) return reply.code(409).send({ code: "FOLDER_CONFLICT" });
       if (isUniqueError(error)) return reply.code(409).send({ code: "FOLDER_NAME_CONFLICT" });
       throw error;
     }
   });
 
-  app.patch("/api/folders/:id", { preHandler: options.preHandler }, async (request, reply) => {
+  app.patch("/api/folders/:id", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
     const patch = PatchSchema.safeParse(request.body);
     if (!params.success || !patch.success) return invalid(reply);
@@ -56,9 +57,9 @@ export function registerFolderRoutes(app: FastifyInstance, options: {
     }
   });
 
-  app.delete("/api/folders/:id", { preHandler: options.preHandler }, async (request, reply) => {
+  app.delete("/api/folders/:id", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
-    if (!params.success) return invalid(reply);
+    if (!params.success || !EmptyQuerySchema.safeParse(request.query).success || !NoBodySchema.safeParse(request.body).success || hasUnexpectedBody(request)) return invalid(reply);
     try {
       options.folders.remove(params.data.id, now().toISOString());
       return reply.code(204).send();

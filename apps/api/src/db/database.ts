@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { CreateMeetingInputSchema } from "@meeting/contracts";
 import Database from "better-sqlite3";
 
-export const CURRENT_DATABASE_VERSION = 2;
+export const CURRENT_DATABASE_VERSION = 3;
 
 const IsoDateTimeSchema = CreateMeetingInputSchema.shape.clientCreatedAt;
 const ActiveStatuses = "'draft', 'recording', 'recoverable', 'uploading', 'processing', 'ready', 'failed'";
@@ -12,6 +12,7 @@ const AllStatuses = `${ActiveStatuses}, 'trashed'`;
 const migrations = [
   { version: 1, migrate: migrateVersionZero },
   { version: 2, migrate: migrateVersionTwo },
+  { version: 3, migrate: migrateVersionThree },
 ];
 
 export function canonicalizeTimestamp(value: string): string {
@@ -101,6 +102,37 @@ function migrateVersionTwo(db: Database.Database): void {
       CREATE INDEX sessions_expires_at_idx ON sessions (expires_at);
     `);
     db.pragma("user_version = 2");
+  })();
+}
+
+function migrateVersionThree(db: Database.Database): void {
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE meeting_creation_requests (
+        meeting_id TEXT PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        folder_id TEXT,
+        client_created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE folder_creation_requests (
+        folder_id TEXT PRIMARY KEY REFERENCES folders(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        client_created_at TEXT NOT NULL
+      );
+    `);
+    const meetingColumns = legacyColumns(db, "meetings");
+    const folderColumns = legacyColumns(db, "folders");
+    db.exec(`
+      INSERT INTO meeting_creation_requests (meeting_id, title, folder_id, client_created_at)
+      SELECT id, title, ${column(meetingColumns, "folder_id", "NULL")}, ${canonicalColumn(meetingColumns, "created_at", "'1970-01-01T00:00:00.000Z'")}
+      FROM meetings;
+
+      INSERT INTO folder_creation_requests (folder_id, name, client_created_at)
+      SELECT id, name, ${canonicalColumn(folderColumns, "created_at", "'1970-01-01T00:00:00.000Z'")}
+      FROM folders;
+    `);
+    db.pragma("user_version = 3");
   })();
 }
 

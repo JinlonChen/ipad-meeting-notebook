@@ -1,11 +1,27 @@
 import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 
-import { buildApp } from "./app.js";
-import { loadConfig } from "./config.js";
+import type { FastifyInstance } from "fastify";
 
-export async function start() {
-  const config = loadConfig();
-  const app = await buildApp({
+import { buildApp, type BuildAppOptions } from "./app.js";
+import { loadConfig, type Config } from "./config.js";
+
+export type ServerDependencies = {
+  loadConfig: () => Config;
+  buildApp: (options: BuildAppOptions) => Promise<FastifyInstance>;
+};
+
+type SignalTarget = {
+  exitCode?: string | number | null | undefined;
+  once(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+  removeListener(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+};
+
+const defaults: ServerDependencies = { loadConfig, buildApp };
+
+export async function start(dependencies: ServerDependencies = defaults): Promise<FastifyInstance> {
+  const config = dependencies.loadConfig();
+  const app = await dependencies.buildApp({
     databasePath: config.databasePath,
     adminPassword: config.adminPassword,
     cookieSecure: config.cookieSecure,
@@ -19,16 +35,31 @@ export async function start() {
   }
 }
 
-async function run(): Promise<void> {
-  const app = await start();
-  const close = () => void app.close();
-  process.once("SIGINT", close);
-  process.once("SIGTERM", close);
+export function installShutdownHandlers(app: FastifyInstance, target: SignalTarget = process): () => void {
+  const close = () => { void app.close(); };
+  target.once("SIGINT", close);
+  target.once("SIGTERM", close);
+  return () => {
+    target.removeListener("SIGINT", close);
+    target.removeListener("SIGTERM", close);
+  };
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  void run().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : "Unable to start API server");
-    process.exitCode = 1;
-  });
+export async function run(
+  dependencies: ServerDependencies = defaults,
+  target: SignalTarget = process,
+  log: (message: string) => void = console.error,
+): Promise<{ app: FastifyInstance; removeShutdownHandlers: () => void }> {
+  try {
+    const app = await start(dependencies);
+    return { app, removeShutdownHandlers: installShutdownHandlers(app, target) };
+  } catch (error) {
+    target.exitCode = 1;
+    log("Unable to start API server");
+    throw error;
+  }
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  void run().catch(() => undefined);
 }

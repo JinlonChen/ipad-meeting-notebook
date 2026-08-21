@@ -29,6 +29,30 @@ describe("meeting routes", () => {
     }
   });
 
+  test("authenticates before JSON parsing and rejects unexpected input on no-input endpoints", async () => {
+    const server = await createTestApp();
+    try {
+      const malformed = { method: "POST" as const, url: "/api/meetings", payload: "{", headers: { "content-type": "application/json" } };
+      expect(await server.inject(malformed)).toMatchObject({ statusCode: 401, body: '{"code":"AUTH_REQUIRED"}' });
+      const cookie = await login(server);
+      expect(await server.inject({ ...malformed, headers: { ...malformed.headers, cookie } })).toMatchObject({ statusCode: 400, body: '{"code":"INVALID_REQUEST"}' });
+
+      for (const request of [
+        { method: "GET" as const, url: "/api/meetings?extra=true" },
+        { method: "GET" as const, url: "/api/meetings", payload: { extra: true }, headers: { "content-type": "application/json", "content-length": "14" } },
+        { method: "DELETE" as const, url: `/api/meetings/${MEETING_ONE}?extra=true` },
+        { method: "DELETE" as const, url: `/api/meetings/${MEETING_ONE}`, payload: { extra: true }, headers: { "content-type": "application/json", "content-length": "14" } },
+        { method: "POST" as const, url: `/api/meetings/${MEETING_ONE}/restore?extra=true` },
+        { method: "POST" as const, url: `/api/meetings/${MEETING_ONE}/restore`, payload: { extra: true }, headers: { "content-type": "application/json", "content-length": "14" } },
+      ]) {
+        const response = await server.inject({ ...request, headers: { ...request.headers, cookie } });
+        expect(response).toMatchObject({ statusCode: 400, body: '{"code":"INVALID_REQUEST"}' });
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
   test("creates idempotently, returns conflicts, and validates its response contract", async () => {
     const server = await createTestApp();
     try {
@@ -45,6 +69,13 @@ describe("meeting routes", () => {
       const conflict = await server.inject({ method: "POST", url: "/api/meetings", headers: { cookie }, payload: { ...input, title: "Other" } });
       expect(conflict.statusCode).toBe(409);
       expect(conflict.json()).toEqual({ code: "MEETING_CONFLICT" });
+
+      const updated = await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_ONE}`, headers: { cookie }, payload: { title: "Renamed" } });
+      expect(updated.statusCode).toBe(200);
+      const replay = await server.inject({ method: "POST", url: "/api/meetings", headers: { cookie }, payload: input });
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json()).toMatchObject({ title: "Renamed" });
+      expect((await server.inject({ method: "POST", url: "/api/meetings", headers: { cookie }, payload: { ...input, clientCreatedAt: "2026-08-20T10:00:01.000Z" } })).json()).toEqual({ code: "MEETING_CONFLICT" });
     } finally {
       await server.close();
     }
