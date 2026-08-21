@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 
 import { authApi, AuthApiError, AuthNetworkError, type AuthApi } from "../auth/api.js";
@@ -9,6 +9,8 @@ import { MeetingCatalogRepository } from "../meetings/repository.js";
 import { CatalogSync, type SyncResult } from "../meetings/sync.js";
 
 const defaultRepository = new MeetingCatalogRepository();
+const defaultAuth = authApi();
+const defaultNow = () => new Date().toISOString();
 
 type Props = {
   repository?: MeetingCatalogRepository;
@@ -26,29 +28,50 @@ function isUnauthorized(error: unknown): boolean {
   return error instanceof AuthApiError ? error.status === 401 : typeof error === "object" && error !== null && "status" in error && error.status === 401;
 }
 
-export function App({ repository = defaultRepository, auth = authApi(), synchronizer: injectedSynchronizer, now = () => new Date().toISOString() }: Props) {
+export function App({ repository = defaultRepository, auth = defaultAuth, synchronizer: injectedSynchronizer, now = defaultNow }: Props) {
   const localSynchronizer = useMemo(() => new CatalogSync(repository, new MeetingCatalogHttpApi()), [repository]);
   const synchronizer = injectedSynchronizer ?? localSynchronizer;
   const syncRefresh = useCallback(() => synchronizer.refresh(), [synchronizer]);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [gate, setGate] = useState<Gate>("loading");
+  const mounted = useRef(true);
+  const generation = useRef(0);
+  const nextGeneration = useCallback(() => ++generation.current, []);
+  const owns = useCallback((value: number) => mounted.current && generation.current === value, []);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      generation.current += 1;
+    };
+  }, []);
 
   const authorize = useCallback(async () => {
+    const currentGeneration = nextGeneration();
     try {
       const session = await auth.me();
-      await repository.authorizeDevice(session.sessionExpiresAt, now());
+      if (!owns(currentGeneration)) return;
+      const access = await repository.authorizeDevice(session.sessionExpiresAt, now());
+      if (!owns(currentGeneration)) {
+        await repository.clearDeviceAccess(access);
+        return;
+      }
       setOnline(true);
       setGate("catalog");
     } catch (error) {
+      if (!owns(currentGeneration)) return;
       if (isUnauthorized(error)) { setGate("login"); return; }
       if (error instanceof AuthNetworkError) {
         setOnline(false);
-        setGate(await repository.hasDeviceAccess(now()) ? "catalog" : "offline-lock");
+        const hasAccess = await repository.hasDeviceAccess(now());
+        if (!owns(currentGeneration)) return;
+        setGate(hasAccess ? "catalog" : "offline-lock");
         return;
       }
       setGate("error");
     }
-  }, [auth, now, repository]);
+  }, [auth, nextGeneration, now, owns, repository]);
 
   useEffect(() => { void authorize(); }, [authorize]);
   useEffect(() => {
@@ -60,12 +83,19 @@ export function App({ repository = defaultRepository, auth = authApi(), synchron
   }, [authorize]);
 
   const login = useCallback(async (password: string) => {
+    const currentGeneration = nextGeneration();
     await auth.login(password);
+    if (!owns(currentGeneration)) return;
     const session = await auth.me();
-    await repository.authorizeDevice(session.sessionExpiresAt, now());
+    if (!owns(currentGeneration)) return;
+    const access = await repository.authorizeDevice(session.sessionExpiresAt, now());
+    if (!owns(currentGeneration)) {
+      await repository.clearDeviceAccess(access);
+      return;
+    }
     synchronizer.resumeAfterLogin();
     setGate("catalog");
-  }, [auth, now, repository, synchronizer]);
+  }, [auth, nextGeneration, now, owns, repository, synchronizer]);
   const guardedRefresh = useCallback(async () => {
     const result = await syncRefresh();
     if (result.state === "paused_auth") {
@@ -75,10 +105,12 @@ export function App({ repository = defaultRepository, auth = authApi(), synchron
     return result;
   }, [repository, syncRefresh]);
   const logout = useCallback(async () => {
+    nextGeneration();
+    if (mounted.current) setGate("login");
+    const clear = repository.clearDeviceAccess();
     try { await auth.logout(); } catch { /* User intent takes precedence while offline. */ }
-    await repository.clearDeviceAccess();
-    setGate("login");
-  }, [auth, repository]);
+    await clear;
+  }, [auth, nextGeneration, repository]);
 
   if (gate === "loading") return <main className="gate-loading" role="status">正在验证访问权限...</main>;
   if (gate === "login" || gate === "offline-lock") return <LoginPage onLogin={login} offline={gate === "offline-lock"} />;

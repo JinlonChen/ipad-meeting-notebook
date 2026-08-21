@@ -12,10 +12,23 @@ function failure(response: Response): CatalogApiError {
   return new CatalogApiError(response.status, "REQUEST_FAILED");
 }
 
+function normalizedFailure(error: unknown, status = 0): CatalogApiError {
+  return error instanceof CatalogApiError ? error : new CatalogApiError(status, "REQUEST_FAILED");
+}
+
 async function parsed<T>(request: Promise<Response>, schema: z.ZodType<T>): Promise<T> {
-  const response = await request;
+  let response: Response;
+  try {
+    response = await request;
+  } catch (error) {
+    throw normalizedFailure(error);
+  }
   if (!response.ok) throw failure(response);
-  return schema.parse(await response.json());
+  try {
+    return schema.parse(await response.json());
+  } catch (error) {
+    throw normalizedFailure(error, response.status);
+  }
 }
 
 export class MeetingCatalogHttpApi implements MeetingCatalogApi {
@@ -27,7 +40,8 @@ export class MeetingCatalogHttpApi implements MeetingCatalogApi {
       credentials: "include",
       ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
     });
-    switch (operation.kind) {
+    try {
+      switch (operation.kind) {
       case "meeting.create":
         return { meeting: await parsed(this.fetcher("/api/meetings", init("POST", CreateMeetingInputSchema.parse(operation.payload))), MeetingSchema) };
       case "meeting.rename":
@@ -45,14 +59,25 @@ export class MeetingCatalogHttpApi implements MeetingCatalogApi {
         if (!response.ok) throw failure(response);
         return {};
       }
+      }
+    } catch (error) {
+      throw normalizedFailure(error);
     }
   }
 
-  listMeetings(): Promise<Meeting[]> {
-    return parsed(this.fetcher("/api/meetings?includeTrashed=true", { credentials: "include" }), z.array(MeetingSchema));
+  async listMeetings(): Promise<Meeting[]> {
+    try {
+      return await parsed(this.fetcher("/api/meetings?includeTrashed=true", { credentials: "include" }), z.array(MeetingSchema));
+    } catch (error) {
+      throw normalizedFailure(error);
+    }
   }
 
-  listFolders(): Promise<Folder[]> {
-    return parsed(this.fetcher("/api/folders", { credentials: "include" }), z.array(FolderSchema));
+  async listFolders(): Promise<Folder[]> {
+    try {
+      return await parsed(this.fetcher("/api/folders", { credentials: "include" }), z.array(FolderSchema));
+    } catch (error) {
+      throw normalizedFailure(error);
+    }
   }
 }

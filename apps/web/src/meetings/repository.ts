@@ -15,6 +15,11 @@ const MeetingTitleSchema = z.string().trim().min(1).max(120);
 const FolderNameSchema = z.string().trim().min(1).max(80);
 const IsoTimestampSchema = z.iso.datetime();
 const DeviceAccessSchema = z.object({ authorizedAt: IsoTimestampSchema, expiresAt: IsoTimestampSchema }).strict();
+const RestoreStatusSchema = z.enum(["draft", "recording", "recoverable", "uploading", "processing", "ready", "failed"]);
+
+function restoreSettingKey(meetingId: string): string {
+  return `meetingRestore:${meetingId}`;
+}
 
 export class MeetingNotFoundError extends Error {
   constructor(id: string) {
@@ -153,17 +158,21 @@ export class MeetingCatalogRepository {
   private async setTrashed(id: string, now: string, trashed: boolean): Promise<Meeting> {
     const meetingId = MeetingIdSchema.parse(id);
     const updatedAt = timestamp(now);
-    return this.db.transaction("rw", this.db.meetings, this.db.outbox, async () => {
+    return this.db.transaction("rw", this.db.meetings, this.db.outbox, this.db.settings, async () => {
       const current = await this.db.meetings.get(meetingId);
       if (!current) throw new MeetingNotFoundError(meetingId);
       if ((current.status === "trashed") === trashed) return current;
+      const settingKey = restoreSettingKey(meetingId);
+      const prior = RestoreStatusSchema.safeParse((await this.db.settings.get(settingKey))?.value);
       const meeting = MeetingSchema.parse({
         ...current,
-        status: trashed ? "trashed" : "draft",
+        status: trashed ? "trashed" : (prior.success ? prior.data : "draft"),
         trashedAt: trashed ? updatedAt : null,
         updatedAt,
         syncVersion: current.syncVersion + 1,
       });
+      if (trashed) await this.db.settings.put({ key: settingKey, value: current.status });
+      else await this.db.settings.delete(settingKey);
       await this.db.meetings.put(meeting);
       await this.enqueueOutbox(operation(trashed ? "meeting.trash" : "meeting.restore", meetingId, { updatedAt }, updatedAt));
       return meeting;
@@ -210,8 +219,13 @@ export class MeetingCatalogRepository {
     return access.success && timestamp(now) < timestamp(access.data.expiresAt);
   }
 
-  async clearDeviceAccess(): Promise<void> {
-    await this.db.settings.delete("deviceAccess");
+  async clearDeviceAccess(expected?: DeviceAccess): Promise<void> {
+    await this.db.transaction("rw", this.db.settings, async () => {
+      const current = DeviceAccessSchema.safeParse((await this.db.settings.get("deviceAccess"))?.value);
+      if (!expected || (current.success && current.data.authorizedAt === expected.authorizedAt && current.data.expiresAt === expected.expiresAt)) {
+        await this.db.settings.delete("deviceAccess");
+      }
+    });
   }
 
   async syncApplySuccessfulOperation(operationToApply: OutboxOperation, response: { meeting?: unknown; folder?: unknown }): Promise<void> {

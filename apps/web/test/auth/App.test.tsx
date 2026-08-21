@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -22,6 +23,12 @@ function api(overrides: Partial<AuthApi> = {}): AuthApi {
 function synchronizer(state: "idle" | "paused_auth" | "conflict" | "error" = "idle") {
   return { refresh: vi.fn().mockResolvedValue({ state }), resumeAfterLogin: vi.fn() };
 }
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => { resolve = nextResolve; reject = nextReject; });
+  return { promise, resolve, reject };
+}
 afterEach(async () => { await Promise.all(repositories.splice(0).map((item) => item.deleteDatabase())); });
 
 describe("App session gate", () => {
@@ -31,6 +38,13 @@ describe("App session gate", () => {
 
     await screen.findByRole("heading", { name: "会议本" });
     await expect(catalog.hasDeviceAccess(now)).resolves.toBe(true);
+  });
+
+  test("keeps authorization active through StrictMode's effect restart", async () => {
+    const catalog = repository();
+    render(<StrictMode><App repository={catalog} auth={api()} synchronizer={synchronizer()} now={() => now} /></StrictMode>);
+
+    await screen.findByRole("heading", { name: "会议本" });
   });
 
   test("keeps an unexpired local marker available offline but keeps expired access behind the login gate", async () => {
@@ -129,5 +143,61 @@ describe("App session gate", () => {
     await user.click(screen.getByRole("button", { name: "退出" }));
     await screen.findByRole("heading", { name: "登录会议本" });
     await expect(catalog.list()).resolves.toMatchObject([{ title: "保留的会议" }]);
+  });
+
+  test("logout invalidates an older authorization and leaves no device marker after it succeeds", async () => {
+    const user = userEvent.setup();
+    const catalog = repository();
+    const stale = deferred<{ id: string; sessionExpiresAt: string }>();
+    const auth = api({ me: vi.fn().mockResolvedValueOnce({ id: "owner", sessionExpiresAt: expiry }).mockImplementationOnce(() => stale.promise) });
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
+
+    await screen.findByRole("heading", { name: "会议本" });
+    window.dispatchEvent(new Event("online"));
+    await waitFor(() => expect(auth.me).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByRole("button", { name: "退出" }));
+    stale.resolve({ id: "owner", sessionExpiresAt: expiry });
+
+    await screen.findByRole("heading", { name: "登录会议本" });
+    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(false);
+  });
+
+  test("does not let an old authorization clear a newer login marker", async () => {
+    const user = userEvent.setup();
+    const catalog = repository();
+    const stale = deferred<{ id: string; sessionExpiresAt: string }>();
+    const auth = api({
+      me: vi.fn()
+        .mockRejectedValueOnce(new AuthApiError(401, "AUTH_REQUIRED"))
+        .mockImplementationOnce(() => stale.promise)
+        .mockResolvedValueOnce({ id: "owner", sessionExpiresAt: expiry }),
+    });
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
+
+    await screen.findByRole("heading", { name: "登录会议本" });
+    window.dispatchEvent(new Event("online"));
+    await waitFor(() => expect(auth.me).toHaveBeenCalledTimes(2));
+    await user.type(screen.getByLabelText("密码"), "private-secret");
+    await user.click(screen.getByRole("button", { name: "登录" }));
+    await screen.findByRole("heading", { name: "会议本" });
+    stale.resolve({ id: "owner", sessionExpiresAt: now });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(async () => expect(await catalog.hasDeviceAccess(now)).toBe(true));
+  });
+
+  test("does not commit a deferred authorization after unmount", async () => {
+    const catalog = repository();
+    const pending = deferred<{ id: string; sessionExpiresAt: string }>();
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const rendered = render(<App repository={catalog} auth={api({ me: vi.fn().mockImplementation(() => pending.promise) })} synchronizer={synchronizer()} now={() => now} />);
+
+    rendered.unmount();
+    pending.resolve({ id: "owner", sessionExpiresAt: expiry });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(error).not.toHaveBeenCalled();
+    error.mockRestore();
   });
 });

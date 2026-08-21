@@ -58,4 +58,15 @@ describe("MeetingCatalogHttpApi", () => {
     await expect(api.listFolders()).rejects.toEqual(new CatalogApiError(409, "CONFLICT"));
     await expect(api.listFolders()).rejects.toThrow();
   });
+
+  test("normalizes transport, JSON and schema failures to fixed catalog errors", async () => {
+    const api = new MeetingCatalogHttpApi(vi.fn()
+      .mockRejectedValueOnce(new TypeError("network endpoint leaked"))
+      .mockResolvedValueOnce(new Response("not-json", { status: 200 }))
+      .mockResolvedValueOnce(response([{ invalid: true }])));
+
+    await expect(api.listFolders()).rejects.toMatchObject({ name: "CatalogApiError", status: 0, code: "REQUEST_FAILED" });
+    await expect(api.listFolders()).rejects.toMatchObject({ name: "CatalogApiError", status: 200, code: "REQUEST_FAILED" });
+    await expect(api.listFolders()).rejects.toMatchObject({ name: "CatalogApiError", status: 200, code: "REQUEST_FAILED" });
+  });
 });

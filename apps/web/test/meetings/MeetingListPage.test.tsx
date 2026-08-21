@@ -16,6 +16,12 @@ function catalog(): MeetingCatalogRepository {
   repositories.push(result);
   return result;
 }
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => { resolve = nextResolve; reject = nextReject; });
+  return { promise, resolve, reject };
+}
 
 function renderPage(repository = catalog(), initialEntries = ["/meetings"]) {
   const refresh = async () => ({ state: "idle" as const });
@@ -47,6 +53,18 @@ describe("MeetingListPage", () => {
     render(<MemoryRouter><MeetingListPage repository={catalog()} refresh={async () => ({ state: "idle" })} now={() => now} online /></MemoryRouter>);
     expect(await screen.findByRole("main")).toHaveAttribute("data-layout", "landscape");
     await screen.findByText("还没有会议");
+  });
+
+  test("uses the portrait drawer at tablet portrait widths and keeps the rail in landscape", async () => {
+    for (const [width, height] of [[820, 1180], [834, 1194], [1024, 1366]]) {
+      Object.defineProperties(window, { innerWidth: { configurable: true, value: width }, innerHeight: { configurable: true, value: height } });
+      const rendered = render(<MemoryRouter><MeetingListPage repository={catalog()} refresh={async () => ({ state: "idle" })} now={() => now} online={false} /></MemoryRouter>);
+      expect(await screen.findByRole("main")).toHaveAttribute("data-layout", "portrait");
+      rendered.unmount();
+    }
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 1024 }, innerHeight: { configurable: true, value: 744 } });
+    render(<MemoryRouter><MeetingListPage repository={catalog()} refresh={async () => ({ state: "idle" })} now={() => now} online={false} /></MemoryRouter>);
+    expect(await screen.findByRole("main")).toHaveAttribute("data-layout", "landscape");
   });
 
   test("creates locally, validates dialog input, searches, and opens the workspace placeholder", async () => {
@@ -90,17 +108,17 @@ describe("MeetingListPage", () => {
     expect((await repository.pendingOperations()).filter((operation) => operation.kind.startsWith("folder."))).toHaveLength(3);
 
     await user.click(screen.getByRole("button", { name: "会议操作 待整理" }));
-    await user.click(screen.getByRole("button", { name: "重命名" }));
+    await user.click(screen.getByRole("menuitem", { name: "重命名" }));
     const meetingName = screen.getByLabelText("会议名称");
     await user.clear(meetingName); await user.type(meetingName, "已整理");
     await user.click(screen.getByRole("button", { name: "保存" }));
     await screen.findByText("已整理");
     await user.click(screen.getByRole("button", { name: "会议操作 已整理" }));
-    await user.click(screen.getByRole("button", { name: "移至废纸篓" }));
+    await user.click(screen.getByRole("menuitem", { name: "移至废纸篓" }));
     await user.click(screen.getByRole("button", { name: "废纸篓" }));
     await screen.findByText("已整理");
     await user.click(screen.getByRole("button", { name: "会议操作 已整理" }));
-    await user.click(screen.getByRole("button", { name: "恢复" }));
+    await user.click(screen.getByRole("menuitem", { name: "恢复" }));
     await user.click(screen.getByRole("button", { name: "全部会议" }));
     await screen.findByText("已整理");
   });
@@ -137,6 +155,119 @@ describe("MeetingListPage", () => {
     resolveMeetings?.([]); resolveFolders?.([]);
     await screen.findByText("还没有会议");
     list.mockRestore(); listFolders.mockRestore();
+  });
+
+  test("only commits the newest reload when an older reload resolves last", async () => {
+    const repository = catalog();
+    const fresh = await repository.create("新的结果", null, now);
+    const firstMeetings = deferred<typeof fresh[]>();
+    const firstFolders = deferred<never[]>();
+    let listCalls = 0;
+    let folderCalls = 0;
+    vi.spyOn(repository, "list").mockImplementation(() => ++listCalls === 1 ? firstMeetings.promise : Promise.resolve([fresh]));
+    vi.spyOn(repository, "listFolders").mockImplementation(() => ++folderCalls === 1 ? firstFolders.promise : Promise.resolve([]));
+    const refresh = vi.fn().mockResolvedValue({ state: "idle" as const });
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={refresh} now={() => now} online /></MemoryRouter>);
+
+    await screen.findByText("新的结果");
+    firstMeetings.resolve([]); firstFolders.resolve([]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(() => expect(screen.getByText("新的结果")).toBeVisible());
+  });
+
+  test("prevents duplicate folder creation and keeps a failed form open for retry", async () => {
+    const user = userEvent.setup();
+    const repository = renderPage();
+    const pending = deferred<Awaited<ReturnType<MeetingCatalogRepository["createFolder"]>>>();
+    const createFolder = vi.spyOn(repository, "createFolder").mockImplementationOnce(() => pending.promise);
+    await screen.findByRole("heading", { name: "会议本" });
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    await user.type(screen.getByLabelText("分类名称"), "工作");
+    const create = screen.getByRole("button", { name: "创建" });
+    fireEvent.click(create);
+    fireEvent.click(create);
+    expect(createFolder).toHaveBeenCalledTimes(1);
+    pending.reject(new Error("write failed"));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("dialog", { name: "新建分类" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "创建" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "创建" }));
+    await screen.findByRole("button", { name: "工作" });
+  });
+
+  test("does not commit deferred catalog loading after unmount", async () => {
+    const repository = catalog();
+    const meetings = deferred<never[]>();
+    const folders = deferred<never[]>();
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(repository, "list").mockImplementation(() => meetings.promise);
+    vi.spyOn(repository, "listFolders").mockImplementation(() => folders.promise);
+    const rendered = render(<MemoryRouter><MeetingListPage repository={repository} refresh={async () => ({ state: "idle" })} now={() => now} online={false} /></MemoryRouter>);
+
+    await screen.findByText("正在载入会议...");
+    rendered.unmount();
+    meetings.resolve([]); folders.resolve([]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(error).not.toHaveBeenCalled();
+    error.mockRestore();
+  });
+
+  test("shows recoverable errors for folder removal, restore, and manual synchronization", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    const folder = await repository.createFolder("工作", now);
+    const meeting = await repository.create("待恢复", null, now);
+    await repository.trash(meeting.id, "2026-08-21T00:01:00.000Z");
+    const refresh = vi.fn().mockResolvedValueOnce({ state: "idle" as const }).mockRejectedValueOnce(new Error("sync failed")).mockResolvedValue({ state: "idle" as const });
+    const removeFolder = vi.spyOn(repository, "removeFolder").mockRejectedValueOnce(new Error("delete failed"));
+    const restore = vi.spyOn(repository, "restore").mockRejectedValueOnce(new Error("restore failed"));
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={refresh} now={() => now} online /></MemoryRouter>);
+    await screen.findByRole("button", { name: "删除分类 工作" });
+
+    await user.click(screen.getByRole("button", { name: "删除分类 工作" }));
+    await user.click(screen.getByRole("button", { name: "删除" }));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("alertdialog", { name: "删除分类？" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "删除" }));
+    await waitFor(() => expect(removeFolder).toHaveBeenCalledTimes(2));
+
+    await user.click(screen.getByRole("button", { name: "废纸篓" }));
+    await user.click(screen.getByRole("button", { name: "会议操作 待恢复" }));
+    await user.click(screen.getByRole("menuitem", { name: "恢复" }));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("menuitem", { name: "恢复" })).toBeVisible();
+    await user.click(screen.getByRole("menuitem", { name: "恢复" }));
+    await user.click(screen.getByRole("button", { name: "全部会议" }));
+    await screen.findByText("待恢复");
+
+    await user.click(screen.getByRole("button", { name: "同步会议" }));
+    await screen.findByText("同步出错");
+    await user.click(screen.getByRole("button", { name: "同步会议" }));
+    await screen.findByText("已同步");
+  });
+
+  test("provides menu and dialog keyboard relationships", async () => {
+    const user = userEvent.setup();
+    const repository = renderPage();
+    const meeting = await repository.create("可操作", null, now);
+    await screen.findByRole("heading", { name: "会议本" });
+    await user.click(screen.getByRole("button", { name: "同步会议" }));
+    const trigger = await screen.findByRole("button", { name: "会议操作 可操作" });
+    expect(trigger).toHaveAttribute("aria-haspopup", "menu");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(trigger).toHaveAttribute("aria-controls", `meeting-menu-${meeting.id}`);
+    expect(screen.getByRole("menu")).toHaveAttribute("id", `meeting-menu-${meeting.id}`);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    expect(screen.getByRole("dialog", { name: "新建分类" })).toHaveAttribute("aria-modal", "true");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "新建分类" })).not.toBeInTheDocument();
   });
 
   test("filters folders and unfiled meetings, and renders one status with a duration", async () => {

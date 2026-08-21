@@ -82,6 +82,26 @@ describe("MeetingCatalogRepository", () => {
     expect((await catalog.pendingOperations()).filter((item) => item.kind === "meeting.trash" || item.kind === "meeting.restore")).toHaveLength(2);
   });
 
+  test("restores the prior active status and falls back to draft for remotely trashed meetings", async () => {
+    const catalog = repository();
+    const ready = {
+      id: crypto.randomUUID(), title: "Completed", folderId: null, status: "ready" as const,
+      startedAt: now, endedAt: "2026-08-21T00:30:00.000Z", createdAt: now, updatedAt: now, trashedAt: null, syncVersion: 1,
+    };
+    await catalog.syncRefresh([], [ready]);
+
+    await catalog.trash(ready.id, "2026-08-21T00:31:00.000Z");
+    const restored = await catalog.restore(ready.id, "2026-08-21T00:32:00.000Z");
+    expect(restored).toMatchObject({ status: "ready", trashedAt: null });
+    const restoreOperation = (await catalog.pendingOperations()).find((item) => item.kind === "meeting.restore")!;
+    await catalog.syncApplySuccessfulOperation(restoreOperation, { meeting: restored });
+    await expect(catalog.get(ready.id)).resolves.toMatchObject({ status: "ready" });
+
+    const remoteTrashed = { ...ready, id: crypto.randomUUID(), status: "trashed" as const, trashedAt: now };
+    await catalog.syncRefresh([], [remoteTrashed]);
+    await expect(catalog.restore(remoteTrashed.id, "2026-08-21T00:33:00.000Z")).resolves.toMatchObject({ status: "draft", trashedAt: null });
+  });
+
   test("filters a literal, case-insensitive search string", async () => {
     const catalog = repository();
     await catalog.create("100%_Done", null, now);
