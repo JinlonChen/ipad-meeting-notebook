@@ -31,9 +31,17 @@ export interface MeetingRepository {
   get(id: string): Meeting | null;
   list(query: { search: string; includeTrashed: boolean }): Meeting[];
   rename(id: string, title: string, now: string): Meeting;
+  update(id: string, patch: { title?: string | undefined; folderId?: string | null | undefined }, now: string): Meeting;
   trash(id: string, now: string): Meeting;
   restore(id: string, now: string): Meeting;
   purgeTrashedBefore(cutoff: string): number;
+}
+
+export class MeetingFolderNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Folder not found: ${id}`);
+    this.name = "MeetingFolderNotFoundError";
+  }
 }
 
 export class MeetingNotFoundError extends Error {
@@ -106,16 +114,39 @@ export class SqliteMeetingRepository implements MeetingRepository {
   }
 
   rename(id: string, title: string, now: string): Meeting {
+    return this.update(id, { title }, now);
+  }
+
+  update(id: string, patch: { title?: string | undefined; folderId?: string | null | undefined }, now: string): Meeting {
     const meetingId = MeetingIdSchema.parse(id);
-    const normalizedTitle = MeetingTitleSchema.parse(title);
+    const value = z.object({
+      title: MeetingTitleSchema.optional(),
+      folderId: MeetingIdSchema.nullable().optional(),
+    }).strict().refine((candidate) => candidate.title !== undefined || candidate.folderId !== undefined).parse(patch);
     const timestamp = canonicalizeTimestamp(now);
-    const result = this.db.prepare(`
-      UPDATE meetings
-      SET title = ?, updated_at = ?, sync_version = sync_version + 1
-      WHERE id = ?
-    `).run(normalizedTitle, timestamp, meetingId);
-    if (result.changes === 0) throw new MeetingNotFoundError(meetingId);
-    return this.require(meetingId);
+    return this.db.transaction(() => {
+      if (!this.get(meetingId)) throw new MeetingNotFoundError(meetingId);
+      if (value.folderId && !this.db.prepare("SELECT 1 FROM folders WHERE id = ?").get(value.folderId)) {
+        throw new MeetingFolderNotFoundError(value.folderId);
+      }
+      const fields: string[] = [];
+      const parameters: (string | null)[] = [];
+      if (value.title !== undefined) {
+        fields.push("title = ?");
+        parameters.push(value.title);
+      }
+      if (value.folderId !== undefined) {
+        fields.push("folder_id = ?");
+        parameters.push(value.folderId);
+      }
+      const row = this.db.prepare(`
+        UPDATE meetings
+        SET ${fields.join(", ")}, updated_at = ?, sync_version = sync_version + 1
+        WHERE id = ?
+        RETURNING *
+      `).get(...parameters, timestamp, meetingId) as MeetingRow;
+      return mapMeeting(row);
+    }).immediate();
   }
 
   trash(id: string, now: string): Meeting {

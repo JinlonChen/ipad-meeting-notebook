@@ -22,6 +22,7 @@ type FolderRow = {
 
 export interface FolderRepository {
   create(input: CreateFolderInput): Folder;
+  get(id: string): Folder | null;
   list(): Folder[];
   rename(id: string, name: string, now: string): Folder;
   remove(id: string, now: string): void;
@@ -56,6 +57,12 @@ export class SqliteFolderRepository implements FolderRepository {
       ON CONFLICT(id) DO NOTHING
     `).run(value.id, value.name, clientCreatedAt, clientCreatedAt);
     return this.require(value.id);
+  }
+
+  get(id: string): Folder | null {
+    const folderId = FolderIdSchema.parse(id);
+    const row = this.db.prepare("SELECT * FROM folders WHERE id = ?").get(folderId) as FolderRow | undefined;
+    return row ? mapFolder(row) : null;
   }
 
   list(): Folder[] {
