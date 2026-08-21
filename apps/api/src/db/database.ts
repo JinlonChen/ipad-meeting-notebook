@@ -74,6 +74,9 @@ function migrateVersionZero(db: Database.Database): void {
 
       if (hasMeetings) db.exec("DROP TABLE meetings_legacy_v0");
       if (hasFolders) db.exec("DROP TABLE folders_legacy_v0");
+      if (db.prepare("PRAGMA foreign_key_check").get()) {
+        throw new Error("Foreign key check failed during database migration");
+      }
       db.pragma(`user_version = ${CURRENT_DATABASE_VERSION}`);
     })();
     migrated = true;
@@ -135,7 +138,13 @@ function column(columns: Set<string>, name: string, fallback: string): string {
 }
 
 function canonicalColumn(columns: Set<string>, name: string, fallback: string): string {
-  return `COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', ${column(columns, name, "NULL")}), ${fallback})`;
+  const value = column(columns, name, "NULL");
+  const fractionalSeconds = `CASE WHEN instr(${value}, '.') > 0
+    THEN replace(substr(${value}, instr(${value}, '.') + 1), 'Z', '')
+    ELSE '' END`;
+  return `COALESCE(CASE WHEN ${value} IS NOT NULL THEN
+    substr(${value}, 1, 19) || '.' || substr(${fractionalSeconds} || '000', 1, 3) || 'Z'
+  ELSE NULL END, ${fallback})`;
 }
 
 function copyLegacyFolders(db: Database.Database): void {
@@ -158,6 +167,7 @@ function copyLegacyMeetings(db: Database.Database): void {
   const rawStatus = column(columns, "status", "'draft'");
   const status = `CASE WHEN ${rawStatus} IN (${AllStatuses}) THEN ${rawStatus} ELSE 'draft' END`;
   const rawPriorStatus = column(columns, "status_before_trash", "NULL");
+  const rawFolderId = column(columns, "folder_id", "NULL");
   const rawSyncVersion = column(columns, "sync_version", "0");
   const createdAt = canonicalColumn(columns, "created_at", "'1970-01-01T00:00:00.000Z'");
   const updatedAt = canonicalColumn(columns, "updated_at", "'1970-01-01T00:00:00.000Z'");
@@ -177,7 +187,9 @@ function copyLegacyMeetings(db: Database.Database): void {
     ) SELECT
       ${column(columns, "id", "NULL")},
       ${column(columns, "title", "''")},
-      ${column(columns, "folder_id", "NULL")},
+      CASE WHEN ${rawFolderId} IS NOT NULL AND EXISTS (
+        SELECT 1 FROM folders WHERE id = ${rawFolderId}
+      ) THEN ${rawFolderId} ELSE NULL END,
       ${status},
       ${priorStatus},
       ${canonicalColumn(columns, "started_at", "NULL")},

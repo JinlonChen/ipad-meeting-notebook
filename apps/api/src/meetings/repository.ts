@@ -121,6 +121,24 @@ export class SqliteMeetingRepository implements MeetingRepository {
   trash(id: string, now: string): Meeting {
     const meetingId = MeetingIdSchema.parse(id);
     const timestamp = canonicalizeTimestamp(now);
+    return this.db.transaction(() => this.trashInTransaction(meetingId, timestamp)).immediate();
+  }
+
+  restore(id: string, now: string): Meeting {
+    const meetingId = MeetingIdSchema.parse(id);
+    const timestamp = canonicalizeTimestamp(now);
+    return this.db.transaction(() => this.restoreInTransaction(meetingId, timestamp)).immediate();
+  }
+
+  purgeTrashedBefore(cutoff: string): number {
+    const timestamp = canonicalizeTimestamp(cutoff);
+    return this.db.prepare(`
+      DELETE FROM meetings
+      WHERE status = 'trashed' AND trashed_at < ?
+    `).run(timestamp).changes;
+  }
+
+  private trashInTransaction(meetingId: string, timestamp: string): Meeting {
     const row = this.db.prepare(`
       UPDATE meetings
       SET status = 'trashed', status_before_trash = status, trashed_at = ?,
@@ -135,9 +153,7 @@ export class SqliteMeetingRepository implements MeetingRepository {
     throw new MeetingNotFoundError(meetingId);
   }
 
-  restore(id: string, now: string): Meeting {
-    const meetingId = MeetingIdSchema.parse(id);
-    const timestamp = canonicalizeTimestamp(now);
+  private restoreInTransaction(meetingId: string, timestamp: string): Meeting {
     const row = this.db.prepare(`
       UPDATE meetings
       SET status = COALESCE(status_before_trash, 'draft'), status_before_trash = NULL,
@@ -150,14 +166,6 @@ export class SqliteMeetingRepository implements MeetingRepository {
     const current = this.get(meetingId);
     if (current && current.status !== "trashed") return current;
     throw new MeetingNotFoundError(meetingId);
-  }
-
-  purgeTrashedBefore(cutoff: string): number {
-    const timestamp = canonicalizeTimestamp(cutoff);
-    return this.db.prepare(`
-      DELETE FROM meetings
-      WHERE status = 'trashed' AND trashed_at < ?
-    `).run(timestamp).changes;
   }
 
   private require(id: string): Meeting {

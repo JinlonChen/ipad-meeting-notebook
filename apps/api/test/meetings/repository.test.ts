@@ -184,12 +184,18 @@ describe("SqliteMeetingRepository", () => {
   test("rejects meetings whose folder does not exist", () => {
     const { meetings } = repository();
 
-    expect(() => meetings.create({
-      id: ID_ONE,
-      title: "Unlinked",
-      folderId: "00000000-0000-4000-8000-000000000099",
-      clientCreatedAt: CREATED_AT,
-    })).toThrow();
+    let error: unknown;
+    try {
+      meetings.create({
+        id: ID_ONE,
+        title: "Unlinked",
+        folderId: "00000000-0000-4000-8000-000000000099",
+        clientCreatedAt: CREATED_AT,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({ code: "SQLITE_CONSTRAINT_FOREIGNKEY" });
   });
 
   test("validates meeting inputs before reads or mutations and preserves typed not-found errors for valid IDs", () => {

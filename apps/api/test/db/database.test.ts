@@ -9,6 +9,7 @@ import { migrate, openDatabase } from "../../src/db/database.js";
 
 const FOLDER_ID = "00000000-0000-4000-8000-000000000021";
 const MEETING_ID = "00000000-0000-4000-8000-000000000022";
+const ORPHAN_MEETING_ID = "00000000-0000-4000-8000-000000000030";
 const CREATED_AT = "2026-08-20T10:00:00.000Z";
 
 describe("SQLite migrations", () => {
@@ -49,7 +50,8 @@ describe("SQLite migrations", () => {
         );
       `);
       db.prepare("INSERT INTO folders VALUES (?, 'Legacy', ?, ?)").run(FOLDER_ID, CREATED_AT, CREATED_AT);
-      db.prepare("INSERT INTO meetings VALUES (?, 'Legacy meeting', ?, 'trashed', NULL, NULL, ?, ?, ?)").run(MEETING_ID, FOLDER_ID, CREATED_AT, CREATED_AT, CREATED_AT);
+      db.prepare("INSERT INTO meetings VALUES (?, 'Legacy meeting', ?, 'trashed', NULL, NULL, ?, ?, ?)").run(MEETING_ID, FOLDER_ID, CREATED_AT, "2026-08-20T10:00:00.1239Z", CREATED_AT);
+      db.prepare("INSERT INTO meetings VALUES (?, 'Orphaned legacy meeting', ?, 'draft', NULL, NULL, ?, ?, NULL)").run(ORPHAN_MEETING_ID, "00000000-0000-4000-8000-000000000099", CREATED_AT, CREATED_AT);
 
       migrate(db);
 
@@ -60,6 +62,11 @@ describe("SQLite migrations", () => {
         status_before_trash: "draft",
         sync_version: 0,
       });
+      expect(db.prepare("SELECT updated_at FROM meetings WHERE id = ?").get(MEETING_ID)).toEqual({
+        updated_at: "2026-08-20T10:00:00.123Z",
+      });
+      expect(db.prepare("SELECT folder_id FROM meetings WHERE id = ?").get(ORPHAN_MEETING_ID)).toEqual({ folder_id: null });
+      expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
       expect(() => db.prepare("INSERT INTO meetings (id, title, status, created_at, updated_at, trashed_at) VALUES (?, 'Bad', 'draft', ?, ?, ?)").run("00000000-0000-4000-8000-000000000023", CREATED_AT, CREATED_AT, CREATED_AT)).toThrow();
     } finally {
       db.close();
