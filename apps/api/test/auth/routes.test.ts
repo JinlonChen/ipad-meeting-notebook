@@ -1,7 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import type Database from "better-sqlite3";
 
 import { buildApp } from "../../src/app.js";
 import { openDatabase } from "../../src/db/database.js";
@@ -77,17 +75,50 @@ describe("auth routes", () => {
     }
   });
 
-  test("closes its database handle when the app closes", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "meeting-auth-app-"));
-    const databasePath = join(directory, "session.sqlite");
-    const server = await buildApp({ databasePath, adminPassword: PASSWORD, cookieSecure: false });
+  test("closes its opened database handle when the app closes", async () => {
+    const tracked = trackedDatabase();
+    const server = await buildApp({
+      databasePath: ":memory:",
+      adminPassword: PASSWORD,
+      cookieSecure: false,
+      databaseFactory: () => tracked.database,
+    });
     try {
+      expect(tracked.closed()).toBe(false);
       await server.close();
-      const reopened = openDatabase(databasePath);
-      reopened.close();
+      expect(tracked.closed()).toBe(true);
     } finally {
       await server.close();
-      rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  test("closes an opened database when auth initialization fails", async () => {
+    const tracked = trackedDatabase();
+    await expect(buildApp({
+      databasePath: ":memory:",
+      adminPassword: PASSWORD,
+      cookieSecure: false,
+      databaseFactory: () => tracked.database,
+      authServiceFactory: async () => {
+        throw new Error("auth initialization failed");
+      },
+    })).rejects.toThrow("auth initialization failed");
+    expect(tracked.closed()).toBe(true);
+  });
 });
+
+function trackedDatabase(): { database: Database.Database; closed: () => boolean } {
+  const database = openDatabase(":memory:");
+  let closed = false;
+  const proxy = new Proxy(database, {
+    get(target, property, receiver) {
+      if (property === "close") return () => {
+        closed = true;
+        return target.close();
+      };
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { database: proxy, closed: () => closed };
+}

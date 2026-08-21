@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import argon2 from "argon2";
 import { describe, expect, test } from "vitest";
 
 import { openDatabase } from "../../src/db/database.js";
@@ -81,6 +82,22 @@ describe("AuthService", () => {
       expect(Buffer.from(token, "base64url")).toHaveLength(32);
     } finally {
       defaultDb.close();
+    }
+  });
+
+  test("uses a valid Argon2id admin-password hash while treating malformed hash prefixes as plaintext", async () => {
+    const db = openDatabase(":memory:");
+    const prehashedPassword = await argon2.hash(PASSWORD, { type: argon2.argon2id });
+    const malformedPrefix = "$argon2id$not-a-real-hash";
+    try {
+      const prehashedAuth = await AuthService.create({ db, adminPassword: prehashedPassword });
+      await expect(prehashedAuth.login(PASSWORD)).resolves.toMatchObject({ expiresAt: expect.any(String) });
+
+      const plaintextAuth = await AuthService.create({ db, adminPassword: malformedPrefix });
+      await expect(plaintextAuth.login(malformedPrefix)).resolves.toMatchObject({ expiresAt: expect.any(String) });
+      await expect(plaintextAuth.login(PASSWORD)).rejects.toBeInstanceOf(InvalidCredentialsError);
+    } finally {
+      db.close();
     }
   });
 });

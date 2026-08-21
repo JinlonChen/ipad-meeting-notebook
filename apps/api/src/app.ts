@@ -1,8 +1,9 @@
 import cookie from "@fastify/cookie";
+import type Database from "better-sqlite3";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import { registerAuthRoutes } from "./auth/routes.js";
-import { AuthService } from "./auth/service.js";
+import { AuthService, type AuthServiceOptions } from "./auth/service.js";
 import { openDatabase } from "./db/database.js";
 
 export type BuildAppOptions = {
@@ -11,13 +12,15 @@ export type BuildAppOptions = {
   cookieSecure: boolean;
   now?: () => Date;
   tokenBytes?: () => Buffer;
+  databaseFactory?: (path: string) => Database.Database;
+  authServiceFactory?: (options: AuthServiceOptions) => Promise<AuthService>;
 };
 
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
-  const db = openDatabase(options.databasePath);
+  const db = (options.databaseFactory ?? openDatabase)(options.databasePath);
   try {
     const app = Fastify({ logger: false });
-    const auth = await AuthService.create({
+    const auth = await (options.authServiceFactory ?? AuthService.create)({
       db,
       adminPassword: options.adminPassword,
       ...(options.now ? { now: options.now } : {}),

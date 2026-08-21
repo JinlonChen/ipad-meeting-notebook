@@ -44,7 +44,7 @@ export class AuthService {
   ) {}
 
   static async create(options: AuthServiceOptions): Promise<AuthService> {
-    const passwordHash = await argon2.hash(options.adminPassword, { type: argon2.argon2id });
+    const passwordHash = await configuredPasswordHash(options.adminPassword);
     const dependencies: AuthServiceDependencies = options;
     return new AuthService(
       dependencies.db,
@@ -56,7 +56,13 @@ export class AuthService {
 
   async login(password: string): Promise<{ token: string; expiresAt: string }> {
     LoginInputSchema.shape.password.parse(password);
-    if (!await argon2.verify(this.passwordHash, password)) throw new InvalidCredentialsError();
+    let passwordMatches: boolean;
+    try {
+      passwordMatches = await argon2.verify(this.passwordHash, password);
+    } catch {
+      throw new InvalidCredentialsError();
+    }
+    if (!passwordMatches) throw new InvalidCredentialsError();
 
     const now = canonicalizeTimestamp(this.now().toISOString());
     const expiresAt = canonicalizeTimestamp(new Date(new Date(now).getTime() + SESSION_DURATION_MS).toISOString());
@@ -93,4 +99,19 @@ export class AuthService {
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+async function configuredPasswordHash(value: string): Promise<string> {
+  if (await isArgon2idHash(value)) return value;
+  return argon2.hash(value, { type: argon2.argon2id });
+}
+
+async function isArgon2idHash(value: string): Promise<boolean> {
+  if (!value.startsWith("$argon2id$")) return false;
+  try {
+    await argon2.verify(value, "");
+    return true;
+  } catch {
+    return false;
+  }
 }
