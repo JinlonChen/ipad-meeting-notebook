@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { MeetingCatalogRepository } from "../../src/meetings/repository.js";
 import { MeetingListPage, WorkspacePlaceholder } from "../../src/meetings/MeetingListPage.js";
+import "../../src/app/styles.css";
 
 const now = "2026-08-21T00:00:00.000Z";
 const repositories: MeetingCatalogRepository[] = [];
@@ -104,7 +105,7 @@ describe("MeetingListPage", () => {
     await screen.findByText("已整理");
   });
 
-  test("shows loading, syncing, sync error and populated states without changing the toolbar", async () => {
+  test("shows syncing, sync error and populated states without changing the toolbar", async () => {
     const repository = catalog();
     await repository.create("有时长的会议", null, now);
     let resolve: ((value: { state: "idle" }) => void) | undefined;
@@ -119,5 +120,60 @@ describe("MeetingListPage", () => {
     render(<MemoryRouter><MeetingListPage repository={repository} refresh={async () => { throw new Error("offline"); }} now={() => now} online /></MemoryRouter>);
     await screen.findByText("同步出错");
     expect(screen.getByRole("button", { name: "新建会议" })).toBeVisible();
+  });
+
+  test("keeps the toolbar available while deferred local catalog loading resolves to empty", async () => {
+    const repository = catalog();
+    let resolveMeetings: ((value: never[]) => void) | undefined;
+    let resolveFolders: ((value: never[]) => void) | undefined;
+    const meetings = new Promise<never[]>((resolve) => { resolveMeetings = resolve; });
+    const folders = new Promise<never[]>((resolve) => { resolveFolders = resolve; });
+    const list = vi.spyOn(repository, "list").mockImplementation(() => meetings);
+    const listFolders = vi.spyOn(repository, "listFolders").mockImplementation(() => folders);
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={async () => ({ state: "idle" })} now={() => now} online /></MemoryRouter>);
+
+    expect(await screen.findByText("正在载入会议...")).toBeVisible();
+    expect(screen.getByRole("button", { name: "新建会议" })).toBeVisible();
+    resolveMeetings?.([]); resolveFolders?.([]);
+    await screen.findByText("还没有会议");
+    list.mockRestore(); listFolders.mockRestore();
+  });
+
+  test("filters folders and unfiled meetings, and renders one status with a duration", async () => {
+    const repository = catalog();
+    const first = { id: crypto.randomUUID(), name: "甲", createdAt: now, updatedAt: now, syncVersion: 0 };
+    const second = { id: crypto.randomUUID(), name: "乙", createdAt: now, updatedAt: now, syncVersion: 0 };
+    const meeting = (id: string, title: string, folderId: string | null) => ({ id, title, folderId, status: "draft" as const, startedAt: null, endedAt: null, createdAt: now, updatedAt: now, trashedAt: null, syncVersion: 0 });
+    const timed = { ...meeting(crypto.randomUUID(), "有时长", first.id), startedAt: now, endedAt: "2026-08-21T00:30:00.000Z", status: "ready" as const };
+    await repository.syncRefresh([first, second], [timed, meeting(crypto.randomUUID(), "乙会议", second.id), meeting(crypto.randomUUID(), "未分类会议", null)]);
+    renderPage(repository);
+    await screen.findByText("有时长");
+    await userEvent.setup().click(screen.getByRole("button", { name: "甲" }));
+    expect(screen.getByText("有时长")).toBeVisible();
+    expect(screen.queryByText("乙会议")).not.toBeInTheDocument();
+    const row = screen.getByText("有时长").closest("li")!;
+    expect(row).toHaveTextContent("30分钟");
+    expect(row.querySelectorAll(".status-label")).toHaveLength(1);
+    await userEvent.setup().click(screen.getByRole("button", { name: "未分类" }));
+    expect(screen.getByText("未分类会议")).toBeVisible();
+    expect(screen.queryByText("有时长")).not.toBeInTheDocument();
+  });
+
+  test("removes resize and orientation listeners when unmounted", async () => {
+    const matchMedia = vi.fn(() => ({ addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    const previous = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: matchMedia });
+    const add = vi.spyOn(window, "addEventListener");
+    const remove = vi.spyOn(window, "removeEventListener");
+    try {
+      const rendered = render(<MemoryRouter><MeetingListPage repository={catalog()} refresh={async () => ({ state: "idle" })} now={() => now} online /></MemoryRouter>);
+      await screen.findByText("还没有会议");
+      rendered.unmount();
+      expect(add).toHaveBeenCalledWith("resize", expect.any(Function));
+      expect(remove).toHaveBeenCalledWith("resize", expect.any(Function));
+      expect(matchMedia.mock.results[0]!.value.removeEventListener).toHaveBeenCalledWith("change", expect.any(Function));
+    } finally {
+      Object.defineProperty(window, "matchMedia", { configurable: true, value: previous });
+    }
   });
 });

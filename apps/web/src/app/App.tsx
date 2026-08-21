@@ -13,8 +13,12 @@ const defaultRepository = new MeetingCatalogRepository();
 type Props = {
   repository?: MeetingCatalogRepository;
   auth?: AuthApi;
-  refresh?: () => Promise<SyncResult>;
+  synchronizer?: CatalogSynchronizer;
   now?: () => string;
+};
+export type CatalogSynchronizer = {
+  refresh(): Promise<SyncResult>;
+  resumeAfterLogin(): void;
 };
 type Gate = "loading" | "catalog" | "login" | "offline-lock" | "error";
 
@@ -22,9 +26,10 @@ function isUnauthorized(error: unknown): boolean {
   return error instanceof AuthApiError ? error.status === 401 : typeof error === "object" && error !== null && "status" in error && error.status === 401;
 }
 
-export function App({ repository = defaultRepository, auth = authApi(), refresh, now = () => new Date().toISOString() }: Props) {
-  const sync = useMemo(() => new CatalogSync(repository, new MeetingCatalogHttpApi()), [repository]);
-  const syncRefresh = useMemo(() => refresh ?? (() => sync.refresh()), [refresh, sync]);
+export function App({ repository = defaultRepository, auth = authApi(), synchronizer: injectedSynchronizer, now = () => new Date().toISOString() }: Props) {
+  const localSynchronizer = useMemo(() => new CatalogSync(repository, new MeetingCatalogHttpApi()), [repository]);
+  const synchronizer = injectedSynchronizer ?? localSynchronizer;
+  const syncRefresh = useCallback(() => synchronizer.refresh(), [synchronizer]);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [gate, setGate] = useState<Gate>("loading");
 
@@ -58,9 +63,9 @@ export function App({ repository = defaultRepository, auth = authApi(), refresh,
     await auth.login(password);
     const session = await auth.me();
     await repository.authorizeDevice(session.sessionExpiresAt, now());
-    sync.resumeAfterLogin();
+    synchronizer.resumeAfterLogin();
     setGate("catalog");
-  }, [auth, now, repository, sync]);
+  }, [auth, now, repository, synchronizer]);
   const guardedRefresh = useCallback(async () => {
     const result = await syncRefresh();
     if (result.state === "paused_auth") {
