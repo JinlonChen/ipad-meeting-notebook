@@ -21,6 +21,23 @@ describe("CatalogSync", () => {
     await Promise.all(catalogs.splice(0).map((item) => item.deleteDatabase()));
   });
 
+  test("pauses pull synchronization on a 401 with an empty outbox until login resumes it", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    const client: MeetingCatalogApi = {
+      send: vi.fn(),
+      listFolders: vi.fn().mockRejectedValueOnce(new CatalogApiError(401, "AUTH_REQUIRED")).mockResolvedValue([]),
+      listMeetings: vi.fn().mockResolvedValue([]),
+    };
+    const sync = new CatalogSync(store, client);
+
+    await expect(sync.refresh()).resolves.toEqual({ state: "paused_auth" });
+    await expect(sync.refresh()).resolves.toEqual({ state: "paused_auth" });
+    expect(client.listFolders).toHaveBeenCalledTimes(1);
+    sync.resumeAfterLogin();
+    await expect(sync.refresh()).resolves.toEqual({ state: "idle" });
+  });
+
   test("flushes durable operations in sequence so folders arrive before referencing meetings", async () => {
     const store = catalog();
     catalogs.push(store);

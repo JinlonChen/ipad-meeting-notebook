@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 
-import { authApi, AuthApiError, type AuthApi } from "../auth/api.js";
+import { authApi, AuthApiError, AuthNetworkError, type AuthApi } from "../auth/api.js";
 import { LoginPage } from "../auth/LoginPage.js";
 import { MeetingCatalogHttpApi } from "../meetings/api.js";
 import { MeetingListPage, WorkspacePlaceholder } from "../meetings/MeetingListPage.js";
@@ -9,7 +9,6 @@ import { MeetingCatalogRepository } from "../meetings/repository.js";
 import { CatalogSync, type SyncResult } from "../meetings/sync.js";
 
 const defaultRepository = new MeetingCatalogRepository();
-const defaultSync = new CatalogSync(defaultRepository, new MeetingCatalogHttpApi());
 
 type Props = {
   repository?: MeetingCatalogRepository;
@@ -17,14 +16,15 @@ type Props = {
   refresh?: () => Promise<SyncResult>;
   now?: () => string;
 };
-type Gate = "loading" | "catalog" | "login" | "offline-lock";
+type Gate = "loading" | "catalog" | "login" | "offline-lock" | "error";
 
 function isUnauthorized(error: unknown): boolean {
   return error instanceof AuthApiError ? error.status === 401 : typeof error === "object" && error !== null && "status" in error && error.status === 401;
 }
 
 export function App({ repository = defaultRepository, auth = authApi(), refresh, now = () => new Date().toISOString() }: Props) {
-  const syncRefresh = useMemo(() => refresh ?? (() => defaultSync.refresh()), [refresh]);
+  const sync = useMemo(() => new CatalogSync(repository, new MeetingCatalogHttpApi()), [repository]);
+  const syncRefresh = useMemo(() => refresh ?? (() => sync.refresh()), [refresh, sync]);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [gate, setGate] = useState<Gate>("loading");
 
@@ -32,11 +32,16 @@ export function App({ repository = defaultRepository, auth = authApi(), refresh,
     try {
       const session = await auth.me();
       await repository.authorizeDevice(session.sessionExpiresAt, now());
+      setOnline(true);
       setGate("catalog");
     } catch (error) {
       if (isUnauthorized(error)) { setGate("login"); return; }
-      setOnline(false);
-      setGate(await repository.hasDeviceAccess(now()) ? "catalog" : "offline-lock");
+      if (error instanceof AuthNetworkError) {
+        setOnline(false);
+        setGate(await repository.hasDeviceAccess(now()) ? "catalog" : "offline-lock");
+        return;
+      }
+      setGate("error");
     }
   }, [auth, now, repository]);
 
@@ -53,9 +58,9 @@ export function App({ repository = defaultRepository, auth = authApi(), refresh,
     await auth.login(password);
     const session = await auth.me();
     await repository.authorizeDevice(session.sessionExpiresAt, now());
-    defaultSync.resumeAfterLogin();
+    sync.resumeAfterLogin();
     setGate("catalog");
-  }, [auth, now, repository]);
+  }, [auth, now, repository, sync]);
   const guardedRefresh = useCallback(async () => {
     const result = await syncRefresh();
     if (result.state === "paused_auth") {
@@ -72,5 +77,6 @@ export function App({ repository = defaultRepository, auth = authApi(), refresh,
 
   if (gate === "loading") return <main className="gate-loading" role="status">正在验证访问权限...</main>;
   if (gate === "login" || gate === "offline-lock") return <LoginPage onLogin={login} offline={gate === "offline-lock"} />;
+  if (gate === "error") return <main className="login-page"><section className="login-panel"><h1>无法验证访问权限</h1><button className="primary-button" onClick={() => void authorize()}>重试</button></section></main>;
   return <BrowserRouter><Routes><Route path="/meetings/:id" element={<WorkspacePlaceholder />} /><Route path="*" element={<MeetingListPage repository={repository} refresh={guardedRefresh} now={now} online={online} onLogout={() => void logout()} />} /></Routes></BrowserRouter>;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-import { AuthApiError, authApi } from "../../src/auth/api.js";
+import { AuthApiError, AuthNetworkError, authApi } from "../../src/auth/api.js";
 
 const expiry = "2026-09-21T00:00:00.000Z";
 
@@ -35,5 +35,17 @@ describe("authApi", () => {
 
     await expect(api.me()).rejects.toEqual(new AuthApiError(401, "AUTH_REQUIRED"));
     await expect(api.me()).rejects.toThrow();
+  });
+
+  test("distinguishes transport failures from HTTP and malformed session responses", async () => {
+    const fetcher = vi.fn()
+      .mockRejectedValueOnce(new TypeError("socket unavailable"))
+      .mockResolvedValueOnce(response({ internal: "do not expose" }, 500))
+      .mockResolvedValueOnce(response({ id: "not-owner" }));
+    const api = authApi(fetcher);
+
+    await expect(api.me()).rejects.toEqual(new AuthNetworkError());
+    await expect(api.me()).rejects.toEqual(new AuthApiError(500, "REQUEST_FAILED"));
+    await expect(api.me()).rejects.toEqual(new AuthApiError(200, "REQUEST_FAILED"));
   });
 });

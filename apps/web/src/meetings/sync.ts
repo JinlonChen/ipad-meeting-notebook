@@ -108,7 +108,11 @@ export class CatalogSync {
       const [folders, meetings] = await Promise.all([this.api.listFolders(), this.api.listMeetings()]);
       await this.repository.syncRefresh(folders, meetings);
       return { state: "idle" };
-    } catch {
+    } catch (error) {
+      if (statusOf(error) === 401) {
+        this.authPaused = true;
+        return { state: "paused_auth" };
+      }
       return { state: "error" };
     }
   }

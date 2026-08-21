@@ -16,6 +16,22 @@ type Props = {
 type Filter = "all" | "unfiled" | "trashed" | string;
 type Dialog = { kind: "meeting" | "folder" | "renameMeeting" | "renameFolder"; id?: string; initial?: string } | null;
 
+function layoutMode(): "portrait" | "landscape" {
+  return window.innerHeight > window.innerWidth ? "portrait" : "landscape";
+}
+
+function useLayoutMode(): "portrait" | "landscape" {
+  const [layout, setLayout] = useState(layoutMode);
+  useEffect(() => {
+    const update = () => setLayout(layoutMode());
+    const media = window.matchMedia?.("(orientation: portrait)");
+    window.addEventListener("resize", update);
+    media?.addEventListener?.("change", update);
+    return () => { window.removeEventListener("resize", update); media?.removeEventListener?.("change", update); };
+  }, []);
+  return layout;
+}
+
 function dateTime(value: string): string {
   return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
@@ -30,6 +46,7 @@ function statusLabel(status: Meeting["status"]): string {
 
 export function MeetingListPage({ repository, refresh, now = () => new Date().toISOString(), online, onLogout }: Props) {
   const navigate = useNavigate();
+  const layout = useLayoutMode();
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,11 +67,22 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
     setLoading(false);
   }, [repository]);
 
-  useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => {
+    let active = true;
+    void reload().catch(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [reload]);
   useEffect(() => {
     if (!online) { setSyncState("paused_auth"); return; }
     let active = true;
-    void refresh().then((result) => { if (active) setSyncState(result.state); }).then(reload);
+    setSyncState("syncing");
+    void refresh()
+      .then(async (result) => {
+        if (!active) return;
+        setSyncState(result.state);
+        await reload();
+      })
+      .catch(() => { if (active) setSyncState("error"); });
     return () => { active = false; };
   }, [online, refresh, reload]);
 
@@ -104,7 +132,7 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
   }
   const emptyText = search ? "没有匹配的会议" : filter === "trashed" ? "废纸篓为空" : filter !== "all" ? "此分类暂无会议" : "还没有会议";
 
-  return <main className="catalog-shell" data-layout={railOpen ? "drawer-open" : "desktop"}>
+  return <main className="catalog-shell" data-layout={layout} data-drawer={railOpen ? "open" : "closed"}>
     <header className="catalog-topbar">
       <button className="icon-button rail-toggle" aria-label="打开分类" title="打开分类" onClick={() => setRailOpen(true)}><FolderIcon size={18} /></button>
       <h1>会议本</h1>
@@ -127,7 +155,7 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
     <section className="meeting-panel">
       <div className="meeting-toolbar"><label className="search-field"><Search size={17} /><input type="search" aria-label="搜索会议" placeholder="搜索会议" value={search} onChange={(event) => setSearch(event.target.value)} /></label><button className="primary-button" onClick={() => { setFormError(""); setDialog({ kind: "meeting" }); }}><Plus size={17} />新建会议</button></div>
       <div className="list-heading"><h2>{filter === "all" ? "全部会议" : filter === "unfiled" ? "未分类" : filter === "trashed" ? "废纸篓" : activeFolder?.name ?? "分类"}</h2><span>{shown.length} 项</span></div>
-      {loading ? <p className="list-message" role="status">正在载入会议...</p> : shown.length === 0 ? <p className="list-message">{emptyText}</p> : <ul className="meeting-list">{shown.map((meeting) => <li key={meeting.id} className="meeting-row"><button className="meeting-main" onClick={() => navigate(`/meetings/${meeting.id}`)}><span className="meeting-title">{meeting.title}</span><span className="meeting-meta">更新于 {dateTime(meeting.updatedAt)}{duration(meeting) ? ` · ${duration(meeting)}` : ""}</span></button><span className={`status-label status-${meeting.status}`}>{statusLabel(meeting.status)}</span><button className="icon-button" aria-label={`会议操作 ${meeting.title}`} title={`会议操作 ${meeting.title}`} onClick={() => setActionMeeting(actionMeeting === meeting.id ? null : meeting.id)}><MoreHorizontal size={18} /></button>{actionMeeting === meeting.id && <div className="row-menu"><button onClick={() => { setActionMeeting(null); setDialog({ kind: "renameMeeting", id: meeting.id, initial: meeting.title }); }}>重命名</button>{meeting.status === "trashed" ? <button onClick={() => void repository.restore(meeting.id, now()).then(reload)}>恢复</button> : <button onClick={() => void repository.trash(meeting.id, now()).then(reload)}>移至废纸篓</button>}</div>}</li>)}</ul>}
+      {loading ? <p className="list-message" role="status">正在载入会议...</p> : shown.length === 0 ? <p className="list-message">{emptyText}</p> : <ul className="meeting-list">{shown.map((meeting) => <li key={meeting.id} className="meeting-row"><button className="meeting-main" onClick={() => navigate(`/meetings/${meeting.id}`)}><span className="meeting-title">{meeting.title}</span><span className="meeting-meta">更新于 {dateTime(meeting.updatedAt)}{duration(meeting) ? ` · ${duration(meeting)}` : ""}</span></button><span className={`status-label status-${meeting.status}`}>{statusLabel(meeting.status)}</span><button className="icon-button" aria-label={`会议操作 ${meeting.title}`} title={`会议操作 ${meeting.title}`} onClick={() => setActionMeeting(actionMeeting === meeting.id ? null : meeting.id)}><MoreHorizontal size={18} /></button>{actionMeeting === meeting.id && <div className="row-menu"><button onClick={() => { setActionMeeting(null); setDialog({ kind: "renameMeeting", id: meeting.id, initial: meeting.title }); }}>重命名</button>{meeting.status === "trashed" ? <button onClick={() => { setActionMeeting(null); void repository.restore(meeting.id, now()).then(reload); }}>恢复</button> : <button onClick={() => { setActionMeeting(null); void repository.trash(meeting.id, now()).then(reload); }}>移至废纸篓</button>}</div>}</li>)}</ul>}
     </section>
     {dialog && <div className="dialog-backdrop"><form className="dialog" aria-label={dialog.kind === "meeting" ? "新建会议" : "编辑名称"} onSubmit={(event) => void submit(event)}><h2>{dialog.kind === "meeting" ? "新建会议" : dialog.kind === "folder" ? "新建分类" : "重命名"}</h2><label>{dialog.kind.includes("Folder") || dialog.kind === "folder" ? "分类名称" : "会议名称"}<input name="name" autoFocus defaultValue={dialog.initial} maxLength={dialog.kind.includes("Folder") || dialog.kind === "folder" ? 80 : 120} aria-invalid={Boolean(formError)} aria-describedby="name-help" /></label><p id="name-help" className="field-error" aria-live="polite">{formError}</p><div className="dialog-actions"><button type="button" onClick={() => setDialog(null)}>取消</button><button className="primary-button" type="submit">{dialog.kind === "meeting" || dialog.kind === "folder" ? "创建" : "保存"}</button></div></form></div>}
     {confirmation && <div className="dialog-backdrop"><section className="dialog" role="alertdialog" aria-label="删除分类"><h2>删除分类？</h2><p>分类内的会议将保留为未分类。</p><div className="dialog-actions"><button onClick={() => setConfirmation(null)}>取消</button><button className="danger-button" onClick={() => void removeFolder()}>删除</button></div></section></div>}

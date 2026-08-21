@@ -30,6 +30,24 @@ afterEach(async () => {
 });
 
 describe("MeetingListPage", () => {
+  test("uses portrait drawer mode at 744x1133 and landscape rail mode at 1133x744", async () => {
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 744 }, innerHeight: { configurable: true, value: 1133 } });
+    const portrait = render(<MemoryRouter><MeetingListPage repository={catalog()} refresh={async () => ({ state: "idle" })} now={() => now} online={false} /></MemoryRouter>);
+    const shell = await screen.findByRole("main");
+    expect(shell).toHaveAttribute("data-layout", "portrait");
+    expect(shell).toHaveAttribute("data-drawer", "closed");
+    expect(screen.getByText("离线，等待同步")).toBeVisible();
+    await userEvent.setup().click(screen.getByRole("button", { name: "打开分类" }));
+    expect(shell).toHaveAttribute("data-drawer", "open");
+    portrait.unmount();
+
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 1133 }, innerHeight: { configurable: true, value: 744 } });
+    window.dispatchEvent(new Event("resize"));
+    render(<MemoryRouter><MeetingListPage repository={catalog()} refresh={async () => ({ state: "idle" })} now={() => now} online /></MemoryRouter>);
+    expect(await screen.findByRole("main")).toHaveAttribute("data-layout", "landscape");
+    await screen.findByText("还没有会议");
+  });
+
   test("creates locally, validates dialog input, searches, and opens the workspace placeholder", async () => {
     const user = userEvent.setup();
     renderPage();
@@ -47,5 +65,59 @@ describe("MeetingListPage", () => {
     expect(screen.getByText("Sprint planning")).toBeVisible();
     await user.type(screen.getByRole("searchbox", { name: "搜索会议" }), "nomatch");
     await waitFor(() => expect(screen.getByText("没有匹配的会议")).toBeVisible());
+  });
+
+  test("creates, renames and removes folders while retaining meetings, then renames, trashes and restores a meeting", async () => {
+    const user = userEvent.setup();
+    const repository = renderPage();
+    await screen.findByRole("heading", { name: "会议本" });
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    await user.type(screen.getByLabelText("分类名称"), "工作");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+    const folder = (await repository.listFolders())[0]!;
+    await repository.create("待整理", folder.id, now);
+    await user.click(screen.getByRole("button", { name: "同步会议" }));
+    await screen.findByText("待整理");
+    await user.click(screen.getByRole("button", { name: "编辑分类 工作" }));
+    const folderName = screen.getByLabelText("分类名称");
+    await user.clear(folderName); await user.type(folderName, "项目");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    await screen.findByRole("button", { name: "项目" });
+    await user.click(screen.getByRole("button", { name: "删除分类 项目" }));
+    await user.click(screen.getByRole("button", { name: "删除" }));
+    await waitFor(async () => expect((await repository.get((await repository.list())[0]!.id))?.folderId).toBeNull());
+    expect((await repository.pendingOperations()).filter((operation) => operation.kind.startsWith("folder."))).toHaveLength(3);
+
+    await user.click(screen.getByRole("button", { name: "会议操作 待整理" }));
+    await user.click(screen.getByRole("button", { name: "重命名" }));
+    const meetingName = screen.getByLabelText("会议名称");
+    await user.clear(meetingName); await user.type(meetingName, "已整理");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    await screen.findByText("已整理");
+    await user.click(screen.getByRole("button", { name: "会议操作 已整理" }));
+    await user.click(screen.getByRole("button", { name: "移至废纸篓" }));
+    await user.click(screen.getByRole("button", { name: "废纸篓" }));
+    await screen.findByText("已整理");
+    await user.click(screen.getByRole("button", { name: "会议操作 已整理" }));
+    await user.click(screen.getByRole("button", { name: "恢复" }));
+    await user.click(screen.getByRole("button", { name: "全部会议" }));
+    await screen.findByText("已整理");
+  });
+
+  test("shows loading, syncing, sync error and populated states without changing the toolbar", async () => {
+    const repository = catalog();
+    await repository.create("有时长的会议", null, now);
+    let resolve: ((value: { state: "idle" }) => void) | undefined;
+    const pending = new Promise<{ state: "idle" }>((done) => { resolve = done; });
+    const rendered = render(<MemoryRouter><MeetingListPage repository={repository} refresh={() => pending} now={() => now} online /></MemoryRouter>);
+    expect(await screen.findByText("正在同步")).toBeVisible();
+    expect(screen.getByRole("button", { name: "新建会议" })).toBeVisible();
+    resolve?.({ state: "idle" });
+    await screen.findByText("有时长的会议");
+    rendered.unmount();
+
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={async () => { throw new Error("offline"); }} now={() => now} online /></MemoryRouter>);
+    await screen.findByText("同步出错");
+    expect(screen.getByRole("button", { name: "新建会议" })).toBeVisible();
   });
 });

@@ -9,13 +9,38 @@ export class AuthApiError extends Error {
   }
 }
 
+export class AuthNetworkError extends Error {
+  constructor() {
+    super("NETWORK_UNAVAILABLE");
+    this.name = "AuthNetworkError";
+  }
+}
+
 function safeError(response: Response): AuthApiError {
   return new AuthApiError(response.status, response.status === 401 ? "AUTH_REQUIRED" : "REQUEST_FAILED");
 }
 
 async function noContent(request: Promise<Response>): Promise<void> {
-  const response = await request;
+  const response = await transport(request);
   if (!response.ok) throw safeError(response);
+}
+
+async function transport(request: Promise<Response>): Promise<Response> {
+  try {
+    return await request;
+  } catch {
+    throw new AuthNetworkError();
+  }
+}
+
+async function session(request: Promise<Response>): Promise<SessionUser> {
+  const response = await transport(request);
+  if (!response.ok) throw safeError(response);
+  try {
+    return SessionUserSchema.parse(await response.json());
+  } catch {
+    throw new AuthApiError(response.status, "REQUEST_FAILED");
+  }
 }
 
 export type AuthApi = {
@@ -26,11 +51,7 @@ export type AuthApi = {
 
 export function authApi(fetcher: Fetcher = fetch): AuthApi {
   return {
-    async me() {
-      const response = await fetcher("/api/auth/me", { credentials: "include" });
-      if (!response.ok) throw safeError(response);
-      return SessionUserSchema.parse(await response.json());
-    },
+    me: () => session(fetcher("/api/auth/me", { credentials: "include" })),
     login(password) {
       return noContent(fetcher("/api/auth/login", {
         method: "POST",
