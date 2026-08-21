@@ -8,8 +8,9 @@ import {
 } from "@meeting/contracts";
 import { z } from "zod";
 
+import { canonicalizeTimestamp } from "../db/database.js";
+
 const MeetingTitleSchema = z.string().trim().min(1).max(120);
-const IsoDateTimeSchema = z.iso.datetime();
 const MeetingIdSchema = CreateMeetingInputSchema.shape.id;
 
 type MeetingRow = {
@@ -66,13 +67,14 @@ export class SqliteMeetingRepository implements MeetingRepository {
 
   create(input: CreateMeetingInput): Meeting {
     const value = CreateMeetingInputSchema.parse(input);
+    const clientCreatedAt = canonicalizeTimestamp(value.clientCreatedAt);
     this.db.prepare(`
       INSERT INTO meetings (
         id, title, folder_id, status, started_at, ended_at,
         created_at, updated_at, trashed_at, sync_version
       ) VALUES (?, ?, ?, 'draft', NULL, NULL, ?, ?, NULL, 0)
       ON CONFLICT(id) DO NOTHING
-    `).run(value.id, value.title, value.folderId, value.clientCreatedAt, value.clientCreatedAt);
+    `).run(value.id, value.title, value.folderId, clientCreatedAt, clientCreatedAt);
 
     return this.require(value.id);
   }
@@ -106,7 +108,7 @@ export class SqliteMeetingRepository implements MeetingRepository {
   rename(id: string, title: string, now: string): Meeting {
     const meetingId = MeetingIdSchema.parse(id);
     const normalizedTitle = MeetingTitleSchema.parse(title);
-    const timestamp = IsoDateTimeSchema.parse(now);
+    const timestamp = canonicalizeTimestamp(now);
     const result = this.db.prepare(`
       UPDATE meetings
       SET title = ?, updated_at = ?, sync_version = sync_version + 1
@@ -118,36 +120,40 @@ export class SqliteMeetingRepository implements MeetingRepository {
 
   trash(id: string, now: string): Meeting {
     const meetingId = MeetingIdSchema.parse(id);
-    const timestamp = IsoDateTimeSchema.parse(now);
-    const current = this.require(meetingId);
-    if (current.status === "trashed") return current;
-
-    this.db.prepare(`
+    const timestamp = canonicalizeTimestamp(now);
+    const row = this.db.prepare(`
       UPDATE meetings
       SET status = 'trashed', status_before_trash = status, trashed_at = ?,
           updated_at = ?, sync_version = sync_version + 1
-      WHERE id = ?
-    `).run(timestamp, timestamp, meetingId);
-    return this.require(meetingId);
+      WHERE id = ? AND status <> 'trashed'
+      RETURNING *
+    `).get(timestamp, timestamp, meetingId) as MeetingRow | undefined;
+    if (row) return mapMeeting(row);
+
+    const current = this.get(meetingId);
+    if (current?.status === "trashed") return current;
+    throw new MeetingNotFoundError(meetingId);
   }
 
   restore(id: string, now: string): Meeting {
     const meetingId = MeetingIdSchema.parse(id);
-    const timestamp = IsoDateTimeSchema.parse(now);
-    const current = this.require(meetingId);
-    if (current.status !== "trashed") return current;
-
-    this.db.prepare(`
+    const timestamp = canonicalizeTimestamp(now);
+    const row = this.db.prepare(`
       UPDATE meetings
       SET status = COALESCE(status_before_trash, 'draft'), status_before_trash = NULL,
           trashed_at = NULL, updated_at = ?, sync_version = sync_version + 1
-      WHERE id = ?
-    `).run(timestamp, meetingId);
-    return this.require(meetingId);
+      WHERE id = ? AND status = 'trashed'
+      RETURNING *
+    `).get(timestamp, meetingId) as MeetingRow | undefined;
+    if (row) return mapMeeting(row);
+
+    const current = this.get(meetingId);
+    if (current && current.status !== "trashed") return current;
+    throw new MeetingNotFoundError(meetingId);
   }
 
   purgeTrashedBefore(cutoff: string): number {
-    const timestamp = IsoDateTimeSchema.parse(cutoff);
+    const timestamp = canonicalizeTimestamp(cutoff);
     return this.db.prepare(`
       DELETE FROM meetings
       WHERE status = 'trashed' AND trashed_at < ?

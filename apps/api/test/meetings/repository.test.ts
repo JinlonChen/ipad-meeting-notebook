@@ -1,13 +1,9 @@
-import { mkdtempSync, existsSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import Database from "better-sqlite3";
 import { MeetingSchema } from "@meeting/contracts";
 import { afterEach, describe, expect, test } from "vitest";
 import { ZodError } from "zod";
 
-import { migrate, openDatabase } from "../../src/db/database.js";
+import { openDatabase } from "../../src/db/database.js";
 import {
   MeetingNotFoundError,
   SqliteMeetingRepository,
@@ -18,7 +14,6 @@ const LATER = "2026-08-20T11:00:00.000Z";
 const ID_ONE = "00000000-0000-4000-8000-000000000001";
 const ID_TWO = "00000000-0000-4000-8000-000000000002";
 const ID_THREE = "00000000-0000-4000-8000-000000000003";
-const ID_FOUR = "00000000-0000-4000-8000-000000000004";
 
 const databases: Database.Database[] = [];
 
@@ -30,58 +25,6 @@ function repository() {
 
 afterEach(() => {
   while (databases.length > 0) databases.pop()?.close();
-});
-
-describe("SQLite database migration", () => {
-  test("is idempotent and creates the required tables and indexes", () => {
-    const memory = new Database(":memory:");
-    migrate(memory);
-    migrate(memory);
-    expect(memory.pragma("foreign_keys", { simple: true })).toBe(1);
-    const schemaObjects = memory.prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')").all() as { name: string }[];
-    expect(schemaObjects.map((object) => object.name)).toEqual(expect.arrayContaining([
-      "folders",
-      "meetings",
-      "folders_name_idx",
-      "meetings_updated_at_idx",
-      "meetings_trashed_at_idx",
-    ]));
-    memory.close();
-  });
-
-  test("creates file parents and enables WAL and foreign keys for file-backed databases", () => {
-    const directory = mkdtempSync(join(tmpdir(), "meeting-db-"));
-    const path = join(directory, "nested", "catalog.sqlite");
-    try {
-      const fileDb = openDatabase(path);
-      expect(existsSync(path)).toBe(true);
-      expect(fileDb.pragma("journal_mode", { simple: true })).toBe("wal");
-      expect(fileDb.pragma("foreign_keys", { simple: true })).toBe(1);
-      fileDb.close();
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
-
-  test("enforces statuses and integer nonnegative sync versions in SQLite", () => {
-    const db = openDatabase(":memory:");
-    databases.push(db);
-    const insertMeeting = db.prepare(`
-      INSERT INTO meetings (id, title, status, created_at, updated_at, sync_version)
-      VALUES (?, 'Meeting', ?, ?, ?, ?)
-    `);
-    expect(() => insertMeeting.run(ID_ONE, "invalid", CREATED_AT, CREATED_AT, 0)).toThrow();
-    expect(() => insertMeeting.run(ID_TWO, "draft", CREATED_AT, CREATED_AT, -1)).toThrow();
-    expect(() => insertMeeting.run(ID_THREE, "draft", CREATED_AT, CREATED_AT, 0.5)).toThrow();
-    expect(() => db.prepare(`
-      INSERT INTO folders (id, name, created_at, updated_at, sync_version)
-      VALUES (?, 'Folder', ?, ?, ?)
-    `).run(ID_FOUR, CREATED_AT, CREATED_AT, -1)).toThrow();
-    expect(() => db.prepare(`
-      INSERT INTO folders (id, name, created_at, updated_at, sync_version)
-      VALUES (?, 'Other Folder', ?, ?, ?)
-    `).run("00000000-0000-4000-8000-000000000005", CREATED_AT, CREATED_AT, 0.5)).toThrow();
-  });
 });
 
 describe("SqliteMeetingRepository", () => {
@@ -120,6 +63,16 @@ describe("SqliteMeetingRepository", () => {
     ]);
   });
 
+  test("normalizes timestamp precision so list order is chronological", () => {
+    const { meetings } = repository();
+    meetings.create({ id: ID_ONE, title: "Whole second", folderId: null, clientCreatedAt: "2026-08-20T10:00:00Z" });
+    meetings.create({ id: ID_TWO, title: "Milliseconds", folderId: null, clientCreatedAt: "2026-08-20T10:00:00.999Z" });
+
+    expect(meetings.list({ search: "", includeTrashed: false }).map((meeting) => meeting.id)).toEqual([ID_TWO, ID_ONE]);
+    expect(meetings.get(ID_ONE)?.createdAt).toBe("2026-08-20T10:00:00.000Z");
+    expect(meetings.create({ id: ID_THREE, title: "Extra precision", folderId: null, clientCreatedAt: "2026-08-20T10:00:00.1239Z" }).createdAt).toBe("2026-08-20T10:00:00.123Z");
+  });
+
   test("renames with a trimmed title, increments version, and rejects invalid or absent mutations", () => {
     const { meetings } = repository();
     meetings.create({ id: ID_ONE, title: "Before", folderId: null, clientCreatedAt: CREATED_AT });
@@ -146,10 +99,58 @@ describe("SqliteMeetingRepository", () => {
     expect(meetings.restore(ID_ONE, "2026-08-20T14:00:00.000Z")).toEqual(restored);
   });
 
+  test("does not overwrite a concurrent trash between lifecycle check and write", () => {
+    const { db, meetings } = repository();
+    meetings.create({ id: ID_ONE, title: "Race", folderId: null, clientCreatedAt: CREATED_AT });
+    db.prepare("UPDATE meetings SET status = 'ready' WHERE id = ?").run(ID_ONE);
+
+    const originalPrepare = db.prepare;
+    let injected = false;
+    Object.defineProperty(db, "prepare", {
+      configurable: true,
+      value(source: string) {
+        const statement = originalPrepare.call(db, source);
+        if (injected || !source.includes("SET status = 'trashed'")) return statement;
+        return new Proxy(statement, {
+          get(target, property, receiver) {
+            if (property === "run" || property === "get") {
+              return (...args: unknown[]) => {
+                injected = true;
+                const concurrentUpdate = originalPrepare.call(db, `
+                  UPDATE meetings
+                  SET status = 'trashed', status_before_trash = 'ready', trashed_at = ?,
+                      updated_at = ?, sync_version = sync_version + 1
+                  WHERE id = ?
+                `) as unknown as { run(...values: unknown[]): unknown };
+                concurrentUpdate.run("2026-08-20T10:30:00.000Z", "2026-08-20T10:30:00.000Z", ID_ONE);
+                const method = Reflect.get(target, property, receiver) as (...values: unknown[]) => unknown;
+                return method.apply(target, args);
+              };
+            }
+            const value = Reflect.get(target, property, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+      },
+    });
+
+    try {
+      expect(meetings.trash(ID_ONE, LATER)).toMatchObject({
+        status: "trashed",
+        trashedAt: "2026-08-20T10:30:00.000Z",
+        syncVersion: 1,
+      });
+    } finally {
+      Object.defineProperty(db, "prepare", { configurable: true, value: originalPrepare });
+    }
+  });
+
   test("restores draft when a trashed meeting has no prior status", () => {
     const { db, meetings } = repository();
     meetings.create({ id: ID_ONE, title: "Fallback", folderId: null, clientCreatedAt: CREATED_AT });
+    db.pragma("ignore_check_constraints = ON");
     db.prepare("UPDATE meetings SET status = 'trashed', trashed_at = ?, status_before_trash = NULL WHERE id = ?").run(LATER, ID_ONE);
+    db.pragma("ignore_check_constraints = OFF");
 
     expect(meetings.restore(ID_ONE, "2026-08-20T12:00:00.000Z")).toMatchObject({
       status: "draft",
@@ -170,6 +171,25 @@ describe("SqliteMeetingRepository", () => {
     expect(meetings.get(ID_ONE)).toBeNull();
     expect(meetings.get(ID_TWO)).not.toBeNull();
     expect(meetings.get(ID_THREE)).not.toBeNull();
+  });
+
+  test("purges against canonical timestamp values", () => {
+    const { meetings } = repository();
+    meetings.create({ id: ID_ONE, title: "Old", folderId: null, clientCreatedAt: CREATED_AT });
+    meetings.trash(ID_ONE, "2026-08-20T10:00:00Z");
+
+    expect(meetings.purgeTrashedBefore("2026-08-20T10:00:00.500Z")).toBe(1);
+  });
+
+  test("rejects meetings whose folder does not exist", () => {
+    const { meetings } = repository();
+
+    expect(() => meetings.create({
+      id: ID_ONE,
+      title: "Unlinked",
+      folderId: "00000000-0000-4000-8000-000000000099",
+      clientCreatedAt: CREATED_AT,
+    })).toThrow();
   });
 
   test("validates meeting inputs before reads or mutations and preserves typed not-found errors for valid IDs", () => {

@@ -7,8 +7,9 @@ import {
 } from "@meeting/contracts";
 import { z } from "zod";
 
+import { canonicalizeTimestamp } from "../db/database.js";
+
 const FolderNameSchema = z.string().trim().min(1).max(80);
-const IsoDateTimeSchema = z.iso.datetime();
 const FolderIdSchema = CreateFolderInputSchema.shape.id;
 
 type FolderRow = {
@@ -48,11 +49,12 @@ export class SqliteFolderRepository implements FolderRepository {
 
   create(input: CreateFolderInput): Folder {
     const value = CreateFolderInputSchema.parse(input);
+    const clientCreatedAt = canonicalizeTimestamp(value.clientCreatedAt);
     this.db.prepare(`
       INSERT INTO folders (id, name, created_at, updated_at, sync_version)
       VALUES (?, ?, ?, ?, 0)
       ON CONFLICT(id) DO NOTHING
-    `).run(value.id, value.name, value.clientCreatedAt, value.clientCreatedAt);
+    `).run(value.id, value.name, clientCreatedAt, clientCreatedAt);
     return this.require(value.id);
   }
 
@@ -67,7 +69,7 @@ export class SqliteFolderRepository implements FolderRepository {
   rename(id: string, name: string, now: string): Folder {
     const folderId = FolderIdSchema.parse(id);
     const normalizedName = FolderNameSchema.parse(name);
-    const timestamp = IsoDateTimeSchema.parse(now);
+    const timestamp = canonicalizeTimestamp(now);
     const result = this.db.prepare(`
       UPDATE folders
       SET name = ?, updated_at = ?, sync_version = sync_version + 1
@@ -79,7 +81,7 @@ export class SqliteFolderRepository implements FolderRepository {
 
   remove(id: string, now: string): void {
     const folderId = FolderIdSchema.parse(id);
-    const timestamp = IsoDateTimeSchema.parse(now);
+    const timestamp = canonicalizeTimestamp(now);
     this.db.transaction(() => {
       const existing = this.db.prepare("SELECT id FROM folders WHERE id = ?").get(folderId);
       if (!existing) throw new FolderNotFoundError(folderId);
