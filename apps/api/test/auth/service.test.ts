@@ -85,7 +85,7 @@ describe("AuthService", () => {
     }
   });
 
-  test("uses a valid Argon2id admin-password hash while treating malformed hash prefixes as plaintext", async () => {
+  test("uses a valid Argon2id admin-password hash and rejects malformed claimed hashes without exposing them", async () => {
     const db = openDatabase(":memory:");
     const prehashedPassword = await argon2.hash(PASSWORD, { type: argon2.argon2id });
     const malformedPrefix = "$argon2id$not-a-real-hash";
@@ -93,9 +93,14 @@ describe("AuthService", () => {
       const prehashedAuth = await AuthService.create({ db, adminPassword: prehashedPassword });
       await expect(prehashedAuth.login(PASSWORD)).resolves.toMatchObject({ expiresAt: expect.any(String) });
 
-      const plaintextAuth = await AuthService.create({ db, adminPassword: malformedPrefix });
-      await expect(plaintextAuth.login(malformedPrefix)).resolves.toMatchObject({ expiresAt: expect.any(String) });
-      await expect(plaintextAuth.login(PASSWORD)).rejects.toBeInstanceOf(InvalidCredentialsError);
+      let caught: unknown;
+      try {
+        await AuthService.create({ db, adminPassword: malformedPrefix });
+      } catch (error) {
+        caught = error;
+      }
+      expect(String(caught)).toContain("Argon2id");
+      expect(String(caught)).not.toContain(malformedPrefix);
     } finally {
       db.close();
     }

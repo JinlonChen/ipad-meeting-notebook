@@ -26,6 +26,13 @@ export class AuthRequiredError extends Error {
   }
 }
 
+class InvalidAdminPasswordHashError extends Error {
+  constructor() {
+    super("Invalid Argon2id admin password hash");
+    this.name = "InvalidAdminPasswordHashError";
+  }
+}
+
 export type AuthServiceOptions = {
   db: Database.Database;
   adminPassword: string;
@@ -102,7 +109,10 @@ function hashToken(token: string): string {
 }
 
 async function configuredPasswordHash(value: string): Promise<string> {
-  if (await isArgon2idHash(value)) return value;
+  if (value.startsWith("$argon2id$")) {
+    if (await isArgon2idHash(value)) return value;
+    throw new InvalidAdminPasswordHashError();
+  }
   return argon2.hash(value, { type: argon2.argon2id });
 }
 
