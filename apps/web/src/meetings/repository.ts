@@ -48,11 +48,24 @@ export type MeetingListOptions = {
   folderId?: string | null;
 };
 
+export type MeetingCatalogRepositoryOptions = {
+  writeOutbox?: (
+    operation: OutboxOperation,
+    write: (operation: OutboxOperation) => Promise<number | undefined>,
+  ) => Promise<number | undefined>;
+};
+
 export class MeetingCatalogRepository {
   private readonly db: MeetingCatalogDatabase;
+  private readonly writeOutbox: NonNullable<MeetingCatalogRepositoryOptions["writeOutbox"]>;
 
-  constructor(name?: string) {
+  constructor(name?: string, options: MeetingCatalogRepositoryOptions = {}) {
     this.db = new MeetingCatalogDatabase(name);
+    this.writeOutbox = options.writeOutbox ?? ((item, write) => write(item));
+  }
+
+  private enqueueOutbox(item: OutboxOperation): Promise<number | undefined> {
+    return this.writeOutbox(item, (value) => this.db.outbox.add(value));
   }
 
   async deleteDatabase(): Promise<void> {
@@ -78,7 +91,7 @@ export class MeetingCatalogRepository {
         syncVersion: 0,
       });
       await this.db.meetings.add(meeting);
-      await this.db.outbox.add(operation("meeting.create", meeting.id, value, createdAt));
+      await this.enqueueOutbox(operation("meeting.create", meeting.id, value, createdAt));
       return meeting;
     });
   }
@@ -108,7 +121,7 @@ export class MeetingCatalogRepository {
     return this.db.transaction("rw", this.db.folders, this.db.outbox, async () => {
       const folder = FolderSchema.parse({ ...value, createdAt, updatedAt: createdAt, syncVersion: 0 });
       await this.db.folders.add(folder);
-      await this.db.outbox.add(operation("folder.create", folder.id, value, createdAt));
+      await this.enqueueOutbox(operation("folder.create", folder.id, value, createdAt));
       return folder;
     });
   }
@@ -126,7 +139,7 @@ export class MeetingCatalogRepository {
       if (!current) throw new MeetingNotFoundError(meetingId);
       const meeting = MeetingSchema.parse({ ...current, title: normalizedTitle, updatedAt, syncVersion: current.syncVersion + 1 });
       await this.db.meetings.put(meeting);
-      await this.db.outbox.add(operation("meeting.rename", meetingId, { title: normalizedTitle, updatedAt }, updatedAt));
+      await this.enqueueOutbox(operation("meeting.rename", meetingId, { title: normalizedTitle, updatedAt }, updatedAt));
       return meeting;
     });
   }
@@ -154,7 +167,7 @@ export class MeetingCatalogRepository {
         syncVersion: current.syncVersion + 1,
       });
       await this.db.meetings.put(meeting);
-      await this.db.outbox.add(operation(trashed ? "meeting.trash" : "meeting.restore", meetingId, { updatedAt }, updatedAt));
+      await this.enqueueOutbox(operation(trashed ? "meeting.trash" : "meeting.restore", meetingId, { updatedAt }, updatedAt));
       return meeting;
     });
   }
@@ -168,7 +181,7 @@ export class MeetingCatalogRepository {
       if (!current) throw new FolderNotFoundError(folderId);
       const folder = FolderSchema.parse({ ...current, name: normalizedName, updatedAt, syncVersion: current.syncVersion + 1 });
       await this.db.folders.put(folder);
-      await this.db.outbox.add(operation("folder.rename", folderId, { name: normalizedName, updatedAt }, updatedAt));
+      await this.enqueueOutbox(operation("folder.rename", folderId, { name: normalizedName, updatedAt }, updatedAt));
       return folder;
     });
   }
@@ -183,7 +196,7 @@ export class MeetingCatalogRepository {
         ...meeting, folderId: null, updatedAt, syncVersion: meeting.syncVersion + 1,
       }))));
       await this.db.folders.delete(folderId);
-      await this.db.outbox.add(operation("folder.remove", folderId, { updatedAt }, updatedAt));
+      await this.enqueueOutbox(operation("folder.remove", folderId, { updatedAt }, updatedAt));
     });
   }
 
@@ -221,8 +234,25 @@ export class MeetingCatalogRepository {
     }
 
     await this.db.transaction("rw", this.db.meetings, this.db.folders, this.db.outbox, async () => {
-      if (receivedMeeting) await this.db.meetings.put(receivedMeeting);
-      if (receivedFolder) await this.db.folders.put(receivedFolder);
+      const pending = await this.db.outbox.toArray();
+      const hasLaterEntityMutation = pending.some((item) => item.entityId === operationToApply.entityId && item.sequence !== undefined && item.sequence > sequence);
+      const pendingFolderRemovals = new Set(pending
+        .filter((item) => item.kind === "folder.remove" && item.sequence !== sequence)
+        .map((item) => item.entityId));
+
+      if (operationToApply.kind === "folder.remove") {
+        const meetings = await this.db.meetings.where("folderId").equals(operationToApply.entityId).toArray();
+        await Promise.all(meetings.map((meeting) => this.db.meetings.put(MeetingSchema.parse({ ...meeting, folderId: null }))));
+        await this.db.folders.delete(operationToApply.entityId);
+      } else if (!hasLaterEntityMutation) {
+        if (receivedMeeting) {
+          await this.db.meetings.put(MeetingSchema.parse({
+            ...receivedMeeting,
+            folderId: receivedMeeting.folderId && pendingFolderRemovals.has(receivedMeeting.folderId) ? null : receivedMeeting.folderId,
+          }));
+        }
+        if (receivedFolder && !pendingFolderRemovals.has(receivedFolder.id)) await this.db.folders.put(receivedFolder);
+      }
       await this.db.outbox.delete(sequence);
     });
   }
@@ -267,6 +297,13 @@ export class MeetingCatalogRepository {
       for (const local of await this.db.meetings.toArray()) {
         if (local.folderId && !availableFolderIds.has(local.folderId)) {
           await this.db.meetings.put(MeetingSchema.parse({ ...local, folderId: null }));
+          const create = operations.find((operation) => operation.entityId === local.id && operation.kind === "meeting.create");
+          if (create?.sequence !== undefined) {
+            const payload = CreateMeetingInputSchema.parse(create.payload);
+            await this.db.outbox.update(create.sequence, {
+              payload: CreateMeetingInputSchema.parse({ ...payload, folderId: null }),
+            });
+          }
         }
       }
     });

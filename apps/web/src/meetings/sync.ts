@@ -42,9 +42,8 @@ export class CatalogSync {
   }
 
   private async flushInternal(): Promise<SyncResult> {
-    while (true) {
-      const operation = (await this.repository.pendingOperations())[0];
-      if (!operation) return { state: "idle" };
+    const operations = await this.repository.pendingOperations();
+    for (const operation of operations) {
       try {
         const response = await this.api.send(operation);
         await this.repository.syncApplySuccessfulOperation(operation, response);
@@ -63,6 +62,7 @@ export class CatalogSync {
         return { state: "error" };
       }
     }
+    return { state: "idle" };
   }
 
   refresh(): Promise<SyncResult> {

@@ -111,4 +111,33 @@ describe("MeetingCatalogRepository", () => {
     await expect(catalog.rename("not-a-uuid", "Valid", now)).rejects.toBeInstanceOf(Error);
     await expect(catalog.createFolder(" ".repeat(81), now)).rejects.toBeInstanceOf(Error);
   });
+
+  test("rolls back an entity when its durable outbox write fails", async () => {
+    const catalog = new MeetingCatalogRepository(`meeting-catalog-failing-outbox-${databaseNumber++}`, {
+      writeOutbox: async () => { throw new Error("outbox unavailable"); },
+    });
+    repositories.push(catalog);
+
+    await expect(catalog.create("Cannot persist", null, now)).rejects.toThrow("outbox unavailable");
+
+    await expect(catalog.list({ includeTrashed: true })).resolves.toEqual([]);
+    await expect(catalog.pendingOperations()).resolves.toEqual([]);
+  });
+
+  test("writes exact ordered payloads for meeting and folder mutations", async () => {
+    const catalog = repository();
+    const folder = await catalog.createFolder("Work", now);
+    await catalog.renameFolder(folder.id, " Work renamed ", "2026-08-21T00:01:00.000Z");
+    const meeting = await catalog.create(" Agenda ", folder.id, "2026-08-21T00:02:00.000Z");
+    await catalog.rename(meeting.id, " Agenda renamed ", "2026-08-21T00:03:00.000Z");
+    await catalog.removeFolder(folder.id, "2026-08-21T00:04:00.000Z");
+
+    await expect(catalog.pendingOperations()).resolves.toEqual([
+      expect.objectContaining({ kind: "folder.create", entityId: folder.id, payload: { id: folder.id, name: "Work", clientCreatedAt: now } }),
+      expect.objectContaining({ kind: "folder.rename", entityId: folder.id, payload: { name: "Work renamed", updatedAt: "2026-08-21T00:01:00.000Z" } }),
+      expect.objectContaining({ kind: "meeting.create", entityId: meeting.id, payload: { id: meeting.id, title: "Agenda", folderId: folder.id, clientCreatedAt: "2026-08-21T00:02:00.000Z" } }),
+      expect.objectContaining({ kind: "meeting.rename", entityId: meeting.id, payload: { title: "Agenda renamed", updatedAt: "2026-08-21T00:03:00.000Z" } }),
+      expect.objectContaining({ kind: "folder.remove", entityId: folder.id, payload: { updatedAt: "2026-08-21T00:04:00.000Z" } }),
+    ]);
+  });
 });
