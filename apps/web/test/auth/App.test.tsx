@@ -256,4 +256,26 @@ describe("App session gate", () => {
 
     await screen.findByRole("heading", { name: "登录会议本" });
   });
+
+  test("keeps an explicit logout closed across online events even when logout fails", async () => {
+    const user = userEvent.setup();
+    const catalog = repository();
+    const staleSession = deferred<{ id: string; sessionExpiresAt: string }>();
+    const auth = api({
+      me: vi.fn().mockResolvedValueOnce({ id: "owner", sessionExpiresAt: expiry }).mockImplementationOnce(() => staleSession.promise),
+      logout: vi.fn().mockRejectedValue(new Error("offline")),
+    });
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
+
+    await screen.findByRole("heading", { name: "会议本" });
+    await user.click(screen.getByRole("button", { name: "退出" }));
+    await screen.findByRole("heading", { name: "登录会议本" });
+    window.dispatchEvent(new Event("online"));
+    staleSession.resolve({ id: "owner", sessionExpiresAt: expiry });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(auth.me).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("heading", { name: "登录会议本" })).toBeVisible();
+    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(false);
+  });
 });

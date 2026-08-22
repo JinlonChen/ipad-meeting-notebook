@@ -39,6 +39,29 @@ describe("CatalogSync", () => {
     await expect(sync.refresh()).resolves.toEqual({ state: "idle" });
   });
 
+  test("starts a new refresh epoch after login instead of coalescing with a stale unauthorized pull", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    let rejectOld!: (error: CatalogApiError) => void;
+    const oldPull = new Promise<never>((_, reject) => { rejectOld = reject; });
+    const client: MeetingCatalogApi = {
+      send: vi.fn(),
+      listFolders: vi.fn().mockImplementationOnce(() => oldPull).mockResolvedValueOnce([]),
+      listMeetings: vi.fn().mockResolvedValue([]),
+    };
+    const sync = new CatalogSync(store, client);
+    const beforeLogin = sync.refresh();
+    await vi.waitFor(() => expect(client.listFolders).toHaveBeenCalledTimes(1));
+    sync.resumeAfterLogin();
+    const afterLogin = sync.refresh();
+    expect(afterLogin).not.toBe(beforeLogin);
+    rejectOld(new CatalogApiError(401, "AUTH_REQUIRED"));
+
+    await expect(beforeLogin).resolves.toEqual({ state: "paused_auth" });
+    await expect(afterLogin).resolves.toEqual({ state: "idle" });
+    expect(client.listFolders).toHaveBeenCalledTimes(2);
+  });
+
   test("flushes durable operations in sequence so folders arrive before referencing meetings", async () => {
     const store = catalog();
     catalogs.push(store);

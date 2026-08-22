@@ -36,6 +36,7 @@ export function App({ repository = defaultRepository, auth = defaultAuth, synchr
   const [gate, setGate] = useState<Gate>("loading");
   const mounted = useRef(true);
   const generation = useRef(0);
+  const explicitLogout = useRef(false);
   const nextGeneration = useCallback(() => ++generation.current, []);
   const owns = useCallback((value: number) => mounted.current && generation.current === value, []);
 
@@ -48,19 +49,20 @@ export function App({ repository = defaultRepository, auth = defaultAuth, synchr
   }, []);
 
   const authorize = useCallback(async () => {
+    if (explicitLogout.current) return;
     const currentGeneration = nextGeneration();
     try {
       const session = await auth.me();
-      if (!owns(currentGeneration)) return;
+      if (!owns(currentGeneration) || explicitLogout.current) return;
       const access = await repository.authorizeDevice(session.sessionExpiresAt, now());
-      if (!owns(currentGeneration)) {
+      if (!owns(currentGeneration) || explicitLogout.current) {
         await repository.clearDeviceAccess(access);
         return;
       }
       setOnline(true);
       setGate("catalog");
     } catch (error) {
-      if (!owns(currentGeneration)) return;
+      if (!owns(currentGeneration) || explicitLogout.current) return;
       if (isUnauthorized(error)) { setGate("login"); return; }
       if (error instanceof AuthNetworkError) {
         setOnline(false);
@@ -75,7 +77,10 @@ export function App({ repository = defaultRepository, auth = defaultAuth, synchr
 
   useEffect(() => { void authorize(); }, [authorize]);
   useEffect(() => {
-    const becameOnline = () => { setOnline(true); void authorize(); };
+    const becameOnline = () => {
+      setOnline(true);
+      if (!explicitLogout.current) void authorize();
+    };
     const becameOffline = () => setOnline(false);
     window.addEventListener("online", becameOnline);
     window.addEventListener("offline", becameOffline);
@@ -93,6 +98,7 @@ export function App({ repository = defaultRepository, auth = defaultAuth, synchr
       await repository.clearDeviceAccess(access);
       return;
     }
+    explicitLogout.current = false;
     synchronizer.resumeAfterLogin();
     setGate("catalog");
   }, [auth, nextGeneration, now, owns, repository, synchronizer]);
@@ -106,6 +112,7 @@ export function App({ repository = defaultRepository, auth = defaultAuth, synchr
     return result;
   }, [owns, repository, syncRefresh]);
   const logout = useCallback(async () => {
+    explicitLogout.current = true;
     const currentGeneration = nextGeneration();
     if (mounted.current) setGate("logging-out");
     await Promise.allSettled([auth.logout(), repository.clearDeviceAccess()]);

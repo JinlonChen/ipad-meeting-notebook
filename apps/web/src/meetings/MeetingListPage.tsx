@@ -68,6 +68,7 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
   const menuItems = useRef<Array<HTMLButtonElement | null>>([]);
   const modal = useRef<HTMLElement>(null);
   const lastFocus = useRef<HTMLElement | null>(null);
+  const newFolderTrigger = useRef<HTMLButtonElement>(null);
   const setModal = useCallback((element: HTMLElement | null) => { modal.current = element; }, []);
 
   useEffect(() => {
@@ -131,6 +132,7 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
     setActionMeeting(null);
     actionTrigger.current?.focus();
   }, []);
+  const dismissMenu = useCallback(() => setActionMeeting(null), []);
 
   const closeModal = useCallback(() => {
     setDialog(null);
@@ -180,6 +182,7 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
       const items = menuItems.current.filter((item): item is HTMLButtonElement => item !== null && !item.disabled);
       const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
       if (event.key === "Escape") { event.preventDefault(); closeMenu(); return; }
+      if (event.key === "Tab") { dismissMenu(); return; }
       if (event.key === "Home") { event.preventDefault(); items[0]?.focus(); return; }
       if (event.key === "End") { event.preventDefault(); items.at(-1)?.focus(); return; }
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -190,7 +193,7 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
     };
     window.addEventListener("keydown", moveMenuFocus);
     return () => window.removeEventListener("keydown", moveMenuFocus);
-  }, [actionMeeting, closeMenu]);
+  }, [actionMeeting, closeMenu, dismissMenu]);
 
   useEffect(() => {
     if (!dialog && !confirmation) return;
@@ -247,6 +250,7 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
     if (!completed) return;
     if (!mounted.current) return;
     if (filter === folderId) setFilter("unfiled");
+    lastFocus.current = newFolderTrigger.current;
     closeModal();
     void reload().catch(() => { if (mounted.current) setOperationError("读取目录失败，请重试。"); });
   }
@@ -296,7 +300,7 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
       </div>
     </header>
     <aside className={`folder-rail ${railOpen ? "open" : ""}`} aria-label="会议分类">
-      <div className="rail-heading"><strong>分类</strong><button className="icon-button rail-close" aria-label="关闭分类" title="关闭分类" onClick={() => setRailOpen(false)}><X size={18} /></button><button className="icon-button" aria-label="新建分类" title="新建分类" onClick={(event) => openDialog({ kind: "folder" }, event.currentTarget)}><FolderPlus size={18} /></button></div>
+      <div className="rail-heading"><strong>分类</strong><button className="icon-button rail-close" aria-label="关闭分类" title="关闭分类" onClick={() => setRailOpen(false)}><X size={18} /></button><button ref={newFolderTrigger} className="icon-button" aria-label="新建分类" title="新建分类" onClick={(event) => openDialog({ kind: "folder" }, event.currentTarget)}><FolderPlus size={18} /></button></div>
       <nav>
         <button className={filter === "all" ? "selected" : ""} onClick={() => { setFilter("all"); setRailOpen(false); }}>全部会议</button>
         <button className={filter === "unfiled" ? "selected" : ""} onClick={() => { setFilter("unfiled"); setRailOpen(false); }}>未分类</button>

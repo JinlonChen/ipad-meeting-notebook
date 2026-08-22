@@ -357,6 +357,37 @@ describe("MeetingListPage", () => {
     expect(trigger).toHaveFocus();
   });
 
+  test("moves focus to a stable category control after deleting its trigger", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    const folder = await repository.createFolder("待删除", now);
+    renderPage(repository);
+    await screen.findByRole("button", { name: "删除分类 待删除" });
+    const fallback = screen.getByRole("button", { name: "新建分类" });
+    await user.click(screen.getByRole("button", { name: "删除分类 待删除" }));
+    await user.click(screen.getByRole("button", { name: "删除" }));
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: "删除分类 待删除" })).not.toBeInTheDocument());
+    expect(fallback).toHaveFocus();
+    expect(await repository.listFolders()).not.toContainEqual(expect.objectContaining({ id: folder.id }));
+  });
+
+  test("closes an open menu when Tab or Shift+Tab leaves it", async () => {
+    const user = userEvent.setup();
+    const repository = renderPage();
+    await repository.create("菜单会议", null, now);
+    await screen.findByRole("heading", { name: "会议本" });
+    await user.click(screen.getByRole("button", { name: "同步会议" }));
+    const trigger = await screen.findByRole("button", { name: "会议操作 菜单会议" });
+    await user.click(trigger);
+    await user.keyboard("{Tab}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+
+    await user.click(trigger);
+    await user.keyboard("{Shift>}{Tab}{/Shift}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
   test("filters folders and unfiled meetings, and renders one status with a duration", async () => {
     const repository = catalog();
     const first = { id: crypto.randomUUID(), name: "甲", createdAt: now, updatedAt: now, syncVersion: 0 };

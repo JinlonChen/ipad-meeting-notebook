@@ -11,7 +11,7 @@ export interface MeetingCatalogApi {
 
 export type SyncResult = { state: "idle" | "paused_auth" | "conflict" | "error" };
 type SyncRequestKind = "flush" | "refresh";
-type SyncTask = { kind: SyncRequestKind; promise: Promise<SyncResult> };
+type SyncTask = { kind: SyncRequestKind; epoch: number; promise: Promise<SyncResult> };
 
 export class CatalogApiError extends Error {
   constructor(public readonly status: number, public readonly code?: string) {
@@ -28,6 +28,7 @@ export class CatalogSync {
   private queue: Promise<void> = Promise.resolve();
   private currentTask: SyncTask | undefined;
   private authPaused = false;
+  private authEpoch = 0;
 
   constructor(private readonly repository: MeetingCatalogRepository, private readonly api: MeetingCatalogApi) {}
 
@@ -38,24 +39,25 @@ export class CatalogSync {
   }
 
   private request(kind: SyncRequestKind): Promise<SyncResult> {
+    const epoch = this.authEpoch;
     const current = this.currentTask;
-    if (current) {
+    if (current?.epoch === epoch) {
       if (current.kind === kind) return current.promise;
-      return this.startTask(kind, current);
+      return this.startTask(kind, epoch, current);
     }
     if (this.authPaused) return Promise.resolve({ state: "paused_auth" });
-    return this.startTask(kind);
+    return this.startTask(kind, epoch);
   }
 
-  private startTask(kind: SyncRequestKind, predecessor?: SyncTask): Promise<SyncResult> {
+  private startTask(kind: SyncRequestKind, epoch: number, predecessor?: SyncTask): Promise<SyncResult> {
     const promise = this.enqueue(async () => {
       if (predecessor) {
         const result = await predecessor.promise;
         if (result.state !== "idle") return result;
       }
-      return kind === "flush" ? this.flushInternal() : this.refreshInternal();
+      return kind === "flush" ? this.flushInternal(epoch) : this.refreshInternal(epoch);
     });
-    const task: SyncTask = { kind, promise };
+    const task: SyncTask = { kind, epoch, promise };
     this.currentTask = task;
     const clear = () => {
       if (this.currentTask === task) this.currentTask = undefined;
@@ -69,11 +71,12 @@ export class CatalogSync {
   }
 
   resumeAfterLogin(): void {
+    this.authEpoch += 1;
     this.authPaused = false;
   }
 
-  private async flushInternal(): Promise<SyncResult> {
-    if (this.authPaused) return { state: "paused_auth" };
+  private async flushInternal(epoch: number): Promise<SyncResult> {
+    if (this.authPaused && epoch === this.authEpoch) return { state: "paused_auth" };
     const operations = await this.repository.pendingOperations();
     for (const operation of operations) {
       try {
@@ -82,7 +85,7 @@ export class CatalogSync {
       } catch (error) {
         const status = statusOf(error);
         if (status === 401) {
-          this.authPaused = true;
+          if (epoch === this.authEpoch) this.authPaused = true;
           await this.repository.syncRecordFailure(operation, "AUTH_REQUIRED");
           return { state: "paused_auth" };
         }
@@ -101,8 +104,8 @@ export class CatalogSync {
     return this.request("refresh");
   }
 
-  private async refreshInternal(): Promise<SyncResult> {
-    const flushed = await this.flushInternal();
+  private async refreshInternal(epoch: number): Promise<SyncResult> {
+    const flushed = await this.flushInternal(epoch);
     if (flushed.state !== "idle") return flushed;
     try {
       const [folders, meetings] = await Promise.all([this.api.listFolders(), this.api.listMeetings()]);
@@ -110,7 +113,7 @@ export class CatalogSync {
       return { state: "idle" };
     } catch (error) {
       if (statusOf(error) === 401) {
-        this.authPaused = true;
+        if (epoch === this.authEpoch) this.authPaused = true;
         return { state: "paused_auth" };
       }
       return { state: "error" };
