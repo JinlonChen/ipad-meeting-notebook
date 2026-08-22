@@ -24,6 +24,26 @@ function statusOf(error: unknown): number | undefined {
   return error instanceof CatalogApiError ? error.status : undefined;
 }
 
+function hasExpectedSyncVersion(operation: OutboxOperation): boolean {
+  return typeof operation.payload === "object" && operation.payload !== null && Object.prototype.hasOwnProperty.call(operation.payload, "expectedSyncVersion");
+}
+
+function isTypedNotFoundConflict(operation: OutboxOperation, error: unknown): boolean {
+  if (!(error instanceof CatalogApiError) || error.status !== 404) return false;
+  if (operation.kind === "meeting.create") {
+    const folderId = typeof operation.payload === "object" && operation.payload !== null && "folderId" in operation.payload
+      ? operation.payload.folderId
+      : null;
+    return typeof folderId === "string" && error.code === "FOLDER_NOT_FOUND";
+  }
+  if (!hasExpectedSyncVersion(operation)) return false;
+  if (operation.kind === "folder.rename") return error.code === "FOLDER_NOT_FOUND";
+  if (operation.kind === "meeting.rename" || operation.kind === "meeting.trash" || operation.kind === "meeting.restore") {
+    return error.code === "MEETING_NOT_FOUND";
+  }
+  return false;
+}
+
 export class CatalogSync {
   private queue: Promise<void> = Promise.resolve();
   private currentTask: SyncTask | undefined;
@@ -98,6 +118,10 @@ export class CatalogSync {
         if (operation.kind === "folder.remove" && status === 404 && error instanceof CatalogApiError && error.code === "FOLDER_NOT_FOUND") {
           await this.repository.syncApplySuccessfulOperation(operation, {});
           continue;
+        }
+        if (isTypedNotFoundConflict(operation, error)) {
+          await this.repository.syncRecordFailure(operation, "CONFLICT");
+          return { state: "conflict" };
         }
         await this.repository.syncRecordFailure(operation, "SYNC_FAILED");
         return { state: "error" };

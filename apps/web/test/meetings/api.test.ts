@@ -122,4 +122,29 @@ describe("MeetingCatalogHttpApi", () => {
     await expect(new MeetingCatalogHttpApi(vi.fn().mockResolvedValue(response({ code: "MEETING_NOT_FOUND" }, 404))).send(operation)).rejects.toMatchObject({ status: 404, code: "REQUEST_FAILED" });
     await expect(new MeetingCatalogHttpApi(vi.fn().mockResolvedValue(new Response("not-json", { status: 404 }))).send(operation)).rejects.toMatchObject({ status: 404, code: "REQUEST_FAILED" });
   });
+
+  test.each([
+    ["folder rename", { id: "00000000-0000-4000-8000-000000000021", entityId: folderId, kind: "folder.rename" as const, payload: { name: "Renamed", updatedAt: timestamp, expectedSyncVersion: 0 }, createdAt: timestamp, attempts: 0, lastError: null }, "FOLDER_NOT_FOUND"],
+    ["meeting rename", { id: "00000000-0000-4000-8000-000000000022", entityId: id, kind: "meeting.rename" as const, payload: { title: "Renamed", updatedAt: timestamp, expectedSyncVersion: 0 }, createdAt: timestamp, attempts: 0, lastError: null }, "MEETING_NOT_FOUND"],
+    ["meeting trash", { id: "00000000-0000-4000-8000-000000000023", entityId: id, kind: "meeting.trash" as const, payload: { updatedAt: timestamp, expectedSyncVersion: 0 }, createdAt: timestamp, attempts: 0, lastError: null }, "MEETING_NOT_FOUND"],
+    ["meeting restore", { id: "00000000-0000-4000-8000-000000000024", entityId: id, kind: "meeting.restore" as const, payload: { updatedAt: timestamp, expectedSyncVersion: 0 }, createdAt: timestamp, attempts: 0, lastError: null }, "MEETING_NOT_FOUND"],
+    ["meeting create folder reference", { id: "00000000-0000-4000-8000-000000000025", entityId: id, kind: "meeting.create" as const, payload: { id, title: "Planning", folderId, clientCreatedAt: timestamp }, createdAt: timestamp, attempts: 0, lastError: null }, "FOLDER_NOT_FOUND"],
+  ])("preserves the exact typed 404 for %s", async (_name, operation, code) => {
+    const api = new MeetingCatalogHttpApi(vi.fn().mockResolvedValue(response({ code }, 404)));
+
+    await expect(api.send(operation)).rejects.toEqual(new CatalogApiError(404, code));
+  });
+
+  test.each([
+    ["unrelated code", { id: "00000000-0000-4000-8000-000000000026", entityId: folderId, kind: "folder.rename" as const, payload: { name: "Renamed", updatedAt: timestamp, expectedSyncVersion: 0 }, createdAt: timestamp, attempts: 0, lastError: null }, "MEETING_NOT_FOUND"],
+    ["legacy unconditional rename", { id: "legacy-folder-not-found", entityId: folderId, kind: "folder.rename" as const, payload: { name: "Renamed", updatedAt: timestamp }, createdAt: timestamp, attempts: 0, lastError: null }, "FOLDER_NOT_FOUND"],
+    ["legacy meeting rename", { id: "legacy-meeting-rename-not-found", entityId: id, kind: "meeting.rename" as const, payload: { title: "Renamed", updatedAt: timestamp }, createdAt: timestamp, attempts: 0, lastError: null }, "MEETING_NOT_FOUND"],
+    ["legacy meeting trash", { id: "legacy-meeting-trash-not-found", entityId: id, kind: "meeting.trash" as const, payload: { updatedAt: timestamp }, createdAt: timestamp, attempts: 0, lastError: null }, "MEETING_NOT_FOUND"],
+    ["legacy meeting restore", { id: "legacy-meeting-restore-not-found", entityId: id, kind: "meeting.restore" as const, payload: { updatedAt: timestamp }, createdAt: timestamp, attempts: 0, lastError: null }, "MEETING_NOT_FOUND"],
+    ["meeting create without a folder reference", { id: "00000000-0000-4000-8000-000000000027", entityId: id, kind: "meeting.create" as const, payload: { id, title: "Planning", folderId: null, clientCreatedAt: timestamp }, createdAt: timestamp, attempts: 0, lastError: null }, "FOLDER_NOT_FOUND"],
+  ])("keeps a %s 404 as a generic request failure", async (_name, operation, code) => {
+    const api = new MeetingCatalogHttpApi(vi.fn().mockResolvedValue(response({ code }, 404)));
+
+    await expect(api.send(operation)).rejects.toEqual(new CatalogApiError(404, "REQUEST_FAILED"));
+  });
 });

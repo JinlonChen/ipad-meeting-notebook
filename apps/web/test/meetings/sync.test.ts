@@ -479,6 +479,110 @@ describe("CatalogSync", () => {
     }));
   });
 
+  test("turns a typed missing-folder rename response into a resolvable conflict and resumes pulling", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    const remoteFolder = { id: crypto.randomUUID(), name: "Server folder", createdAt: now, updatedAt: now, syncVersion: 2 };
+    await store.syncRefresh([remoteFolder], []);
+    await store.renameFolder(remoteFolder.id, "Offline rename", "2026-08-21T00:01:00.000Z");
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PATCH") {
+        return new Response(JSON.stringify({ code: "FOLDER_NOT_FOUND" }), { status: 404, headers: { "content-type": "application/json" } });
+      }
+      if (String(input) === "/api/folders") return new Response(JSON.stringify([]), { status: 200 });
+      if (String(input) === "/api/meetings?includeTrashed=true") return new Response(JSON.stringify([]), { status: 200 });
+      throw new Error(`Unexpected request: ${String(input)}`);
+    });
+    const sync = new CatalogSync(store, new MeetingCatalogHttpApi(fetcher));
+
+    await expect(sync.refresh()).resolves.toEqual({ state: "conflict" });
+    const pending = await store.pendingStatus();
+    expect(pending).toEqual({
+      count: 1,
+      conflict: expect.objectContaining({ kind: "folder.rename", entityName: "Offline rename" }),
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    await store.resolveConflict(pending.conflict!.sequence);
+    await expect(sync.refresh()).resolves.toEqual({ state: "idle" });
+    await expect(store.pendingOperations()).resolves.toEqual([]);
+    await expect(store.listFolders()).resolves.toEqual([]);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  test.each(["meeting.rename", "meeting.trash", "meeting.restore"] as const)("turns a typed missing meeting during conditional %s into a resolvable conflict", async (kind) => {
+    const store = catalog();
+    catalogs.push(store);
+    const remoteMeeting = {
+      id: crypto.randomUUID(), title: "Server meeting", folderId: null,
+      status: (kind === "meeting.restore" ? "trashed" : "draft") as "trashed" | "draft",
+      startedAt: null, endedAt: null, createdAt: now, updatedAt: now,
+      trashedAt: kind === "meeting.restore" ? now : null, syncVersion: 2,
+    };
+    await store.syncRefresh([], [remoteMeeting]);
+    if (kind === "meeting.rename") await store.rename(remoteMeeting.id, "Offline rename", "2026-08-21T00:01:00.000Z");
+    if (kind === "meeting.trash") await store.trash(remoteMeeting.id, "2026-08-21T00:01:00.000Z");
+    if (kind === "meeting.restore") await store.restore(remoteMeeting.id, "2026-08-21T00:01:00.000Z");
+    const sync = new CatalogSync(store, api(async () => { throw new CatalogApiError(404, "MEETING_NOT_FOUND"); }));
+
+    await expect(sync.refresh()).resolves.toEqual({ state: "conflict" });
+    const pending = await store.pendingStatus();
+    expect(pending.conflict).toEqual(expect.objectContaining({ kind, entityName: kind === "meeting.rename" ? "Offline rename" : "Server meeting" }));
+
+    await store.resolveConflict(pending.conflict!.sequence);
+    await expect(sync.refresh()).resolves.toEqual({ state: "idle" });
+    await expect(store.pendingOperations()).resolves.toEqual([]);
+    await expect(store.get(remoteMeeting.id)).resolves.toBeNull();
+  });
+
+  test("turns a typed missing folder reference during meeting create into a resolvable conflict", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    const remoteFolder = { id: crypto.randomUUID(), name: "Deleted folder", createdAt: now, updatedAt: now, syncVersion: 1 };
+    await store.syncRefresh([remoteFolder], []);
+    const localMeeting = await store.create("Offline meeting", remoteFolder.id, "2026-08-21T00:01:00.000Z");
+    const sync = new CatalogSync(store, api(async () => { throw new CatalogApiError(404, "FOLDER_NOT_FOUND"); }));
+
+    await expect(sync.refresh()).resolves.toEqual({ state: "conflict" });
+    const pending = await store.pendingStatus();
+    expect(pending.conflict).toEqual(expect.objectContaining({ kind: "meeting.create", entityName: "Offline meeting" }));
+
+    await store.resolveConflict(pending.conflict!.sequence);
+    await expect(sync.refresh()).resolves.toEqual({ state: "idle" });
+    await expect(store.pendingOperations()).resolves.toEqual([]);
+    await expect(store.get(localMeeting.id)).resolves.toBeNull();
+  });
+
+  test("keeps FOLDER_NOT_FOUND for a meeting create without a folder reference as a normal sync error", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    await store.create("Unfiled meeting", null, now);
+
+    await expect(new CatalogSync(store, api(async () => { throw new CatalogApiError(404, "FOLDER_NOT_FOUND"); })).flush()).resolves.toEqual({ state: "error" });
+    await expect(store.pendingOperations()).resolves.toEqual([expect.objectContaining({ attempts: 1, lastError: "SYNC_FAILED" })]);
+  });
+
+  test.each([
+    ["folder rename with a meeting code", "folder"],
+    ["meeting rename with a folder code", "meeting"],
+  ] as const)("keeps %s as a normal sync error", async (_name, entity) => {
+    const store = catalog();
+    catalogs.push(store);
+    if (entity === "folder") {
+      const remoteFolder = { id: crypto.randomUUID(), name: "Remote", createdAt: now, updatedAt: now, syncVersion: 1 };
+      await store.syncRefresh([remoteFolder], []);
+      await store.renameFolder(remoteFolder.id, "Local", "2026-08-21T00:01:00.000Z");
+    } else {
+      const remoteMeeting = { id: crypto.randomUUID(), title: "Remote", folderId: null, status: "draft" as const, startedAt: null, endedAt: null, createdAt: now, updatedAt: now, trashedAt: null, syncVersion: 1 };
+      await store.syncRefresh([], [remoteMeeting]);
+      await store.rename(remoteMeeting.id, "Local", "2026-08-21T00:01:00.000Z");
+    }
+    const code = entity === "folder" ? "MEETING_NOT_FOUND" : "FOLDER_NOT_FOUND";
+
+    await expect(new CatalogSync(store, api(async () => { throw new CatalogApiError(404, code); })).flush()).resolves.toEqual({ state: "error" });
+    await expect(store.pendingOperations()).resolves.toEqual([expect.objectContaining({ attempts: 1, lastError: "SYNC_FAILED" })]);
+  });
+
   test("hydrates a clean device from the server catalog", async () => {
     const store = catalog();
     catalogs.push(store);

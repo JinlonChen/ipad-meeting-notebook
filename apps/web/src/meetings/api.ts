@@ -10,9 +10,15 @@ function hasExpectedSyncVersion(payload: Record<string, unknown>): boolean {
   return Object.prototype.hasOwnProperty.call(payload, "expectedSyncVersion");
 }
 
-function failure(response: Response): CatalogApiError {
+async function failure(response: Response, preservedCodes: readonly string[] = []): Promise<CatalogApiError> {
   if (response.status === 401) return new CatalogApiError(401, "AUTH_REQUIRED");
   if (response.status === 409) return new CatalogApiError(409, "CONFLICT");
+  if (response.status === 404 && preservedCodes.length > 0) {
+    try {
+      const parsed = z.object({ code: z.string() }).safeParse(await response.clone().json());
+      if (parsed.success && preservedCodes.includes(parsed.data.code)) return new CatalogApiError(404, parsed.data.code);
+    } catch { /* preserve the generic failure for malformed responses */ }
+  }
   return new CatalogApiError(response.status, "REQUEST_FAILED");
 }
 
@@ -20,14 +26,14 @@ function normalizedFailure(error: unknown, status = 0): CatalogApiError {
   return error instanceof CatalogApiError ? error : new CatalogApiError(status, "REQUEST_FAILED");
 }
 
-async function parsed<T>(request: Promise<Response>, schema: z.ZodType<T>): Promise<T> {
+async function parsed<T>(request: Promise<Response>, schema: z.ZodType<T>, preservedCodes: readonly string[] = []): Promise<T> {
   let response: Response;
   try {
     response = await request;
   } catch (error) {
     throw normalizedFailure(error);
   }
-  if (!response.ok) throw failure(response);
+  if (!response.ok) throw await failure(response, preservedCodes);
   try {
     return schema.parse(await response.json());
   } catch (error) {
@@ -50,28 +56,30 @@ export class MeetingCatalogHttpApi implements MeetingCatalogApi {
     });
     try {
       switch (operation.kind) {
-      case "meeting.create":
-        return { meeting: await parsed(this.fetcher("/api/meetings", init("POST", CreateMeetingInputSchema.parse(operation.payload))), MeetingSchema) };
+      case "meeting.create": {
+        const payload = CreateMeetingInputSchema.parse(operation.payload);
+        return { meeting: await parsed(this.fetcher("/api/meetings", init("POST", payload)), MeetingSchema, payload.folderId ? ["FOLDER_NOT_FOUND"] : []) };
+      }
       case "meeting.rename": {
         const payload = z.object({ title: z.unknown() }).passthrough().parse(operation.payload);
         const body = hasExpectedSyncVersion(payload)
           ? MeetingPatchBodySchema.parse({ title: payload.title, expectedSyncVersion: payload.expectedSyncVersion })
           : LegacyMeetingPatchBodySchema.parse({ title: payload.title });
-        return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}`, init("PATCH", body)), MeetingSchema) };
+        return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}`, init("PATCH", body)), MeetingSchema, hasExpectedSyncVersion(payload) ? ["MEETING_NOT_FOUND"] : []) };
       }
       case "meeting.trash": {
         const payload = z.object({}).passthrough().parse(operation.payload);
         const body = hasExpectedSyncVersion(payload)
           ? MeetingMutationBodySchema.parse({ expectedSyncVersion: payload.expectedSyncVersion })
           : undefined;
-        return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}`, init("DELETE", body)), MeetingSchema) };
+        return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}`, init("DELETE", body)), MeetingSchema, hasExpectedSyncVersion(payload) ? ["MEETING_NOT_FOUND"] : []) };
       }
       case "meeting.restore": {
         const payload = z.object({}).passthrough().parse(operation.payload);
         const body = hasExpectedSyncVersion(payload)
           ? MeetingMutationBodySchema.parse({ expectedSyncVersion: payload.expectedSyncVersion })
           : undefined;
-        return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}/restore`, init("POST", body)), MeetingSchema) };
+        return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}/restore`, init("POST", body)), MeetingSchema, hasExpectedSyncVersion(payload) ? ["MEETING_NOT_FOUND"] : []) };
       }
       case "folder.create":
         return { folder: await parsed(this.fetcher("/api/folders", init("POST", CreateFolderInputSchema.parse(operation.payload))), FolderSchema) };
@@ -80,7 +88,7 @@ export class MeetingCatalogHttpApi implements MeetingCatalogApi {
         const body = hasExpectedSyncVersion(payload)
           ? FolderRenameBodySchema.parse({ name: payload.name, expectedSyncVersion: payload.expectedSyncVersion })
           : LegacyFolderRenameBodySchema.parse({ name: payload.name });
-        return { folder: await parsed(this.fetcher(`/api/folders/${operation.entityId}`, init("PATCH", body)), FolderSchema) };
+        return { folder: await parsed(this.fetcher(`/api/folders/${operation.entityId}`, init("PATCH", body)), FolderSchema, hasExpectedSyncVersion(payload) ? ["FOLDER_NOT_FOUND"] : []) };
       }
       case "folder.remove": {
         const payload = z.object({}).passthrough().parse(operation.payload);
@@ -94,7 +102,7 @@ export class MeetingCatalogHttpApi implements MeetingCatalogApi {
             if (body.code === "FOLDER_NOT_FOUND") return {};
           } catch { /* preserve non-JSON errors */ }
         }
-        if (!response.ok) throw failure(response);
+        if (!response.ok) throw await failure(response);
         return {};
       }
       }
