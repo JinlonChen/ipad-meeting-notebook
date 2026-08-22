@@ -76,6 +76,77 @@ describe("MeetingListPage", () => {
     await screen.findByText("还没有会议");
   });
 
+  test("removes a closed portrait drawer from navigation and restores focus after every close path", async () => {
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 744 }, innerHeight: { configurable: true, value: 1133 } });
+    const user = userEvent.setup();
+    render(<MemoryRouter><MeetingListPage repository={catalog()} refresh={async () => ({ state: "idle" })} now={() => now} online={false} /></MemoryRouter>);
+    const shell = await screen.findByRole("main");
+    const rail = document.querySelector<HTMLElement>(".folder-rail")!;
+    const trigger = screen.getByRole("button", { name: "打开分类" });
+    expect(shell).toHaveAttribute("data-layout", "portrait");
+    expect(trigger).toHaveAttribute("aria-controls", "meeting-folder-rail");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(rail).toHaveAttribute("id", "meeting-folder-rail");
+    expect(rail).toHaveAttribute("inert");
+    expect(rail).toHaveAttribute("aria-hidden", "true");
+    expect(screen.queryByRole("complementary", { name: "会议分类" })).not.toBeInTheDocument();
+    expect(screen.getByRole("complementary", { hidden: true })).toBe(rail);
+
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(rail).not.toHaveAttribute("inert");
+    expect(rail).not.toHaveAttribute("aria-hidden");
+    await waitFor(() => expect(screen.getByRole("button", { name: "关闭分类" })).toHaveFocus());
+    await user.click(screen.getByRole("button", { name: "关闭分类" }));
+    expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    await user.tab();
+    expect(screen.getByRole("button", { name: "新建分类" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
+    expect(rail).toHaveAttribute("inert");
+
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "关闭分类抽屉" }));
+    expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "未分类" }));
+    expect(trigger).toHaveFocus();
+    expect(shell).toHaveAttribute("data-drawer", "closed");
+  });
+
+  test("keeps the landscape category rail semantic and focusable while drawer state is closed", async () => {
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 1133 }, innerHeight: { configurable: true, value: 744 } });
+    render(<MemoryRouter><MeetingListPage repository={catalog()} refresh={async () => ({ state: "idle" })} now={() => now} online={false} /></MemoryRouter>);
+    const shell = await screen.findByRole("main");
+    expect(shell).toHaveAttribute("data-layout", "landscape");
+    const rail = screen.getByRole("complementary", { name: "会议分类" });
+    expect(rail).not.toHaveAttribute("inert");
+    expect(rail).not.toHaveAttribute("aria-hidden");
+    const createFolder = screen.getByRole("button", { name: "新建分类" });
+    createFolder.focus();
+    expect(createFolder).toHaveFocus();
+
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 744 }, innerHeight: { configurable: true, value: 1133 } });
+    window.dispatchEvent(new Event("resize"));
+    await waitFor(() => expect(shell).toHaveAttribute("data-layout", "portrait"));
+    expect(rail).toHaveAttribute("inert");
+    expect(rail).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByRole("button", { name: "打开分类" })).toHaveFocus();
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "打开分类" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "关闭分类" })).toHaveFocus());
+
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 1133 }, innerHeight: { configurable: true, value: 744 } });
+    window.dispatchEvent(new Event("resize"));
+    await waitFor(() => expect(shell).toHaveAttribute("data-layout", "landscape"));
+    expect(rail).not.toHaveAttribute("inert");
+    expect(rail).not.toHaveAttribute("aria-hidden");
+    expect(createFolder).toHaveFocus();
+  });
+
   test("uses the portrait drawer at tablet portrait widths and keeps the rail in landscape", async () => {
     for (const [width, height] of [[820, 1180], [834, 1194], [1024, 1366]]) {
       Object.defineProperties(window, { innerWidth: { configurable: true, value: width }, innerHeight: { configurable: true, value: height } });

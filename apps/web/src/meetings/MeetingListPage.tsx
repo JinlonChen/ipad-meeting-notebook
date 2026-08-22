@@ -21,10 +21,19 @@ function layoutMode(): "portrait" | "landscape" {
   return window.innerHeight > window.innerWidth ? "portrait" : "landscape";
 }
 
-function useLayoutMode(): "portrait" | "landscape" {
+function useLayoutMode(beforeChange: (nextLayout: "portrait" | "landscape") => void): "portrait" | "landscape" {
   const [layout, setLayout] = useState(layoutMode);
+  const layoutRef = useRef(layout);
+  const beforeChangeRef = useRef(beforeChange);
+  beforeChangeRef.current = beforeChange;
   useEffect(() => {
-    const update = () => setLayout(layoutMode());
+    const update = () => {
+      const nextLayout = layoutMode();
+      if (nextLayout === layoutRef.current) return;
+      beforeChangeRef.current(nextLayout);
+      layoutRef.current = nextLayout;
+      setLayout(nextLayout);
+    };
     const media = window.matchMedia?.("(orientation: portrait)");
     window.addEventListener("resize", update);
     media?.addEventListener?.("change", update);
@@ -58,7 +67,18 @@ function conflictActionLabel(kind: NonNullable<PendingStatus["conflict"]>["kind"
 
 export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh, now = () => new Date().toISOString(), online, onLogout }: Props) {
   const navigate = useNavigate();
-  const layout = useLayoutMode();
+  const [railOpen, setRailOpen] = useState(false);
+  const newFolderTrigger = useRef<HTMLButtonElement>(null);
+  const railTrigger = useRef<HTMLButtonElement>(null);
+  const railClose = useRef<HTMLButtonElement>(null);
+  const restoreRailTriggerAfterLayout = useRef(false);
+  const layout = useLayoutMode((nextLayout) => {
+    const active = document.activeElement as HTMLElement | null;
+    restoreRailTriggerAfterLayout.current = nextLayout === "portrait" && !railOpen && Boolean(active?.closest("#meeting-folder-rail"));
+    if (nextLayout === "landscape" && active === railClose.current) {
+      newFolderTrigger.current?.focus();
+    }
+  });
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -68,7 +88,6 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
   const [formError, setFormError] = useState("");
   const [confirmation, setConfirmation] = useState<string | null>(null);
   const [syncState, setSyncState] = useState<SyncResult["state"] | "syncing">(online ? "idle" : "paused_auth");
-  const [railOpen, setRailOpen] = useState(false);
   const [actionMeeting, setActionMeeting] = useState<string | null>(null);
   const [pendingOperation, setPendingOperation] = useState<string | null>(null);
   const [operationError, setOperationError] = useState("");
@@ -88,10 +107,10 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
   const menuItems = useRef<Array<HTMLButtonElement | null>>([]);
   const modal = useRef<HTMLElement>(null);
   const lastFocus = useRef<HTMLElement | null>(null);
-  const newFolderTrigger = useRef<HTMLButtonElement>(null);
   const syncTrigger = useRef<HTMLButtonElement>(null);
   const setModal = useCallback((element: HTMLElement | null) => { modal.current = element; }, []);
   const modalOpen = dialog !== null || confirmation !== null || conflictOpen;
+  const drawerHidden = layout === "portrait" && !railOpen;
 
   useEffect(() => {
     mounted.current = true;
@@ -198,15 +217,30 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
     setConflictOpen(true);
   }, []);
 
+  const closeRail = useCallback(() => {
+    setRailOpen(false);
+    if (layout === "portrait") queueMicrotask(() => railTrigger.current?.focus());
+  }, [layout]);
+
+  useEffect(() => {
+    if (layout !== "portrait") return;
+    if (railOpen) queueMicrotask(() => railClose.current?.focus());
+    else if (restoreRailTriggerAfterLayout.current) {
+      restoreRailTriggerAfterLayout.current = false;
+      queueMicrotask(() => railTrigger.current?.focus());
+    }
+  }, [layout, railOpen]);
+
   useEffect(() => {
     const onEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (modalOpen) { event.preventDefault(); closeModal(); return; }
-      if (actionMeeting) { event.preventDefault(); closeMenu(); }
+      if (actionMeeting) { event.preventDefault(); closeMenu(); return; }
+      if (layout === "portrait" && railOpen) { event.preventDefault(); closeRail(); }
     };
     window.addEventListener("keydown", onEscape);
     return () => window.removeEventListener("keydown", onEscape);
-  }, [actionMeeting, closeMenu, closeModal, modalOpen]);
+  }, [actionMeeting, closeMenu, closeModal, closeRail, layout, modalOpen, railOpen]);
 
   useEffect(() => {
     if (!actionMeeting) return;
@@ -402,7 +436,7 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
 
   return <><main className="catalog-shell" data-layout={layout} data-drawer={railOpen ? "open" : "closed"} inert={modalOpen}>
     <header className="catalog-topbar">
-      <button className="icon-button rail-toggle" aria-label="打开分类" title="打开分类" onClick={() => setRailOpen(true)}><FolderIcon size={18} /></button>
+      <button ref={railTrigger} className="icon-button rail-toggle" aria-label="打开分类" title="打开分类" aria-controls="meeting-folder-rail" aria-expanded={railOpen} onClick={() => setRailOpen(true)}><FolderIcon size={18} /></button>
       <h1>会议本</h1>
       <div className="topbar-actions">
         <span className={`sync-state ${online ? "" : "offline"}`} aria-live="polite">{stateText()}</span>
@@ -411,16 +445,16 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
         {onLogout && <button className="text-button" onClick={onLogout}>退出</button>}
       </div>
     </header>
-    <aside className={`folder-rail ${railOpen ? "open" : ""}`} aria-label="会议分类">
-      <div className="rail-heading"><strong>分类</strong><button className="icon-button rail-close" aria-label="关闭分类" title="关闭分类" onClick={() => setRailOpen(false)}><X size={18} /></button><button ref={newFolderTrigger} className="icon-button" aria-label="新建分类" title="新建分类" onClick={(event) => openDialog({ kind: "folder" }, event.currentTarget)}><FolderPlus size={18} /></button></div>
+    <aside id="meeting-folder-rail" className={`folder-rail ${railOpen ? "open" : ""}`} aria-label="会议分类" aria-hidden={drawerHidden ? true : undefined} inert={drawerHidden}>
+      <div className="rail-heading"><strong>分类</strong><button ref={railClose} className="icon-button rail-close" aria-label="关闭分类" title="关闭分类" onClick={closeRail}><X size={18} /></button><button ref={newFolderTrigger} className="icon-button" aria-label="新建分类" title="新建分类" onClick={(event) => openDialog({ kind: "folder" }, event.currentTarget)}><FolderPlus size={18} /></button></div>
       <nav>
-        <button className={filter === "all" ? "selected" : ""} onClick={() => { setFilter("all"); setRailOpen(false); }}>全部会议</button>
-        <button className={filter === "unfiled" ? "selected" : ""} onClick={() => { setFilter("unfiled"); setRailOpen(false); }}>未分类</button>
-        {folders.map((folder) => <div className="folder-item" key={folder.id}><button className={filter === folder.id ? "selected" : ""} onClick={() => { setFilter(folder.id); setRailOpen(false); }}>{folder.name}</button><button className="icon-button" aria-label={`编辑分类 ${folder.name}`} title={`编辑分类 ${folder.name}`} onClick={(event) => openDialog({ kind: "renameFolder", id: folder.id, initial: folder.name }, event.currentTarget)}><Pencil size={15} /></button><button className="icon-button" aria-label={`删除分类 ${folder.name}`} title={`删除分类 ${folder.name}`} onClick={(event) => openConfirmation(folder.id, event.currentTarget)}><Trash2 size={15} /></button></div>)}
-        <button className={filter === "trashed" ? "selected" : ""} onClick={() => { setFilter("trashed"); setRailOpen(false); }}>废纸篓</button>
+        <button className={filter === "all" ? "selected" : ""} onClick={() => { setFilter("all"); closeRail(); }}>全部会议</button>
+        <button className={filter === "unfiled" ? "selected" : ""} onClick={() => { setFilter("unfiled"); closeRail(); }}>未分类</button>
+        {folders.map((folder) => <div className="folder-item" key={folder.id}><button className={filter === folder.id ? "selected" : ""} onClick={() => { setFilter(folder.id); closeRail(); }}>{folder.name}</button><button className="icon-button" aria-label={`编辑分类 ${folder.name}`} title={`编辑分类 ${folder.name}`} onClick={(event) => openDialog({ kind: "renameFolder", id: folder.id, initial: folder.name }, event.currentTarget)}><Pencil size={15} /></button><button className="icon-button" aria-label={`删除分类 ${folder.name}`} title={`删除分类 ${folder.name}`} onClick={(event) => openConfirmation(folder.id, event.currentTarget)}><Trash2 size={15} /></button></div>)}
+        <button className={filter === "trashed" ? "selected" : ""} onClick={() => { setFilter("trashed"); closeRail(); }}>废纸篓</button>
       </nav>
     </aside>
-    {railOpen && <button className="drawer-scrim" aria-label="关闭分类抽屉" onClick={() => setRailOpen(false)} />}
+    {railOpen && <button className="drawer-scrim" aria-label="关闭分类抽屉" onClick={closeRail} />}
     <section className="meeting-panel">
       <div className="meeting-toolbar"><label className="search-field"><Search size={17} /><input type="search" aria-label="搜索会议" placeholder="搜索会议" value={search} onChange={(event) => setSearch(event.target.value)} /></label><button className="primary-button" onClick={(event) => openDialog({ kind: "meeting" }, event.currentTarget)}><Plus size={17} />新建会议</button></div>
       <p className="operation-error" role={visibleOperationError ? "alert" : undefined} aria-live="polite">{visibleOperationError}</p>
