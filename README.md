@@ -21,7 +21,7 @@ Safari 仅允许在安全上下文中使用麦克风。本机 `localhost` 可用
 
 ## iPad HTTPS 部署前提
 
-同一个公网或私网 HTTPS origin 需要提供 Web，并将 `/api` 反向代理到 API。部署时将 `WEB_ORIGIN` 设置为实际的 HTTPS URL，将 `COOKIE_SECURE` 设置为 `true`，并按网络与代理拓扑调整 `API_HOST`、反向代理和防火墙。仓库当前不提供部署自动化，这些前提需要在部署环境中另行配置。
+同一个公网或私网 HTTPS origin 需要提供 Web，并将 `/api` 反向代理到 API。部署时将 `WEB_ORIGIN` 设置为实际的 HTTPS URL，将 `COOKIE_SECURE` 设置为 `true`，并按网络与代理拓扑调整 `API_HOST`、反向代理和防火墙。当前 `WEB_ORIGIN` 是经过 URL 格式校验的预留配置，尚未接入 CORS 或受信 origin 访问控制；设置它不会替代同源反向代理、TLS 或边界安全措施。仓库当前不提供部署自动化，这些前提需要在部署环境中另行配置。
 
 ## 配置安全
 
