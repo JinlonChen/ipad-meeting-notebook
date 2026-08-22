@@ -14,6 +14,17 @@ export class MutationReplayConflictError extends Error {
   }
 }
 
+function serializeMutationRequest(request: unknown): string {
+  if (request === undefined) return "undefined";
+  try {
+    const serialized = JSON.stringify(request);
+    if (serialized === undefined) throw new Error();
+    return serialized;
+  } catch {
+    throw new Error("Mutation replay request must be JSON-serializable");
+  }
+}
+
 export function replayableMutation<T>(
   db: Database.Database,
   operationId: string | undefined,
@@ -24,7 +35,7 @@ export function replayableMutation<T>(
   mutate: () => T,
 ): T {
   if (operationId === undefined) return mutate();
-  const requestJson = JSON.stringify(request);
+  const requestJson = serializeMutationRequest(request);
   return db.transaction(() => {
     const existing = db.prepare(`
       SELECT kind, entity_id, request_json, response_json
