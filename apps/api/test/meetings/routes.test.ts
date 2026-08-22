@@ -202,4 +202,27 @@ describe("meeting routes", () => {
       await server.close();
     }
   });
+
+  test("replays a legacy rename and rejects reuse of its key for another legacy request", async () => {
+    const server = await createTestApp();
+    try {
+      const cookie = await login(server);
+      await server.inject({ method: "POST", url: "/api/meetings", headers: { cookie }, payload: { id: MEETING_ONE, title: "Before", folderId: null, clientCreatedAt: CREATED_AT } });
+      const key = "00000000-0000-4000-8000-000000000184";
+      const rename = (title: string) => server.inject({
+        method: "PATCH",
+        url: `/api/meetings/${MEETING_ONE}`,
+        headers: { cookie, "idempotency-key": key },
+        payload: { title },
+      });
+
+      const renamed = await rename("Legacy after");
+      expect(renamed.statusCode).toBe(200);
+      expect(renamed.json()).toMatchObject({ title: "Legacy after", syncVersion: 1 });
+      expect((await rename("Legacy after")).json()).toEqual(renamed.json());
+      expect(await rename("Legacy misuse")).toMatchObject({ statusCode: 409, body: '{"code":"IDEMPOTENCY_CONFLICT"}' });
+    } finally {
+      await server.close();
+    }
+  });
 });

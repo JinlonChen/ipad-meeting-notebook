@@ -1,13 +1,10 @@
-import { CreateFolderInputSchema, CreateMeetingInputSchema, FolderMutationBodySchema, FolderRenameBodySchema, FolderSchema, MeetingMutationBodySchema, MeetingPatchBodySchema, MeetingSchema, type Folder, type Meeting } from "@meeting/contracts";
+import { CreateFolderInputSchema, CreateMeetingInputSchema, FolderMutationBodySchema, FolderRenameBodySchema, FolderSchema, LegacyFolderRenameBodySchema, LegacyMeetingPatchBodySchema, MeetingMutationBodySchema, MeetingPatchBodySchema, MeetingSchema, type Folder, type Meeting } from "@meeting/contracts";
 import { z } from "zod";
 
 import { CatalogApiError, type MeetingCatalogApi } from "./sync.js";
 import type { OutboxOperation } from "./local-db.js";
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-const LegacyMeetingRenameBodySchema = CreateMeetingInputSchema.pick({ title: true });
-const LegacyFolderRenameBodySchema = CreateFolderInputSchema.pick({ name: true });
 
 function hasExpectedSyncVersion(payload: Record<string, unknown>): boolean {
   return Object.prototype.hasOwnProperty.call(payload, "expectedSyncVersion");
@@ -59,7 +56,7 @@ export class MeetingCatalogHttpApi implements MeetingCatalogApi {
         const payload = z.object({ title: z.unknown() }).passthrough().parse(operation.payload);
         const body = hasExpectedSyncVersion(payload)
           ? MeetingPatchBodySchema.parse({ title: payload.title, expectedSyncVersion: payload.expectedSyncVersion })
-          : LegacyMeetingRenameBodySchema.parse({ title: payload.title });
+          : LegacyMeetingPatchBodySchema.parse({ title: payload.title });
         return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}`, init("PATCH", body)), MeetingSchema) };
       }
       case "meeting.trash": {

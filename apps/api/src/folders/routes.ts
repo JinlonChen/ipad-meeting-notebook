@@ -1,4 +1,4 @@
-import { CreateFolderInputSchema, FolderMutationBodySchema, FolderRenameBodySchema, FolderSchema, IdempotencyKeySchema } from "@meeting/contracts";
+import { CreateFolderInputSchema, FolderMutationBodySchema, FolderRenameWireBodySchema, FolderSchema, IdempotencyKeySchema } from "@meeting/contracts";
 import type { FastifyInstance, FastifyRequest, onRequestHookHandler } from "fastify";
 import { z } from "zod";
 
@@ -51,11 +51,12 @@ export function registerFolderRoutes(app: FastifyInstance, options: {
 
   app.patch("/api/folders/:id", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
-    const patch = FolderRenameBodySchema.safeParse(request.body);
+    const patch = FolderRenameWireBodySchema.safeParse(request.body);
     const operation = operationId(request);
     if (!params.success || !patch.success || !operation.success || !EmptyQuerySchema.safeParse(request.query).success) return invalid(reply);
     try {
-      return reply.send(FolderSchema.parse(options.folders.rename(params.data.id, patch.data.name, now().toISOString(), patch.data.expectedSyncVersion, operation.data)));
+      const expectedSyncVersion = "expectedSyncVersion" in patch.data ? patch.data.expectedSyncVersion : undefined;
+      return reply.send(FolderSchema.parse(options.folders.rename(params.data.id, patch.data.name, now().toISOString(), expectedSyncVersion, operation.data)));
     } catch (error) {
       if (error instanceof FolderNotFoundError) return reply.code(404).send({ code: "FOLDER_NOT_FOUND" });
       if (error instanceof FolderSyncVersionConflictError) return reply.code(409).send({ code: "SYNC_VERSION_CONFLICT" });

@@ -40,6 +40,10 @@ export const MeetingPatchBodySchema = z.object({
   expectedSyncVersion: ExpectedSyncVersionSchema,
 }).strict().refine((value) => value.title !== undefined || value.folderId !== undefined);
 export const FolderRenameBodySchema = z.object({ name: FolderNameSchema, expectedSyncVersion: ExpectedSyncVersionSchema }).strict();
+export const LegacyMeetingPatchBodySchema = z.object({ title: MeetingTitleSchema }).strict();
+export const LegacyFolderRenameBodySchema = z.object({ name: FolderNameSchema }).strict();
+export const MeetingPatchWireBodySchema = z.union([MeetingPatchBodySchema, LegacyMeetingPatchBodySchema]);
+export const FolderRenameWireBodySchema = z.union([FolderRenameBodySchema, LegacyFolderRenameBodySchema]);
 
 export const FolderSchema = z.object({
   id: MeetingIdSchema,

@@ -3,12 +3,16 @@ import { describe, expect, test } from "vitest";
 import {
   CreateFolderInputSchema,
   CreateMeetingInputSchema,
+  FolderRenameWireBodySchema,
   FolderSchema,
   FolderMutationBodySchema,
   FolderRenameBodySchema,
   IdempotencyKeySchema,
+  LegacyFolderRenameBodySchema,
+  LegacyMeetingPatchBodySchema,
   MeetingMutationBodySchema,
   MeetingPatchBodySchema,
+  MeetingPatchWireBodySchema,
   MeetingListQuerySchema,
   MeetingSchema,
 } from "./meeting";
@@ -136,5 +140,17 @@ describe("meeting contracts", () => {
     expect(FolderMutationBodySchema.parse({ expectedSyncVersion: 0 })).toEqual({ expectedSyncVersion: 0 });
     expect(() => MeetingMutationBodySchema.parse({})).toThrow();
     expect(() => FolderMutationBodySchema.parse({ expectedSyncVersion: 1, extra: true })).toThrow();
+  });
+
+  test("shares strict legacy and combined rename wire schemas", () => {
+    expect(LegacyMeetingPatchBodySchema.parse({ title: " Legacy " })).toEqual({ title: "Legacy" });
+    expect(LegacyFolderRenameBodySchema.parse({ name: " Work " })).toEqual({ name: "Work" });
+    expect(MeetingPatchWireBodySchema.parse({ title: "Conditional", expectedSyncVersion: 3 })).toEqual({ title: "Conditional", expectedSyncVersion: 3 });
+    expect(FolderRenameWireBodySchema.parse({ name: "Legacy" })).toEqual({ name: "Legacy" });
+
+    expect(() => MeetingPatchWireBodySchema.parse({ title: "Invalid", expectedSyncVersion: undefined })).toThrow();
+    expect(() => MeetingPatchWireBodySchema.parse({ title: "Invalid", extra: true })).toThrow();
+    expect(() => FolderRenameWireBodySchema.parse({ name: "Invalid", expectedSyncVersion: undefined })).toThrow();
+    expect(() => FolderRenameWireBodySchema.parse({ name: "Invalid", extra: true })).toThrow();
   });
 });

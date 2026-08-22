@@ -2,7 +2,7 @@ import {
   CreateMeetingInputSchema,
   IdempotencyKeySchema,
   MeetingMutationBodySchema,
-  MeetingPatchBodySchema,
+  MeetingPatchWireBodySchema,
   MeetingSchema,
 } from "@meeting/contracts";
 import type { FastifyInstance, FastifyRequest, onRequestHookHandler } from "fastify";
@@ -69,11 +69,15 @@ export function registerMeetingRoutes(app: FastifyInstance, options: {
 
   app.patch("/api/meetings/:id", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
-    const patch = MeetingPatchBodySchema.safeParse(request.body);
+    const patch = MeetingPatchWireBodySchema.safeParse(request.body);
     const operation = operationId(request);
     if (!params.success || !patch.success || !operation.success || !EmptyQuerySchema.safeParse(request.query).success) return invalid(reply);
     try {
-      const { expectedSyncVersion, ...changes } = patch.data;
+      const expectedSyncVersion = "expectedSyncVersion" in patch.data ? patch.data.expectedSyncVersion : undefined;
+      const changes = {
+        title: patch.data.title,
+        ...("folderId" in patch.data ? { folderId: patch.data.folderId } : {}),
+      };
       return reply.send(MeetingSchema.parse(options.meetings.update(params.data.id, changes, now().toISOString(), expectedSyncVersion, operation.data)));
     } catch (error) {
       if (error instanceof MeetingNotFoundError) return reply.code(404).send({ code: "MEETING_NOT_FOUND" });
