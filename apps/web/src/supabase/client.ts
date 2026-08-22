@@ -35,9 +35,14 @@ export function readSupabaseConfig(environment: SupabaseEnvironment): SupabaseCo
 
   const isHttps = parsedUrl.protocol === "https:";
   const isLocalHttp = parsedUrl.protocol === "http:" && localHttpHosts.has(parsedUrl.hostname);
-  if (!isHttps && !isLocalHttp) throw new SupabaseConfigurationError();
+  const hasUserInfo = Boolean(parsedUrl.username || parsedUrl.password);
+  const hasNonRootPath = parsedUrl.pathname !== "/";
+  const hasSearchOrHash = Boolean(parsedUrl.search || parsedUrl.hash);
+  if ((!isHttps && !isLocalHttp) || hasUserInfo || hasNonRootPath || hasSearchOrHash) {
+    throw new SupabaseConfigurationError();
+  }
 
-  return { url, anonKey };
+  return { url: parsedUrl.origin, anonKey };
 }
 
 export function createMeetingSupabaseClient(config: SupabaseConfig): SupabaseClient<Database> {
