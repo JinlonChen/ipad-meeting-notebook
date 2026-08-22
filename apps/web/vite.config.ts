@@ -12,6 +12,7 @@ export default defineConfig({
       manifest: {
         name: "会议本",
         short_name: "会议本",
+        lang: "zh-CN",
         description: "个人会议录音、手写与 AI 纪要",
         display: "standalone",
         start_url: "/",
