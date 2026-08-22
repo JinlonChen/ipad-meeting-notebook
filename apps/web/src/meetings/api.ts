@@ -1,6 +1,8 @@
 import { CreateFolderInputSchema, CreateMeetingInputSchema, FolderMutationBodySchema, FolderRenameBodySchema, FolderSchema, LegacyFolderRenameBodySchema, LegacyMeetingPatchBodySchema, MeetingMutationBodySchema, MeetingPatchBodySchema, MeetingSchema, type Folder, type Meeting } from "@meeting/contracts";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
+import type { Database, Json } from "../supabase/types.js";
 import { CatalogApiError, type MeetingCatalogApi } from "./sync.js";
 import type { OutboxOperation } from "./local-db.js";
 
@@ -124,6 +126,131 @@ export class MeetingCatalogHttpApi implements MeetingCatalogApi {
       return await parsed(this.fetcher("/api/folders", { credentials: "include" }), z.array(FolderSchema));
     } catch (error) {
       throw normalizedFailure(error);
+    }
+  }
+}
+
+type SupabaseCatalogClient = Pick<SupabaseClient<Database>, "from" | "rpc">;
+
+const RpcResultSchema = z.object({
+  status: z.number().int(),
+  code: z.string().optional(),
+  meeting: z.unknown().optional(),
+  folder: z.unknown().optional(),
+}).strict();
+
+function record(input: unknown): Record<string, unknown> {
+  return z.record(z.string(), z.unknown()).parse(input);
+}
+
+function contractFolder(row: unknown): Folder {
+  const value = record(row);
+  return FolderSchema.parse({
+    id: value.id,
+    name: value.name,
+    createdAt: value.created_at,
+    updatedAt: value.updated_at,
+    syncVersion: value.sync_version,
+  });
+}
+
+function contractMeeting(row: unknown): Meeting {
+  const value = record(row);
+  return MeetingSchema.parse({
+    id: value.id,
+    title: value.title,
+    folderId: value.folder_id,
+    status: value.status,
+    startedAt: value.started_at,
+    endedAt: value.ended_at,
+    createdAt: value.created_at,
+    updatedAt: value.updated_at,
+    trashedAt: value.trashed_at,
+    syncVersion: value.sync_version,
+  });
+}
+
+function supabaseFailure(error: unknown, responseStatus?: unknown): CatalogApiError {
+  const parsedResponseStatus = z.number().int().nonnegative().safeParse(responseStatus);
+  const parsedError = z.object({ status: z.number().int().nonnegative() }).passthrough().safeParse(error);
+  const status = parsedResponseStatus.success ? parsedResponseStatus.data : parsedError.success ? parsedError.data.status : 0;
+  return status === 401
+    ? new CatalogApiError(401, "AUTH_REQUIRED")
+    : new CatalogApiError(status, "REQUEST_FAILED");
+}
+
+function rpcFailure(status: number, code: string | undefined): CatalogApiError {
+  if (status === 401) return new CatalogApiError(401, "AUTH_REQUIRED");
+  if (status === 409 && (code === "CONFLICT" || code === "IDEMPOTENCY_KEY_REUSED")) {
+    return new CatalogApiError(409, code);
+  }
+  if (status === 404 && (code === "FOLDER_NOT_FOUND" || code === "MEETING_NOT_FOUND")) {
+    return new CatalogApiError(404, code);
+  }
+  return new CatalogApiError(status, "REQUEST_FAILED");
+}
+
+export class MeetingCatalogSupabaseApi implements MeetingCatalogApi {
+  constructor(private readonly client: SupabaseCatalogClient) {}
+
+  async send(operation: OutboxOperation): Promise<{ meeting?: Meeting; folder?: Folder }> {
+    try {
+      const { data, error, status } = await this.client.rpc("apply_catalog_mutation", {
+        p_operation_id: operation.id,
+        p_kind: operation.kind,
+        p_entity_id: operation.entityId,
+        p_payload: operation.payload as Json,
+      });
+      if (error) throw supabaseFailure(error, status);
+
+      const result = RpcResultSchema.parse(data);
+      if (result.status < 200 || result.status >= 300) throw rpcFailure(result.status, result.code);
+
+      if (operation.kind === "folder.remove") {
+        if (result.meeting !== undefined || result.folder !== undefined) throw new CatalogApiError(500, "REQUEST_FAILED");
+        return {};
+      }
+      if (operation.kind.startsWith("folder.")) {
+        if (result.folder === undefined || result.meeting !== undefined) throw new CatalogApiError(500, "REQUEST_FAILED");
+        return { folder: contractFolder(result.folder) };
+      }
+      if (result.meeting === undefined || result.folder !== undefined) throw new CatalogApiError(500, "REQUEST_FAILED");
+      return { meeting: contractMeeting(result.meeting) };
+    } catch (error) {
+      if (error instanceof CatalogApiError) throw error;
+      throw new CatalogApiError(error instanceof z.ZodError ? 500 : 0, "REQUEST_FAILED");
+    }
+  }
+
+  async listMeetings(): Promise<Meeting[]> {
+    try {
+      const { data, error, status } = await this.client
+        .from("meetings")
+        .select("id,title,folder_id,status,started_at,ended_at,created_at,updated_at,trashed_at,sync_version")
+        .order("updated_at", { ascending: false })
+        .order("id", { ascending: true });
+      if (error) throw supabaseFailure(error, status);
+      if (!Array.isArray(data)) throw new CatalogApiError(500, "REQUEST_FAILED");
+      return z.array(MeetingSchema).parse(data.map(contractMeeting));
+    } catch (error) {
+      if (error instanceof CatalogApiError) throw error;
+      throw new CatalogApiError(error instanceof z.ZodError ? 500 : 0, "REQUEST_FAILED");
+    }
+  }
+
+  async listFolders(): Promise<Folder[]> {
+    try {
+      const { data, error, status } = await this.client
+        .from("folders")
+        .select("id,name,created_at,updated_at,sync_version")
+        .order("name", { ascending: true })
+        .order("id", { ascending: true });
+      if (error) throw supabaseFailure(error, status);
+      if (!Array.isArray(data)) throw new CatalogApiError(500, "REQUEST_FAILED");
+      return z.array(FolderSchema).parse(data.map(contractFolder));
+    } catch (error) {
+      if (error instanceof CatalogApiError) throw error;
+      throw new CatalogApiError(error instanceof z.ZodError ? 500 : 0, "REQUEST_FAILED");
     }
   }
 }

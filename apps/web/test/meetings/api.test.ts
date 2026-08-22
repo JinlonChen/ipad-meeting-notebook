@@ -1,7 +1,9 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, test, vi } from "vitest";
 
 import { CatalogApiError } from "../../src/meetings/sync.js";
-import { MeetingCatalogHttpApi } from "../../src/meetings/api.js";
+import { MeetingCatalogHttpApi, MeetingCatalogSupabaseApi } from "../../src/meetings/api.js";
+import type { Database } from "../../src/supabase/types.js";
 
 const id = "00000000-0000-4000-8000-000000000001";
 const folderId = "00000000-0000-4000-8000-000000000002";
@@ -146,5 +148,200 @@ describe("MeetingCatalogHttpApi", () => {
     const api = new MeetingCatalogHttpApi(vi.fn().mockResolvedValue(response({ code }, 404)));
 
     await expect(api.send(operation)).rejects.toEqual(new CatalogApiError(404, "REQUEST_FAILED"));
+  });
+});
+
+type SupabaseCatalogClient = Pick<SupabaseClient<Database>, "from" | "rpc">;
+
+type SupabaseResult = { data: unknown; error: unknown; status?: unknown };
+
+function supabaseClient(options: {
+  rpcResults?: SupabaseResult[];
+  tableResults?: Partial<Record<"folders" | "meetings", SupabaseResult>>;
+} = {}): {
+  client: SupabaseCatalogClient;
+  rpc: ReturnType<typeof vi.fn>;
+  queries: Record<string, { select: ReturnType<typeof vi.fn>; order: ReturnType<typeof vi.fn> }>;
+} {
+  const rpcResults = [...(options.rpcResults ?? [])];
+  const rpc = vi.fn().mockImplementation(async () => rpcResults.shift() ?? { data: null, error: null });
+  const queries: Record<string, { select: ReturnType<typeof vi.fn>; order: ReturnType<typeof vi.fn> }> = {};
+  const from = vi.fn().mockImplementation((table: "folders" | "meetings") => {
+    const result = options.tableResults?.[table] ?? { data: [], error: null };
+    const query: {
+      select: ReturnType<typeof vi.fn>;
+      order: ReturnType<typeof vi.fn>;
+      then: PromiseLike<SupabaseResult>["then"];
+    } = {
+      select: vi.fn(),
+      order: vi.fn(),
+      then: (onfulfilled, onrejected) => Promise.resolve(result).then(onfulfilled, onrejected),
+    };
+    query.select.mockReturnValue(query);
+    query.order.mockReturnValue(query);
+    queries[table] = query;
+    return query;
+  });
+  return { client: { from, rpc } as unknown as SupabaseCatalogClient, rpc, queries };
+}
+
+const meetingRow = {
+  user_id: "550e8400-e29b-41d4-a716-446655440000",
+  id,
+  title: "Planning",
+  folder_id: folderId,
+  status: "draft",
+  started_at: null,
+  ended_at: null,
+  created_at: timestamp,
+  updated_at: timestamp,
+  trashed_at: null,
+  sync_version: 2,
+};
+
+const folderRow = {
+  user_id: "550e8400-e29b-41d4-a716-446655440000",
+  id: folderId,
+  name: "Work",
+  created_at: timestamp,
+  updated_at: timestamp,
+  sync_version: 1,
+};
+
+const operations = [
+  { id: "00000000-0000-4000-8000-000000000011", entityId: id, kind: "meeting.create" as const, payload: { id, title: "Planning", folderId, clientCreatedAt: timestamp } },
+  { id: "00000000-0000-4000-8000-000000000012", entityId: id, kind: "meeting.rename" as const, payload: { title: "Renamed", updatedAt: timestamp, expectedSyncVersion: 0 } },
+  { id: "00000000-0000-4000-8000-000000000013", entityId: id, kind: "meeting.trash" as const, payload: { updatedAt: timestamp, expectedSyncVersion: 1 } },
+  { id: "00000000-0000-4000-8000-000000000014", entityId: id, kind: "meeting.restore" as const, payload: { updatedAt: timestamp, expectedSyncVersion: 2 } },
+  { id: "00000000-0000-4000-8000-000000000015", entityId: folderId, kind: "folder.create" as const, payload: { id: folderId, name: "Work", clientCreatedAt: timestamp } },
+  { id: "00000000-0000-4000-8000-000000000016", entityId: folderId, kind: "folder.rename" as const, payload: { name: "Renamed", updatedAt: timestamp, expectedSyncVersion: 0 } },
+  { id: "00000000-0000-4000-8000-000000000017", entityId: folderId, kind: "folder.remove" as const, payload: { updatedAt: timestamp, expectedSyncVersion: 1 } },
+].map((operation) => ({ ...operation, createdAt: timestamp, attempts: 0, lastError: null }));
+
+describe("MeetingCatalogSupabaseApi", () => {
+  test("sends every outbox operation through the mutation RPC with exact parameters", async () => {
+    const { client, rpc } = supabaseClient({ rpcResults: operations.map((operation) => ({
+      data: operation.kind === "folder.remove"
+        ? { status: 200 }
+        : operation.kind.startsWith("folder.")
+          ? { status: 200, folder: folderRow }
+          : { status: 200, meeting: meetingRow },
+      error: null,
+    })) });
+    const api = new MeetingCatalogSupabaseApi(client);
+
+    for (const operation of operations) await api.send(operation);
+
+    expect(rpc.mock.calls).toEqual(operations.map((operation) => ["apply_catalog_mutation", {
+      p_operation_id: operation.id,
+      p_kind: operation.kind,
+      p_entity_id: operation.entityId,
+      p_payload: operation.payload,
+    }]));
+  });
+
+  test("maps snake-case mutation rows and deterministic replay responses to contracts", async () => {
+    const { client } = supabaseClient({ rpcResults: [
+      { data: { status: 200, meeting: meetingRow }, error: null },
+      { data: { status: 200, meeting: meetingRow }, error: null },
+      { data: { status: 200, folder: folderRow }, error: null },
+    ] });
+    const api = new MeetingCatalogSupabaseApi(client);
+
+    await expect(api.send(operations[0]!)).resolves.toEqual({ meeting: {
+      id, title: "Planning", folderId, status: "draft", startedAt: null, endedAt: null,
+      createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2,
+    } });
+    await expect(api.send(operations[0]!)).resolves.toEqual({ meeting: expect.objectContaining({ id, syncVersion: 2 }) });
+    await expect(api.send(operations[4]!)).resolves.toEqual({ folder: {
+      id: folderId, name: "Work", createdAt: timestamp, updatedAt: timestamp, syncVersion: 1,
+    } });
+  });
+
+  test("pulls complete catalogs in deterministic server order and maps snake-case rows", async () => {
+    const { client, queries } = supabaseClient({ tableResults: {
+      folders: { data: [folderRow], error: null },
+      meetings: { data: [meetingRow], error: null },
+    } });
+    const api = new MeetingCatalogSupabaseApi(client);
+
+    await expect(api.listFolders()).resolves.toEqual([{
+      id: folderId, name: "Work", createdAt: timestamp, updatedAt: timestamp, syncVersion: 1,
+    }]);
+    await expect(api.listMeetings()).resolves.toEqual([{
+      id, title: "Planning", folderId, status: "draft", startedAt: null, endedAt: null,
+      createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2,
+    }]);
+    expect(queries.folders?.select).toHaveBeenCalledWith("id,name,created_at,updated_at,sync_version");
+    expect(queries.folders?.order.mock.calls).toEqual([
+      ["name", { ascending: true }],
+      ["id", { ascending: true }],
+    ]);
+    expect(queries.meetings?.select).toHaveBeenCalledWith("id,title,folder_id,status,started_at,ended_at,created_at,updated_at,trashed_at,sync_version");
+    expect(queries.meetings?.order.mock.calls).toEqual([
+      ["updated_at", { ascending: false }],
+      ["id", { ascending: true }],
+    ]);
+  });
+
+  test.each([
+    [{ data: null, error: { message: "expired jwt secret" }, status: 401 }, new CatalogApiError(401, "AUTH_REQUIRED")],
+    [{ data: null, error: { message: "private upstream detail" }, status: 503 }, new CatalogApiError(503, "REQUEST_FAILED")],
+    [{ data: { status: 401, code: "AUTH_REQUIRED" }, error: null }, new CatalogApiError(401, "AUTH_REQUIRED")],
+    [{ data: { status: 409, code: "CONFLICT" }, error: null }, new CatalogApiError(409, "CONFLICT")],
+  ])("maps Supabase and RPC failures to fixed catalog errors", async (result, expected) => {
+    const { client } = supabaseClient({ rpcResults: [result] });
+
+    await expect(new MeetingCatalogSupabaseApi(client).send(operations[1]!)).rejects.toEqual(expected);
+  });
+
+  test("maps a list response HTTP 401 to auth required without exposing its error", async () => {
+    const { client } = supabaseClient({ tableResults: {
+      folders: { data: null, error: { message: "expired private access token" }, status: 401 },
+    } });
+
+    await expect(new MeetingCatalogSupabaseApi(client).listFolders()).rejects.toEqual(new CatalogApiError(401, "AUTH_REQUIRED"));
+  });
+
+  test.each([
+    [operations[1], "MEETING_NOT_FOUND"],
+    [operations[5], "FOLDER_NOT_FOUND"],
+  ])("preserves typed RPC 404 conflicts", async (operation, code) => {
+    const { client } = supabaseClient({ rpcResults: [{ data: { status: 404, code }, error: null }] });
+
+    await expect(new MeetingCatalogSupabaseApi(client).send(operation!)).rejects.toEqual(new CatalogApiError(404, code));
+  });
+
+  test("normalizes thrown failures without exposing raw Supabase details", async () => {
+    const rpc = vi.fn().mockRejectedValue(new TypeError("https://secret.supabase.co?token=private"));
+    const client = { rpc, from: vi.fn() } as unknown as SupabaseCatalogClient;
+
+    const error = await new MeetingCatalogSupabaseApi(client).send(operations[1]!).catch((caught: unknown) => caught);
+
+    expect(error).toEqual(new CatalogApiError(0, "REQUEST_FAILED"));
+    expect(JSON.stringify(error)).not.toContain("secret.supabase.co");
+    expect(String(error)).not.toContain("private");
+  });
+
+  test.each([
+    ["missing RPC data", { data: null, error: null }],
+    ["malformed RPC status", { data: { status: "200", meeting: meetingRow }, error: null }],
+    ["missing success entity", { data: { status: 200 }, error: null }],
+    ["malformed success row", { data: { status: 200, meeting: { ...meetingRow, sync_version: -1 } }, error: null }],
+  ])("rejects %s as a safe request failure", async (_label, result) => {
+    const { client } = supabaseClient({ rpcResults: [result] });
+
+    await expect(new MeetingCatalogSupabaseApi(client).send(operations[0]!)).rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
+  });
+
+  test("rejects a malformed row without returning any part of a catalog response", async () => {
+    const { client } = supabaseClient({ tableResults: {
+      folders: { data: [folderRow, { ...folderRow, id: "not-a-uuid" }], error: null },
+      meetings: { data: [meetingRow, { ...meetingRow, status: "private-invalid-status" }], error: null },
+    } });
+    const api = new MeetingCatalogSupabaseApi(client);
+
+    await expect(api.listFolders()).rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
+    await expect(api.listMeetings()).rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
   });
 });
