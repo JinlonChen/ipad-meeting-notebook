@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 
-import { authApi, AuthApiError, AuthNetworkError, type AuthApi } from "../auth/api.js";
+import { legacyHttpAuthApi, AuthApiError, AuthNetworkError, type AuthApi } from "../auth/api.js";
 import { LoginPage } from "../auth/LoginPage.js";
 import { MeetingCatalogHttpApi } from "../meetings/api.js";
 import { MeetingListPage, WorkspacePlaceholder } from "../meetings/MeetingListPage.js";
@@ -9,7 +9,7 @@ import { MeetingCatalogRepository } from "../meetings/repository.js";
 import { CatalogSync, type SyncResult } from "../meetings/sync.js";
 
 const defaultRepository = new MeetingCatalogRepository();
-const defaultAuth = authApi();
+const defaultAuth = legacyHttpAuthApi();
 const defaultNow = () => new Date().toISOString();
 
 type Props = {
@@ -87,9 +87,9 @@ export function App({ repository = defaultRepository, auth = defaultAuth, synchr
     return () => { window.removeEventListener("online", becameOnline); window.removeEventListener("offline", becameOffline); };
   }, [authorize]);
 
-  const login = useCallback(async (password: string) => {
+  const login = useCallback(async (email: string, password: string) => {
     const currentGeneration = nextGeneration();
-    await auth.login(password);
+    await auth.login(email, password);
     if (!owns(currentGeneration)) return;
     const session = await auth.me();
     if (!owns(currentGeneration)) return;

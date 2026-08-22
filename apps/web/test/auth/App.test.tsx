@@ -110,10 +110,13 @@ describe("App session gate", () => {
     const auth = api({ me: vi.fn().mockRejectedValueOnce(new AuthApiError(401, "AUTH_REQUIRED")).mockResolvedValue({ id: "owner", sessionExpiresAt: expiry }) });
     render(<App repository={catalog} auth={auth} synchronizer={synchronizer} now={() => now} />);
 
-    await user.type(await screen.findByLabelText("密码"), "private-secret");
+    await user.type(await screen.findByLabelText("邮箱"), "person@example.com");
+    await user.type(screen.getByLabelText("密码"), "private-secret");
     await user.click(screen.getByRole("button", { name: "登录" }));
+    expect(auth.login).toHaveBeenLastCalledWith("person@example.com", "private-secret");
     await waitFor(() => expect(synchronizer.refresh).toHaveBeenCalledTimes(1));
-    await user.type(await screen.findByLabelText("密码"), "private-secret");
+    await user.type(await screen.findByLabelText("邮箱"), "person@example.com");
+    await user.type(screen.getByLabelText("密码"), "private-secret");
     await user.click(screen.getByRole("button", { name: "登录" }));
     await screen.findByText("已同步");
     expect(synchronizer.resumeAfterLogin).toHaveBeenCalledTimes(2);
@@ -138,10 +141,13 @@ describe("App session gate", () => {
     const auth = api({ me: vi.fn().mockRejectedValueOnce(Object.assign(new Error("required"), { status: 401 })).mockResolvedValue({ id: "owner", sessionExpiresAt: expiry }) });
     await catalog.create("保留的会议", null, now);
     render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
+    const email = await screen.findByLabelText("邮箱");
     const password = await screen.findByLabelText("密码");
+    await user.type(email, "person@example.com");
     await user.type(password, "private-secret");
     await user.click(screen.getByRole("button", { name: "登录" }));
     await waitFor(() => expect(password).toHaveValue(""));
+    expect(email).toHaveValue("person@example.com");
     await screen.findByRole("heading", { name: "会议本" });
     await user.click(screen.getByRole("button", { name: "退出" }));
     await screen.findByRole("heading", { name: "登录会议本" });
@@ -180,6 +186,7 @@ describe("App session gate", () => {
     await screen.findByRole("heading", { name: "登录会议本" });
     window.dispatchEvent(new Event("online"));
     await waitFor(() => expect(auth.me).toHaveBeenCalledTimes(2));
+    await user.type(screen.getByLabelText("邮箱"), "person@example.com");
     await user.type(screen.getByLabelText("密码"), "private-secret");
     await user.click(screen.getByRole("button", { name: "登录" }));
     await screen.findByRole("heading", { name: "会议本" });
@@ -201,6 +208,7 @@ describe("App session gate", () => {
     await Promise.resolve();
 
     expect(error).not.toHaveBeenCalled();
+    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(false);
     error.mockRestore();
   });
 
@@ -216,6 +224,7 @@ describe("App session gate", () => {
     await waitFor(() => expect(sync.refresh).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole("button", { name: "退出" }));
     await screen.findByRole("heading", { name: "登录会议本" });
+    await user.type(screen.getByLabelText("邮箱"), "person@example.com");
     await user.type(screen.getByLabelText("密码"), "private-secret");
     await user.click(screen.getByRole("button", { name: "登录" }));
     await screen.findByRole("heading", { name: "会议本" });

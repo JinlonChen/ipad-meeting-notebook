@@ -1,4 +1,7 @@
-import { LoginInputSchema, SessionUserSchema, type SessionUser } from "@meeting/contracts";
+import { LoginInputSchema, SessionUserSchema } from "@meeting/contracts";
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+import type { Database } from "../supabase/types.js";
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -13,6 +16,56 @@ export class AuthNetworkError extends Error {
   constructor() {
     super("NETWORK_UNAVAILABLE");
     this.name = "AuthNetworkError";
+  }
+}
+
+type SessionIdentity = { id: string; sessionExpiresAt: string };
+type SupabaseAuthClient = Pick<SupabaseClient<Database>, "auth">;
+type ErrorShape = { status?: unknown; code?: unknown; name?: unknown };
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const authRequiredCodes = new Set([
+  "bad_jwt",
+  "invalid_credentials",
+  "invalid_jwt",
+  "refresh_token_already_used",
+  "refresh_token_not_found",
+  "session_not_found",
+  "user_not_found",
+]);
+const authRequiredNames = new Set(["AuthInvalidCredentialsError", "AuthSessionMissingError"]);
+
+function errorShape(error: unknown): ErrorShape {
+  return typeof error === "object" && error !== null ? error : {};
+}
+
+function requiredProperty(value: unknown, property: string): unknown {
+  if (typeof value !== "object" || value === null || !(property in value)) {
+    throw new AuthApiError(500, "REQUEST_FAILED");
+  }
+  return (value as Record<string, unknown>)[property];
+}
+
+function supabaseFailure(error: unknown): AuthApiError | AuthNetworkError {
+  const { status, code, name } = errorShape(error);
+  if (error instanceof TypeError || status === 0 || name === "AuthRetryableFetchError") {
+    return new AuthNetworkError();
+  }
+  if (status === 401 || status === 403 || (typeof code === "string" && authRequiredCodes.has(code)) || (typeof name === "string" && authRequiredNames.has(name))) {
+    return new AuthApiError(401, "AUTH_REQUIRED");
+  }
+  const safeStatus = typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599 ? status : 500;
+  return new AuthApiError(safeStatus, "REQUEST_FAILED");
+}
+
+async function supabaseResult<T extends { error: unknown }>(request: () => Promise<T>): Promise<T> {
+  try {
+    const result = await request();
+    if (result.error) throw supabaseFailure(result.error);
+    return result;
+  } catch (error) {
+    if (error instanceof AuthApiError || error instanceof AuthNetworkError) throw error;
+    throw supabaseFailure(error);
   }
 }
 
@@ -33,7 +86,7 @@ async function transport(request: Promise<Response>): Promise<Response> {
   }
 }
 
-async function session(request: Promise<Response>): Promise<SessionUser> {
+async function session(request: Promise<Response>): Promise<SessionIdentity> {
   const response = await transport(request);
   if (!response.ok) throw safeError(response);
   try {
@@ -44,15 +97,49 @@ async function session(request: Promise<Response>): Promise<SessionUser> {
 }
 
 export type AuthApi = {
-  me(): Promise<SessionUser>;
-  login(password: string): Promise<void>;
+  me(): Promise<SessionIdentity>;
+  login(email: string, password: string): Promise<void>;
   logout(): Promise<void>;
 };
 
-export function authApi(fetcher: Fetcher = fetch): AuthApi {
+export function supabaseAuthApi(client: SupabaseAuthClient): AuthApi {
+  return {
+    async me() {
+      const userResult = await supabaseResult(() => client.auth.getUser());
+      const user = requiredProperty(userResult.data, "user");
+      if (!user) throw new AuthApiError(401, "AUTH_REQUIRED");
+      const id = requiredProperty(user, "id");
+      if (typeof id !== "string" || !uuidPattern.test(id)) throw new AuthApiError(500, "REQUEST_FAILED");
+
+      const sessionResult = await supabaseResult(() => client.auth.getSession());
+      const currentSession = requiredProperty(sessionResult.data, "session");
+      if (!currentSession) throw new AuthApiError(401, "AUTH_REQUIRED");
+      const expiresAt = requiredProperty(currentSession, "expires_at");
+      if (typeof expiresAt !== "number" || !Number.isSafeInteger(expiresAt) || expiresAt <= 0) {
+        throw new AuthApiError(500, "REQUEST_FAILED");
+      }
+      const expiryMilliseconds = expiresAt * 1_000;
+      if (!Number.isSafeInteger(expiryMilliseconds)) throw new AuthApiError(500, "REQUEST_FAILED");
+      if (expiryMilliseconds <= Date.now()) throw new AuthApiError(401, "AUTH_REQUIRED");
+      try {
+        return { id, sessionExpiresAt: new Date(expiryMilliseconds).toISOString() };
+      } catch {
+        throw new AuthApiError(500, "REQUEST_FAILED");
+      }
+    },
+    async login(email, password) {
+      await supabaseResult(() => client.auth.signInWithPassword({ email, password }));
+    },
+    async logout() {
+      await supabaseResult(() => client.auth.signOut());
+    },
+  };
+}
+
+export function legacyHttpAuthApi(fetcher: Fetcher = fetch): AuthApi {
   return {
     me: () => session(fetcher("/api/auth/me", { credentials: "include" })),
-    login(password) {
+    login(_email, password) {
       return noContent(fetcher("/api/auth/login", {
         method: "POST",
         credentials: "include",
