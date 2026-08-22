@@ -44,6 +44,52 @@ describe("MeetingCatalogHttpApi", () => {
     ]);
   });
 
+  test("replays legacy conditional outbox payloads without a sync version", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response(meeting))
+      .mockResolvedValueOnce(response(meeting))
+      .mockResolvedValueOnce(response(meeting))
+      .mockResolvedValueOnce(response(folder))
+      .mockResolvedValueOnce(response(undefined, 204));
+    const api = new MeetingCatalogHttpApi(fetcher);
+    const operations = [
+      { id: "legacy-meeting-rename", entityId: id, kind: "meeting.rename" as const, payload: { title: "Legacy title", updatedAt: timestamp } },
+      { id: "legacy-meeting-trash", entityId: id, kind: "meeting.trash" as const, payload: { updatedAt: timestamp } },
+      { id: "legacy-meeting-restore", entityId: id, kind: "meeting.restore" as const, payload: { updatedAt: timestamp } },
+      { id: "legacy-folder-rename", entityId: folderId, kind: "folder.rename" as const, payload: { name: "Legacy folder", updatedAt: timestamp } },
+      { id: "legacy-folder-remove", entityId: folderId, kind: "folder.remove" as const, payload: { updatedAt: timestamp } },
+    ];
+
+    for (const operation of operations) {
+      await api.send({ ...operation, createdAt: timestamp, attempts: 0, lastError: null });
+    }
+
+    expect(fetcher).toHaveBeenCalledTimes(5);
+    expect(fetcher.mock.calls[0]).toEqual([
+      `/api/meetings/${id}`,
+      expect.objectContaining({ method: "PATCH", headers: expect.objectContaining({ "idempotency-key": "legacy-meeting-rename" }), body: JSON.stringify({ title: "Legacy title" }) }),
+    ]);
+    expect(fetcher.mock.calls[1]).toEqual([
+      `/api/meetings/${id}`,
+      expect.objectContaining({ method: "DELETE", headers: expect.objectContaining({ "idempotency-key": "legacy-meeting-trash" }) }),
+    ]);
+    expect(fetcher.mock.calls[2]).toEqual([
+      `/api/meetings/${id}/restore`,
+      expect.objectContaining({ method: "POST", headers: expect.objectContaining({ "idempotency-key": "legacy-meeting-restore" }) }),
+    ]);
+    expect(fetcher.mock.calls[3]).toEqual([
+      `/api/folders/${folderId}`,
+      expect.objectContaining({ method: "PATCH", headers: expect.objectContaining({ "idempotency-key": "legacy-folder-rename" }), body: JSON.stringify({ name: "Legacy folder" }) }),
+    ]);
+    expect(fetcher.mock.calls[4]).toEqual([
+      `/api/folders/${folderId}`,
+      expect.objectContaining({ method: "DELETE", headers: expect.objectContaining({ "idempotency-key": "legacy-folder-remove" }) }),
+    ]);
+    for (const index of [1, 2, 4]) {
+      expect(fetcher.mock.calls[index]?.[1]).not.toHaveProperty("body");
+    }
+  });
+
   test("lists all meetings and sanitizes typed failures and invalid responses", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response([meeting]))
