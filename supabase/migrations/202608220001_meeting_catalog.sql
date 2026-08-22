@@ -19,6 +19,7 @@ create table public.meetings (
   created_at timestamptz not null,
   updated_at timestamptz not null,
   trashed_at timestamptz,
+  status_before_trash text check (status_before_trash in ('draft', 'recording', 'recoverable', 'uploading', 'processing', 'ready', 'failed')),
   sync_version bigint not null check (sync_version >= 0),
   primary key (user_id, id),
   foreign key (user_id, folder_id) references public.folders(user_id, id)
@@ -88,7 +89,12 @@ begin
   if v_user_id is null then
     return jsonb_build_object('status', 401, 'code', 'AUTH_REQUIRED');
   end if;
+  if p_operation_id is null or p_entity_id is null or p_kind is null then
+    return jsonb_build_object('status', 400, 'code', 'INVALID_REQUEST');
+  end if;
 
+  -- Serialize requests sharing an idempotency key before reading or writing replay state.
+  perform pg_advisory_xact_lock(hashtextextended(v_user_id::text || ':' || p_operation_id::text, 0));
   select * into v_replay
   from public.catalog_mutation_replays
   where user_id = v_user_id and operation_id = p_operation_id;
@@ -99,6 +105,7 @@ begin
     return jsonb_build_object('status', 409, 'code', 'IDEMPOTENCY_KEY_REUSED');
   end if;
 
+  begin
   v_updated_at := coalesce(nullif(v_payload->>'updatedAt', '')::timestamptz, v_now);
   if v_payload ? 'expectedSyncVersion' then
     v_expected := (v_payload->>'expectedSyncVersion')::bigint;
@@ -116,8 +123,8 @@ begin
       elsif exists (select 1 from public.meetings where user_id = v_user_id and id = p_entity_id) then
         v_response := jsonb_build_object('status', 409, 'code', 'CONFLICT');
       else
-        insert into public.meetings (user_id, id, title, folder_id, status, started_at, ended_at, created_at, updated_at, trashed_at, sync_version)
-        values (v_user_id, p_entity_id, v_title, v_folder_id, 'draft', null, null, v_client_created_at, v_client_created_at, null, 0)
+        insert into public.meetings (user_id, id, title, folder_id, status, started_at, ended_at, created_at, updated_at, trashed_at, status_before_trash, sync_version)
+        values (v_user_id, p_entity_id, v_title, v_folder_id, 'draft', null, null, v_client_created_at, v_client_created_at, null, null, 0)
         returning to_jsonb(public.meetings.*) into v_row;
         v_response := jsonb_build_object('status', 200, 'meeting', v_row);
       end if;
@@ -143,29 +150,37 @@ begin
     if not exists (select 1 from public.meetings where user_id = v_user_id and id = p_entity_id) then
       v_response := jsonb_build_object('status', 404, 'code', case when v_payload ? 'expectedSyncVersion' then 'MEETING_NOT_FOUND' else 'NOT_FOUND' end);
     else
-      update public.meetings
-      set status = 'trashed', trashed_at = v_updated_at, updated_at = v_updated_at, sync_version = sync_version + 1
-      where user_id = v_user_id and id = p_entity_id and status <> 'trashed' and (v_expected is null or sync_version = v_expected)
-      returning to_jsonb(public.meetings.*) into v_row;
-      if v_row is null and v_expected is not null and exists (select 1 from public.meetings where user_id = v_user_id and id = p_entity_id and status = 'trashed' and sync_version = v_expected) then
-        select to_jsonb(m.*) into v_row from public.meetings m where m.user_id = v_user_id and m.id = p_entity_id;
+      select to_jsonb(m.*) into v_row from public.meetings m
+      where m.user_id = v_user_id and m.id = p_entity_id;
+      if (v_row->>'status') = 'trashed' and (v_expected is null or (v_row->>'sync_version')::bigint = v_expected) then
+        v_response := jsonb_build_object('status', 200, 'meeting', v_row);
+      elsif v_expected is not null and (v_row->>'sync_version')::bigint <> v_expected then
+        v_response := jsonb_build_object('status', 409, 'code', 'CONFLICT');
+      else
+        update public.meetings
+        set status = 'trashed', status_before_trash = status, trashed_at = v_updated_at, updated_at = v_updated_at, sync_version = sync_version + 1
+        where user_id = v_user_id and id = p_entity_id
+        returning to_jsonb(public.meetings.*) into v_row;
+        v_response := jsonb_build_object('status', 200, 'meeting', v_row);
       end if;
-      if v_row is null then v_response := jsonb_build_object('status', 409, 'code', 'CONFLICT');
-      else v_response := jsonb_build_object('status', 200, 'meeting', v_row); end if;
     end if;
   elsif p_kind = 'meeting.restore' then
     if not exists (select 1 from public.meetings where user_id = v_user_id and id = p_entity_id) then
       v_response := jsonb_build_object('status', 404, 'code', case when v_payload ? 'expectedSyncVersion' then 'MEETING_NOT_FOUND' else 'NOT_FOUND' end);
     else
-      update public.meetings
-      set status = 'draft', trashed_at = null, updated_at = v_updated_at, sync_version = sync_version + 1
-      where user_id = v_user_id and id = p_entity_id and status = 'trashed' and (v_expected is null or sync_version = v_expected)
-      returning to_jsonb(public.meetings.*) into v_row;
-      if v_row is null and v_expected is not null and exists (select 1 from public.meetings where user_id = v_user_id and id = p_entity_id and status <> 'trashed' and sync_version = v_expected) then
-        select to_jsonb(m.*) into v_row from public.meetings m where m.user_id = v_user_id and m.id = p_entity_id;
+      select to_jsonb(m.*) into v_row from public.meetings m
+      where m.user_id = v_user_id and m.id = p_entity_id;
+      if (v_row->>'status') <> 'trashed' and (v_expected is null or (v_row->>'sync_version')::bigint = v_expected) then
+        v_response := jsonb_build_object('status', 200, 'meeting', v_row);
+      elsif v_expected is not null and (v_row->>'sync_version')::bigint <> v_expected then
+        v_response := jsonb_build_object('status', 409, 'code', 'CONFLICT');
+      else
+        update public.meetings
+        set status = coalesce(status_before_trash, 'draft'), status_before_trash = null, trashed_at = null, updated_at = v_updated_at, sync_version = sync_version + 1
+        where user_id = v_user_id and id = p_entity_id
+        returning to_jsonb(public.meetings.*) into v_row;
+        v_response := jsonb_build_object('status', 200, 'meeting', v_row);
       end if;
-      if v_row is null then v_response := jsonb_build_object('status', 409, 'code', 'CONFLICT');
-      else v_response := jsonb_build_object('status', 200, 'meeting', v_row); end if;
     end if;
   elsif p_kind = 'folder.create' then
     v_name := btrim(v_payload->>'name');
@@ -210,6 +225,10 @@ begin
   else
     v_response := jsonb_build_object('status', 400, 'code', 'INVALID_OPERATION');
   end if;
+  exception
+    when invalid_text_representation or invalid_datetime_format or datetime_field_overflow or numeric_value_out_of_range then
+      v_response := jsonb_build_object('status', 400, 'code', 'INVALID_REQUEST');
+  end;
 
   insert into public.catalog_mutation_replays (user_id, operation_id, operation_kind, request_fingerprint, response)
   values (v_user_id, p_operation_id, p_kind, v_fingerprint, v_response);
@@ -224,7 +243,7 @@ create or replace function public.apply_catalog_mutation(
   p_payload jsonb
 ) returns jsonb
 language plpgsql
-security invoker
+security definer
 set search_path = pg_catalog, public
 as $function$
 begin

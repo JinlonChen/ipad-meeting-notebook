@@ -35,7 +35,7 @@ test("catalog rows are owned by auth.uid and direct authenticated mutations are 
 test("mutation rpc is locked to authenticated users and fixes search_path", () => {
   const source = normalizedSql();
   assert.match(source, /create or replace function public\.apply_catalog_mutation\(/);
-  assert.match(source, /security invoker/);
+  assert.match(source, /security definer/);
   assert.match(source, /set search_path = pg_catalog, public/);
   assert.match(source, /revoke all on function public\.apply_catalog_mutation\(/);
   assert.match(source, /grant execute on function public\.apply_catalog_mutation\([^;]+\) to authenticated/);
@@ -50,4 +50,12 @@ test("migration defines composite ownership keys and all catalog operation kinds
   for (const kind of ["meeting.create", "meeting.rename", "meeting.trash", "meeting.restore", "folder.create", "folder.rename", "folder.remove"]) {
     assert.match(source, new RegExp(`'${kind.replace(".", "\\.")}'`));
   }
+});
+
+test("meetings retain the pre-trash status and wrapper can call a private implementation", () => {
+  const source = normalizedSql();
+  assert.match(source, /status_before_trash text/);
+  assert.match(source, /create or replace function public\._apply_catalog_mutation_impl\(/);
+  assert.match(source, /create or replace function public\.apply_catalog_mutation\([\s\S]+security definer/);
+  assert.match(source, /revoke all on function public\._apply_catalog_mutation_impl\([^;]+\) from public, anon, authenticated/);
 });
