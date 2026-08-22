@@ -18,6 +18,7 @@ describe("CatalogSync", () => {
   const catalogs: MeetingCatalogRepository[] = [];
 
   afterEach(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await Promise.all(catalogs.splice(0).map((item) => item.deleteDatabase()));
   });
 

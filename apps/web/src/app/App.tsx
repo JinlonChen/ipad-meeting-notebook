@@ -22,7 +22,7 @@ export type CatalogSynchronizer = {
   refresh(): Promise<SyncResult>;
   resumeAfterLogin(): void;
 };
-type Gate = "loading" | "catalog" | "login" | "offline-lock" | "error";
+type Gate = "loading" | "catalog" | "login" | "offline-lock" | "logging-out" | "error";
 
 function isUnauthorized(error: unknown): boolean {
   return error instanceof AuthApiError ? error.status === 401 : typeof error === "object" && error !== null && "status" in error && error.status === 401;
@@ -97,22 +97,23 @@ export function App({ repository = defaultRepository, auth = defaultAuth, synchr
     setGate("catalog");
   }, [auth, nextGeneration, now, owns, repository, synchronizer]);
   const guardedRefresh = useCallback(async () => {
+    const currentGeneration = generation.current;
     const result = await syncRefresh();
-    if (result.state === "paused_auth") {
+    if (result.state === "paused_auth" && owns(currentGeneration)) {
       await repository.clearDeviceAccess();
-      setGate("login");
+      if (owns(currentGeneration)) setGate("login");
     }
     return result;
-  }, [repository, syncRefresh]);
+  }, [owns, repository, syncRefresh]);
   const logout = useCallback(async () => {
-    nextGeneration();
-    if (mounted.current) setGate("login");
-    const clear = repository.clearDeviceAccess();
-    try { await auth.logout(); } catch { /* User intent takes precedence while offline. */ }
-    await clear;
-  }, [auth, nextGeneration, repository]);
+    const currentGeneration = nextGeneration();
+    if (mounted.current) setGate("logging-out");
+    await Promise.allSettled([auth.logout(), repository.clearDeviceAccess()]);
+    if (owns(currentGeneration)) setGate("login");
+  }, [auth, nextGeneration, owns, repository]);
 
   if (gate === "loading") return <main className="gate-loading" role="status">正在验证访问权限...</main>;
+  if (gate === "logging-out") return <main className="gate-loading" role="status">正在退出...</main>;
   if (gate === "login" || gate === "offline-lock") return <LoginPage onLogin={login} offline={gate === "offline-lock"} />;
   if (gate === "error") return <main className="login-page"><section className="login-panel"><h1>无法验证访问权限</h1><button className="primary-button" onClick={() => void authorize()}>重试</button></section></main>;
   return <BrowserRouter><Routes><Route path="/meetings/:id" element={<WorkspacePlaceholder />} /><Route path="*" element={<MeetingListPage repository={repository} refresh={guardedRefresh} now={now} online={online} onLogout={() => void logout()} />} /></Routes></BrowserRouter>;

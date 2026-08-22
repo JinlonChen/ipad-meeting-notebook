@@ -60,10 +60,15 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
   const [actionMeeting, setActionMeeting] = useState<string | null>(null);
   const [pendingOperation, setPendingOperation] = useState<string | null>(null);
   const [operationError, setOperationError] = useState("");
+  const [confirmationError, setConfirmationError] = useState("");
   const mounted = useRef(true);
   const reloadGeneration = useRef(0);
   const menu = useRef<HTMLDivElement>(null);
   const actionTrigger = useRef<HTMLButtonElement>(null);
+  const menuItems = useRef<Array<HTMLButtonElement | null>>([]);
+  const modal = useRef<HTMLElement>(null);
+  const lastFocus = useRef<HTMLElement | null>(null);
+  const setModal = useCallback((element: HTMLElement | null) => { modal.current = element; }, []);
 
   useEffect(() => {
     mounted.current = true;
@@ -74,6 +79,7 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
   }, []);
 
   const reload = useCallback(async () => {
+    if (!mounted.current) return;
     const currentGeneration = ++reloadGeneration.current;
     setLoading(true);
     try {
@@ -107,15 +113,14 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
     return () => { active = false; };
   }, [online, refresh, reload]);
 
-  const runOperation = useCallback(async (key: string, work: () => Promise<void>): Promise<boolean> => {
+  const runOperation = useCallback(async (key: string, work: () => Promise<void>, onError: () => void): Promise<boolean> => {
     if (pendingOperation) return false;
     setPendingOperation(key);
-    setOperationError("");
     try {
       await work();
       return true;
     } catch {
-      if (mounted.current) setOperationError("操作未完成，请重试。");
+      if (mounted.current) onError();
       return false;
     } finally {
       if (mounted.current) setPendingOperation(null);
@@ -127,16 +132,33 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
     actionTrigger.current?.focus();
   }, []);
 
+  const closeModal = useCallback(() => {
+    setDialog(null);
+    setConfirmation(null);
+    queueMicrotask(() => lastFocus.current?.focus());
+  }, []);
+
+  const openDialog = useCallback((nextDialog: NonNullable<Dialog>, trigger: HTMLElement) => {
+    lastFocus.current = trigger;
+    setFormError("");
+    setDialog(nextDialog);
+  }, []);
+
+  const openConfirmation = useCallback((folderId: string, trigger: HTMLElement) => {
+    lastFocus.current = trigger;
+    setConfirmationError("");
+    setConfirmation(folderId);
+  }, []);
+
   useEffect(() => {
     const onEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (dialog) { event.preventDefault(); setDialog(null); return; }
-      if (confirmation) { event.preventDefault(); setConfirmation(null); return; }
+      if (dialog || confirmation) { event.preventDefault(); closeModal(); return; }
       if (actionMeeting) { event.preventDefault(); closeMenu(); }
     };
     window.addEventListener("keydown", onEscape);
     return () => window.removeEventListener("keydown", onEscape);
-  }, [actionMeeting, closeMenu, confirmation, dialog]);
+  }, [actionMeeting, closeMenu, closeModal, confirmation, dialog]);
 
   useEffect(() => {
     if (!actionMeeting) return;
@@ -146,6 +168,45 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
     window.addEventListener("mousedown", closeOnOutsideClick);
     return () => window.removeEventListener("mousedown", closeOnOutsideClick);
   }, [actionMeeting, closeMenu]);
+
+  useEffect(() => {
+    if (!actionMeeting) return;
+    queueMicrotask(() => menuItems.current[0]?.focus());
+  }, [actionMeeting]);
+
+  useEffect(() => {
+    if (!actionMeeting) return;
+    const moveMenuFocus = (event: KeyboardEvent) => {
+      const items = menuItems.current.filter((item): item is HTMLButtonElement => item !== null && !item.disabled);
+      const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+      if (event.key === "Escape") { event.preventDefault(); closeMenu(); return; }
+      if (event.key === "Home") { event.preventDefault(); items[0]?.focus(); return; }
+      if (event.key === "End") { event.preventDefault(); items.at(-1)?.focus(); return; }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const offset = event.key === "ArrowDown" ? 1 : -1;
+        items[(currentIndex + offset + items.length) % items.length]?.focus();
+      }
+    };
+    window.addEventListener("keydown", moveMenuFocus);
+    return () => window.removeEventListener("keydown", moveMenuFocus);
+  }, [actionMeeting, closeMenu]);
+
+  useEffect(() => {
+    if (!dialog && !confirmation) return;
+    queueMicrotask(() => {
+      modal.current?.querySelector<HTMLElement>("input, button:not([disabled])")?.focus();
+    });
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key !== "Tab" || !modal.current) return;
+      const items = Array.from(modal.current.querySelectorAll<HTMLElement>("input:not([disabled]), button:not([disabled])"));
+      const currentIndex = items.indexOf(document.activeElement as HTMLElement);
+      if (event.shiftKey && currentIndex <= 0) { event.preventDefault(); items.at(-1)?.focus(); }
+      if (!event.shiftKey && currentIndex === items.length - 1) { event.preventDefault(); items[0]?.focus(); }
+    };
+    window.addEventListener("keydown", trapFocus);
+    return () => window.removeEventListener("keydown", trapFocus);
+  }, [confirmation, dialog]);
 
   const shown = meetings.filter((meeting) => {
     if (filter === "trashed" ? meeting.status !== "trashed" : meeting.status === "trashed") return false;
@@ -170,22 +231,24 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
       if (dialog.kind === "folder") await repository.createFolder(value, now());
       if (dialog.kind === "renameMeeting" && dialog.id) await repository.rename(dialog.id, value, now());
       if (dialog.kind === "renameFolder" && dialog.id) await repository.renameFolder(dialog.id, value, now());
-      await reload();
-    });
+    }, () => setFormError("操作未完成，请重试。"));
     if (!completed) return;
-    setDialog(null); setFormError("");
-    if (createdMeeting) navigate(`/meetings/${createdMeeting.id}`);
+    if (!mounted.current) return;
+    setFormError(""); closeModal();
+    if (createdMeeting) { navigate(`/meetings/${createdMeeting.id}`); return; }
+    void reload().catch(() => { if (mounted.current) setOperationError("读取目录失败，请重试。"); });
   }
   async function removeFolder() {
     if (!confirmation) return;
     const folderId = confirmation;
     const completed = await runOperation("removeFolder", async () => {
       await repository.removeFolder(folderId, now());
-      await reload();
-    });
+    }, () => setConfirmationError("操作未完成，请重试。"));
     if (!completed) return;
+    if (!mounted.current) return;
     if (filter === folderId) setFilter("unfiled");
-    setConfirmation(null);
+    closeModal();
+    void reload().catch(() => { if (mounted.current) setOperationError("读取目录失败，请重试。"); });
   }
   async function syncNow() {
     if (!online || pendingOperation) return;
@@ -207,9 +270,10 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
     const completed = await runOperation(operationKey, async () => {
       if (meeting.status === "trashed") await repository.restore(meeting.id, now());
       else await repository.trash(meeting.id, now());
-      await reload();
-    });
-    if (completed) setActionMeeting(null);
+    }, () => setOperationError("操作未完成，请重试。"));
+    if (!completed || !mounted.current) return;
+    setActionMeeting(null);
+    void reload().catch(() => { if (mounted.current) setOperationError("读取目录失败，请重试。"); });
   }
   function stateText() {
     if (!online) return "离线，等待同步";
@@ -221,7 +285,7 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
   }
   const emptyText = search ? "没有匹配的会议" : filter === "trashed" ? "废纸篓为空" : filter !== "all" ? "此分类暂无会议" : "还没有会议";
 
-  return <main className="catalog-shell" data-layout={layout} data-drawer={railOpen ? "open" : "closed"}>
+  return <><main className="catalog-shell" data-layout={layout} data-drawer={railOpen ? "open" : "closed"} inert={dialog !== null || confirmation !== null}>
     <header className="catalog-topbar">
       <button className="icon-button rail-toggle" aria-label="打开分类" title="打开分类" onClick={() => setRailOpen(true)}><FolderIcon size={18} /></button>
       <h1>会议本</h1>
@@ -232,24 +296,25 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
       </div>
     </header>
     <aside className={`folder-rail ${railOpen ? "open" : ""}`} aria-label="会议分类">
-      <div className="rail-heading"><strong>分类</strong><button className="icon-button rail-close" aria-label="关闭分类" title="关闭分类" onClick={() => setRailOpen(false)}><X size={18} /></button><button className="icon-button" aria-label="新建分类" title="新建分类" onClick={() => setDialog({ kind: "folder" })}><FolderPlus size={18} /></button></div>
+      <div className="rail-heading"><strong>分类</strong><button className="icon-button rail-close" aria-label="关闭分类" title="关闭分类" onClick={() => setRailOpen(false)}><X size={18} /></button><button className="icon-button" aria-label="新建分类" title="新建分类" onClick={(event) => openDialog({ kind: "folder" }, event.currentTarget)}><FolderPlus size={18} /></button></div>
       <nav>
         <button className={filter === "all" ? "selected" : ""} onClick={() => { setFilter("all"); setRailOpen(false); }}>全部会议</button>
         <button className={filter === "unfiled" ? "selected" : ""} onClick={() => { setFilter("unfiled"); setRailOpen(false); }}>未分类</button>
-        {folders.map((folder) => <div className="folder-item" key={folder.id}><button className={filter === folder.id ? "selected" : ""} onClick={() => { setFilter(folder.id); setRailOpen(false); }}>{folder.name}</button><button className="icon-button" aria-label={`编辑分类 ${folder.name}`} title={`编辑分类 ${folder.name}`} onClick={() => { setFormError(""); setDialog({ kind: "renameFolder", id: folder.id, initial: folder.name }); }}><Pencil size={15} /></button><button className="icon-button" aria-label={`删除分类 ${folder.name}`} title={`删除分类 ${folder.name}`} onClick={() => setConfirmation(folder.id)}><Trash2 size={15} /></button></div>)}
+        {folders.map((folder) => <div className="folder-item" key={folder.id}><button className={filter === folder.id ? "selected" : ""} onClick={() => { setFilter(folder.id); setRailOpen(false); }}>{folder.name}</button><button className="icon-button" aria-label={`编辑分类 ${folder.name}`} title={`编辑分类 ${folder.name}`} onClick={(event) => openDialog({ kind: "renameFolder", id: folder.id, initial: folder.name }, event.currentTarget)}><Pencil size={15} /></button><button className="icon-button" aria-label={`删除分类 ${folder.name}`} title={`删除分类 ${folder.name}`} onClick={(event) => openConfirmation(folder.id, event.currentTarget)}><Trash2 size={15} /></button></div>)}
         <button className={filter === "trashed" ? "selected" : ""} onClick={() => { setFilter("trashed"); setRailOpen(false); }}>废纸篓</button>
       </nav>
     </aside>
     {railOpen && <button className="drawer-scrim" aria-label="关闭分类抽屉" onClick={() => setRailOpen(false)} />}
     <section className="meeting-panel">
-      <div className="meeting-toolbar"><label className="search-field"><Search size={17} /><input type="search" aria-label="搜索会议" placeholder="搜索会议" value={search} onChange={(event) => setSearch(event.target.value)} /></label><button className="primary-button" onClick={() => { setFormError(""); setDialog({ kind: "meeting" }); }}><Plus size={17} />新建会议</button></div>
+      <div className="meeting-toolbar"><label className="search-field"><Search size={17} /><input type="search" aria-label="搜索会议" placeholder="搜索会议" value={search} onChange={(event) => setSearch(event.target.value)} /></label><button className="primary-button" onClick={(event) => openDialog({ kind: "meeting" }, event.currentTarget)}><Plus size={17} />新建会议</button></div>
       <p className="operation-error" role={operationError ? "alert" : undefined} aria-live="polite">{operationError}</p>
       <div className="list-heading"><h2>{filter === "all" ? "全部会议" : filter === "unfiled" ? "未分类" : filter === "trashed" ? "废纸篓" : activeFolder?.name ?? "分类"}</h2><span>{shown.length} 项</span></div>
-      {loading ? <p className="list-message" role="status">正在载入会议...</p> : shown.length === 0 ? <p className="list-message">{emptyText}</p> : <ul className="meeting-list">{shown.map((meeting) => <li key={meeting.id} className="meeting-row"><button className="meeting-main" onClick={() => navigate(`/meetings/${meeting.id}`)}><span className="meeting-title">{meeting.title}</span><span className="meeting-meta">更新于 {dateTime(meeting.updatedAt)}{duration(meeting) ? ` · ${duration(meeting)}` : ""}</span></button><span className={`status-label status-${meeting.status}`}>{statusLabel(meeting.status)}</span><button ref={actionMeeting === meeting.id ? actionTrigger : undefined} className="icon-button" aria-label={`会议操作 ${meeting.title}`} title={`会议操作 ${meeting.title}`} aria-haspopup="menu" aria-expanded={actionMeeting === meeting.id} aria-controls={`meeting-menu-${meeting.id}`} onClick={(event) => { actionTrigger.current = event.currentTarget; if (actionMeeting === meeting.id) closeMenu(); else setActionMeeting(meeting.id); }}><MoreHorizontal size={18} /></button>{actionMeeting === meeting.id && <div ref={menu} id={`meeting-menu-${meeting.id}`} className="row-menu" role="menu"><button role="menuitem" disabled={pendingOperation === `meeting:${meeting.id}`} onClick={() => { setFormError(""); setDialog({ kind: "renameMeeting", id: meeting.id, initial: meeting.title }); setActionMeeting(null); }}>重命名</button><button role="menuitem" disabled={pendingOperation === `meeting:${meeting.id}`} onClick={() => void changeMeetingStatus(meeting)}>{meeting.status === "trashed" ? "恢复" : "移至废纸篓"}</button></div>}</li>)}</ul>}
+      {loading ? <p className="list-message" role="status">正在载入会议...</p> : shown.length === 0 ? <p className="list-message">{emptyText}</p> : <ul className="meeting-list">{shown.map((meeting) => <li key={meeting.id} className="meeting-row"><button className="meeting-main" onClick={() => navigate(`/meetings/${meeting.id}`)}><span className="meeting-title">{meeting.title}</span><span className="meeting-meta">更新于 {dateTime(meeting.updatedAt)}{duration(meeting) ? ` · ${duration(meeting)}` : ""}</span></button><span className={`status-label status-${meeting.status}`}>{statusLabel(meeting.status)}</span><button ref={actionMeeting === meeting.id ? actionTrigger : undefined} className="icon-button" aria-label={`会议操作 ${meeting.title}`} title={`会议操作 ${meeting.title}`} aria-haspopup="menu" aria-expanded={actionMeeting === meeting.id} aria-controls={`meeting-menu-${meeting.id}`} onClick={(event) => { actionTrigger.current = event.currentTarget; if (actionMeeting === meeting.id) closeMenu(); else setActionMeeting(meeting.id); }}><MoreHorizontal size={18} /></button>{actionMeeting === meeting.id && <div ref={menu} id={`meeting-menu-${meeting.id}`} className="row-menu" role="menu"><button ref={(node) => { menuItems.current[0] = node; }} role="menuitem" disabled={pendingOperation === `meeting:${meeting.id}`} onClick={() => { openDialog({ kind: "renameMeeting", id: meeting.id, initial: meeting.title }, actionTrigger.current!); setActionMeeting(null); }}>重命名</button><button ref={(node) => { menuItems.current[1] = node; }} role="menuitem" disabled={pendingOperation === `meeting:${meeting.id}`} onClick={() => void changeMeetingStatus(meeting)}>{meeting.status === "trashed" ? "恢复" : "移至废纸篓"}</button></div>}</li>)}</ul>}
     </section>
-    {dialog && <div className="dialog-backdrop"><form className="dialog" role="dialog" aria-modal="true" aria-labelledby="catalog-dialog-title" onSubmit={(event) => void submit(event)}><h2 id="catalog-dialog-title">{dialogTitle}</h2><label>{dialog.kind.includes("Folder") || dialog.kind === "folder" ? "分类名称" : "会议名称"}<input name="name" autoFocus defaultValue={dialog.initial} maxLength={dialog.kind.includes("Folder") || dialog.kind === "folder" ? 80 : 120} aria-invalid={Boolean(formError)} aria-describedby="name-help" /></label><p id="name-help" className="field-error" aria-live="polite">{formError}</p><div className="dialog-actions"><button type="button" disabled={pendingOperation === "form"} onClick={() => setDialog(null)}>取消</button><button className="primary-button" type="submit" disabled={pendingOperation === "form"}>{dialog.kind === "meeting" || dialog.kind === "folder" ? "创建" : "保存"}</button></div></form></div>}
-    {confirmation && <div className="dialog-backdrop"><section className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="remove-folder-title"><h2 id="remove-folder-title">删除分类？</h2><p>分类内的会议将保留为未分类。</p><div className="dialog-actions"><button disabled={pendingOperation === "removeFolder"} onClick={() => setConfirmation(null)}>取消</button><button className="danger-button" disabled={pendingOperation === "removeFolder"} onClick={() => void removeFolder()}>删除</button></div></section></div>}
-  </main>;
+  </main>
+    {dialog && <div className="dialog-backdrop"><form ref={setModal} className="dialog" role="dialog" aria-modal="true" aria-labelledby="catalog-dialog-title" onSubmit={(event) => void submit(event)}><h2 id="catalog-dialog-title">{dialogTitle}</h2><label>{dialog.kind.includes("Folder") || dialog.kind === "folder" ? "分类名称" : "会议名称"}<input name="name" autoFocus defaultValue={dialog.initial} maxLength={dialog.kind.includes("Folder") || dialog.kind === "folder" ? 80 : 120} aria-invalid={Boolean(formError)} aria-describedby="name-help" /></label><p id="name-help" className="field-error" role={formError ? "alert" : undefined} aria-live="polite">{formError}</p><div className="dialog-actions"><button type="button" disabled={pendingOperation === "form"} onClick={closeModal}>取消</button><button className="primary-button" type="submit" disabled={pendingOperation === "form"}>{dialog.kind === "meeting" || dialog.kind === "folder" ? "创建" : "保存"}</button></div></form></div>}
+    {confirmation && <div className="dialog-backdrop"><section ref={setModal} className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="remove-folder-title"><h2 id="remove-folder-title">删除分类？</h2><p>分类内的会议将保留为未分类。</p><p className="field-error" role={confirmationError ? "alert" : undefined} aria-live="polite">{confirmationError}</p><div className="dialog-actions"><button disabled={pendingOperation === "removeFolder"} onClick={closeModal}>取消</button><button className="danger-button" disabled={pendingOperation === "removeFolder"} onClick={() => void removeFolder()}>删除</button></div></section></div>}
+  </>;
 }
 
 export function WorkspacePlaceholder() {

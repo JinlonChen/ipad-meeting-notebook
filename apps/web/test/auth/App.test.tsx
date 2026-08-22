@@ -29,7 +29,10 @@ function deferred<T>() {
   const promise = new Promise<T>((nextResolve, nextReject) => { resolve = nextResolve; reject = nextReject; });
   return { promise, resolve, reject };
 }
-afterEach(async () => { await Promise.all(repositories.splice(0).map((item) => item.deleteDatabase())); });
+afterEach(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await Promise.all(repositories.splice(0).map((item) => item.deleteDatabase()));
+});
 
 describe("App session gate", () => {
   test("authorizes a successful session and enters the meeting catalog", async () => {
@@ -199,5 +202,58 @@ describe("App session gate", () => {
 
     expect(error).not.toHaveBeenCalled();
     error.mockRestore();
+  });
+
+  test("does not let an older paused refresh clear a newer login session", async () => {
+    const user = userEvent.setup();
+    const catalog = repository();
+    const refresh = deferred<{ state: "paused_auth" }>();
+    const auth = api({ me: vi.fn().mockResolvedValue({ id: "owner", sessionExpiresAt: expiry }) });
+    const sync = { refresh: vi.fn().mockImplementationOnce(() => refresh.promise).mockResolvedValue({ state: "idle" as const }), resumeAfterLogin: vi.fn() };
+    render(<App repository={catalog} auth={auth} synchronizer={sync} now={() => now} />);
+
+    await screen.findByRole("heading", { name: "会议本" });
+    await waitFor(() => expect(sync.refresh).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("button", { name: "退出" }));
+    await screen.findByRole("heading", { name: "登录会议本" });
+    await user.type(screen.getByLabelText("密码"), "private-secret");
+    await user.click(screen.getByRole("button", { name: "登录" }));
+    await screen.findByRole("heading", { name: "会议本" });
+    refresh.resolve({ state: "paused_auth" });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByRole("heading", { name: "会议本" })).toBeVisible();
+    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(true);
+  });
+
+  test("does not commit a paused refresh after unmount", async () => {
+    const catalog = repository();
+    const refresh = deferred<{ state: "paused_auth" }>();
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const rendered = render(<App repository={catalog} auth={api()} synchronizer={{ refresh: vi.fn().mockImplementation(() => refresh.promise), resumeAfterLogin: vi.fn() }} now={() => now} />);
+
+    await screen.findByRole("heading", { name: "会议本" });
+    rendered.unmount();
+    refresh.resolve({ state: "paused_auth" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(error).not.toHaveBeenCalled();
+    error.mockRestore();
+  });
+
+  test("keeps login unavailable until logout has settled", async () => {
+    const user = userEvent.setup();
+    const catalog = repository();
+    const loggingOut = deferred<void>();
+    const auth = api({ logout: vi.fn().mockImplementation(() => loggingOut.promise) });
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
+
+    await screen.findByRole("heading", { name: "会议本" });
+    await user.click(screen.getByRole("button", { name: "退出" }));
+    expect(screen.queryByLabelText("密码")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("正在退出");
+    loggingOut.resolve();
+
+    await screen.findByRole("heading", { name: "登录会议本" });
   });
 });

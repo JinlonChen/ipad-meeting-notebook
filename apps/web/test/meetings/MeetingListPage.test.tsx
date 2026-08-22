@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
@@ -33,6 +33,7 @@ function renderPage(repository = catalog(), initialEntries = ["/meetings"]) {
 }
 
 afterEach(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 0));
   await Promise.all(repositories.splice(0).map((repository) => repository.deleteDatabase()));
 });
 
@@ -213,6 +214,41 @@ describe("MeetingListPage", () => {
     error.mockRestore();
   });
 
+  test("does not start a reload after a mutation resolves following unmount", async () => {
+    const user = userEvent.setup();
+    const repository = renderPage();
+    const pending = deferred<Awaited<ReturnType<MeetingCatalogRepository["createFolder"]>>>();
+    vi.spyOn(repository, "createFolder").mockImplementation(() => pending.promise);
+    const list = vi.spyOn(repository, "list");
+    await screen.findByRole("heading", { name: "会议本" });
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    await user.type(screen.getByLabelText("分类名称"), "工作");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+    const callsBeforeUnmount = list.mock.calls.length;
+    cleanup();
+    pending.resolve({ id: crypto.randomUUID(), name: "工作", createdAt: now, updatedAt: now, syncVersion: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(list).toHaveBeenCalledTimes(callsBeforeUnmount);
+  });
+
+  test("does not repeat a successful create when the following reload fails", async () => {
+    const user = userEvent.setup();
+    const repository = renderPage();
+    const createFolder = vi.spyOn(repository, "createFolder");
+    await screen.findByRole("heading", { name: "会议本" });
+    await screen.findByText("还没有会议");
+    const list = vi.spyOn(repository, "list").mockRejectedValueOnce(new Error("read failed"));
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    await user.type(screen.getByLabelText("分类名称"), "工作");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+
+    await waitFor(() => expect(createFolder).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("dialog", { name: "新建分类" })).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toBeVisible();
+    list.mockRestore();
+  });
+
   test("shows recoverable errors for folder removal, restore, and manual synchronization", async () => {
     const user = userEvent.setup();
     const repository = catalog();
@@ -268,6 +304,57 @@ describe("MeetingListPage", () => {
     expect(screen.getByRole("dialog", { name: "新建分类" })).toHaveAttribute("aria-modal", "true");
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "新建分类" })).not.toBeInTheDocument();
+  });
+
+  test("moves focus through menu items and traps dialog focus", async () => {
+    const user = userEvent.setup();
+    const repository = renderPage();
+    await repository.create("键盘会议", null, now);
+    await screen.findByRole("heading", { name: "会议本" });
+    await user.click(screen.getByRole("button", { name: "同步会议" }));
+    const trigger = await screen.findByRole("button", { name: "会议操作 键盘会议" });
+    await user.click(trigger);
+    const rename = screen.getByRole("menuitem", { name: "重命名" });
+    const trash = screen.getByRole("menuitem", { name: "移至废纸篓" });
+    expect(rename).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(trash).toHaveFocus();
+    await user.keyboard("{Home}");
+    expect(rename).toHaveFocus();
+    await user.keyboard("{End}");
+    expect(trash).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
+
+    const categoryTrigger = screen.getByRole("button", { name: "新建分类" });
+    await user.click(categoryTrigger);
+    const dialog = screen.getByRole("dialog", { name: "新建分类" });
+    expect(document.querySelector("main")).toHaveAttribute("inert");
+    const input = screen.getByLabelText("分类名称");
+    expect(input).toHaveFocus();
+    await user.keyboard("{Tab}");
+    expect(screen.getByRole("button", { name: "取消" })).toHaveFocus();
+    await user.keyboard("{Tab}");
+    expect(screen.getByRole("button", { name: "创建" })).toHaveFocus();
+    await user.keyboard("{Tab}");
+    expect(input).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(categoryTrigger).toHaveFocus();
+    expect(dialog).not.toBeInTheDocument();
+  });
+
+  test("returns focus to the dialog trigger after successful creation", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("还没有会议");
+    const trigger = screen.getByRole("button", { name: "新建分类" });
+    await user.click(trigger);
+    await user.type(screen.getByLabelText("分类名称"), "完成后返回");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
   });
 
   test("filters folders and unfiled meetings, and renders one status with a duration", async () => {
