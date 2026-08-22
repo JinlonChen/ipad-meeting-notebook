@@ -4,7 +4,7 @@ import { type FormEvent, useCallback, useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom";
 
 import type { SyncResult } from "./sync.js";
-import { MeetingCatalogRepository } from "./repository.js";
+import { MeetingCatalogRepository, type PendingStatus } from "./repository.js";
 
 type Props = {
   repository: MeetingCatalogRepository;
@@ -43,6 +43,17 @@ function duration(meeting: Meeting): string | null {
 function statusLabel(status: Meeting["status"]): string {
   return ({ draft: "草稿", recording: "录音中", recoverable: "待恢复", uploading: "上传中", processing: "处理中", ready: "已完成", failed: "失败", trashed: "已移至废纸篓" })[status];
 }
+function conflictActionLabel(kind: NonNullable<PendingStatus["conflict"]>["kind"]): string {
+  return ({
+    "meeting.create": "新建会议",
+    "meeting.rename": "重命名会议",
+    "meeting.trash": "将会议移至废纸篓",
+    "meeting.restore": "恢复会议",
+    "folder.create": "新建分类",
+    "folder.rename": "重命名分类",
+    "folder.remove": "删除分类",
+  })[kind];
+}
 
 export function MeetingListPage({ repository, refresh, now = () => new Date().toISOString(), online, onLogout }: Props) {
   const navigate = useNavigate();
@@ -61,15 +72,23 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
   const [pendingOperation, setPendingOperation] = useState<string | null>(null);
   const [operationError, setOperationError] = useState("");
   const [confirmationError, setConfirmationError] = useState("");
+  const [pendingStatus, setPendingStatus] = useState<PendingStatus | null>(null);
+  const [pendingStatusKnown, setPendingStatusKnown] = useState(false);
+  const [conflictOpen, setConflictOpen] = useState(false);
+  const [conflictError, setConflictError] = useState("");
+  const [resolvedConflictSequence, setResolvedConflictSequence] = useState<number | null>(null);
   const mounted = useRef(true);
   const reloadGeneration = useRef(0);
+  const catalogLoaded = useRef(false);
   const menu = useRef<HTMLDivElement>(null);
   const actionTrigger = useRef<HTMLButtonElement>(null);
   const menuItems = useRef<Array<HTMLButtonElement | null>>([]);
   const modal = useRef<HTMLElement>(null);
   const lastFocus = useRef<HTMLElement | null>(null);
   const newFolderTrigger = useRef<HTMLButtonElement>(null);
+  const syncTrigger = useRef<HTMLButtonElement>(null);
   const setModal = useCallback((element: HTMLElement | null) => { modal.current = element; }, []);
+  const modalOpen = dialog !== null || confirmation !== null || conflictOpen;
 
   useEffect(() => {
     mounted.current = true;
@@ -79,16 +98,31 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
     };
   }, []);
 
-  const reload = useCallback(async () => {
-    if (!mounted.current) return;
+  const reload = useCallback(async (): Promise<PendingStatus | undefined> => {
+    if (!mounted.current) return undefined;
     const currentGeneration = ++reloadGeneration.current;
-    setLoading(true);
+    if (!catalogLoaded.current) setLoading(true);
     try {
-      const [nextMeetings, nextFolders] = await Promise.all([repository.list({ includeTrashed: true }), repository.listFolders()]);
-      if (!mounted.current || reloadGeneration.current !== currentGeneration) return;
+      const [nextMeetings, nextFolders, nextPendingResult] = await Promise.all([
+        repository.list({ includeTrashed: true }),
+        repository.listFolders(),
+        repository.pendingStatus().then(
+          (value) => ({ ok: true as const, value }),
+          () => ({ ok: false as const }),
+        ),
+      ]);
+      if (!mounted.current || reloadGeneration.current !== currentGeneration) return undefined;
       setMeetings(nextMeetings);
       setFolders(nextFolders);
+      if (nextPendingResult.ok) {
+        setPendingStatus(nextPendingResult.value);
+        setPendingStatusKnown(true);
+      } else {
+        setPendingStatusKnown(false);
+      }
+      catalogLoaded.current = true;
       setLoading(false);
+      return nextPendingResult.ok ? nextPendingResult.value : undefined;
     } catch (error) {
       if (mounted.current && reloadGeneration.current === currentGeneration) setLoading(false);
       throw error;
@@ -137,6 +171,8 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
   const closeModal = useCallback(() => {
     setDialog(null);
     setConfirmation(null);
+    setConflictOpen(false);
+    setConflictError("");
     queueMicrotask(() => lastFocus.current?.focus());
   }, []);
 
@@ -152,15 +188,21 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
     setConfirmation(folderId);
   }, []);
 
+  const openConflict = useCallback((trigger: HTMLElement) => {
+    lastFocus.current = trigger;
+    setConflictError("");
+    setConflictOpen(true);
+  }, []);
+
   useEffect(() => {
     const onEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (dialog || confirmation) { event.preventDefault(); closeModal(); return; }
+      if (modalOpen) { event.preventDefault(); closeModal(); return; }
       if (actionMeeting) { event.preventDefault(); closeMenu(); }
     };
     window.addEventListener("keydown", onEscape);
     return () => window.removeEventListener("keydown", onEscape);
-  }, [actionMeeting, closeMenu, closeModal, confirmation, dialog]);
+  }, [actionMeeting, closeMenu, closeModal, modalOpen]);
 
   useEffect(() => {
     if (!actionMeeting) return;
@@ -196,7 +238,7 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
   }, [actionMeeting, closeMenu, dismissMenu]);
 
   useEffect(() => {
-    if (!dialog && !confirmation) return;
+    if (!modalOpen) return;
     queueMicrotask(() => {
       modal.current?.querySelector<HTMLElement>("input, button:not([disabled])")?.focus();
     });
@@ -209,7 +251,32 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
     };
     window.addEventListener("keydown", trapFocus);
     return () => window.removeEventListener("keydown", trapFocus);
-  }, [confirmation, dialog]);
+  }, [modalOpen]);
+
+  const synchronizeAfterMutation = useCallback(() => {
+    if (!online || !mounted.current) return;
+    setSyncState("syncing");
+    void refresh()
+      .then(async (result) => {
+        if (mounted.current) setSyncState(result.state);
+        try { await reload(); }
+        catch { if (mounted.current) { setSyncState("error"); setOperationError("读取目录失败，请重试。"); } }
+      })
+      .catch(() => {
+        if (mounted.current) {
+          setSyncState("error");
+          setOperationError("操作未完成，请重试。");
+          void reload().catch(() => undefined);
+        }
+      });
+  }, [online, refresh, reload]);
+
+  const finishLocalMutation = useCallback(() => {
+    if (!mounted.current) return;
+    setPendingStatusKnown(false);
+    void reload().catch(() => { if (mounted.current) setOperationError("读取目录失败，请重试。"); });
+    synchronizeAfterMutation();
+  }, [reload, synchronizeAfterMutation]);
 
   const shown = meetings.filter((meeting) => {
     if (filter === "trashed" ? meeting.status !== "trashed" : meeting.status === "trashed") return false;
@@ -238,8 +305,8 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
     if (!completed) return;
     if (!mounted.current) return;
     setFormError(""); closeModal();
+    finishLocalMutation();
     if (createdMeeting) { navigate(`/meetings/${createdMeeting.id}`); return; }
-    void reload().catch(() => { if (mounted.current) setOperationError("读取目录失败，请重试。"); });
   }
   async function removeFolder() {
     if (!confirmation) return;
@@ -252,7 +319,7 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
     if (filter === folderId) setFilter("unfiled");
     lastFocus.current = newFolderTrigger.current;
     closeModal();
-    void reload().catch(() => { if (mounted.current) setOperationError("读取目录失败，请重试。"); });
+    finishLocalMutation();
   }
   async function syncNow() {
     if (!online || pendingOperation) return;
@@ -277,25 +344,60 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
     }, () => setOperationError("操作未完成，请重试。"));
     if (!completed || !mounted.current) return;
     setActionMeeting(null);
-    void reload().catch(() => { if (mounted.current) setOperationError("读取目录失败，请重试。"); });
+    finishLocalMutation();
+  }
+  async function resolveCurrentConflict() {
+    const conflict = pendingStatus?.conflict;
+    if (!conflict || !online || pendingOperation) return;
+    setPendingOperation("resolveConflict");
+    setConflictError("");
+    try {
+      if (resolvedConflictSequence !== conflict.sequence) {
+        await repository.resolveConflict(conflict.sequence);
+        if (mounted.current) setResolvedConflictSequence(conflict.sequence);
+      }
+      const result = await refresh();
+      if (!mounted.current) return;
+      setSyncState(result.state);
+      if (result.state === "conflict") {
+        const latestPendingStatus = await reload();
+        if (mounted.current && latestPendingStatus !== undefined) setResolvedConflictSequence(null);
+        return;
+      }
+      if (result.state !== "idle") throw new Error("Synchronization did not complete");
+      await reload();
+      if (mounted.current) {
+        setResolvedConflictSequence(null);
+        lastFocus.current = syncTrigger.current;
+        closeModal();
+      }
+    } catch {
+      if (mounted.current) setConflictError("冲突处理失败，请重试。");
+    } finally {
+      if (mounted.current) setPendingOperation(null);
+    }
   }
   function stateText() {
-    if (!online) return "离线，等待同步";
+    const count = pendingStatus?.count;
+    if (!online) return !pendingStatusKnown || count === undefined ? "离线，同步状态未知" : `离线，${count} 项待同步`;
     if (syncState === "syncing") return "正在同步";
-    if (syncState === "error") return "同步出错";
+    if (pendingStatus?.conflict || syncState === "conflict") return "同步冲突";
+    if (syncState === "error") return !pendingStatusKnown || count === undefined || count === 0 ? "同步出错" : `同步出错，${count} 项待同步`;
     if (syncState === "paused_auth") return "同步已暂停";
-    if (syncState === "conflict") return "同步冲突";
+    if (!pendingStatusKnown || count === undefined) return "同步状态未知";
+    if (count > 0) return `${count} 项待同步`;
     return "已同步";
   }
   const emptyText = search ? "没有匹配的会议" : filter === "trashed" ? "废纸篓为空" : filter !== "all" ? "此分类暂无会议" : "还没有会议";
 
-  return <><main className="catalog-shell" data-layout={layout} data-drawer={railOpen ? "open" : "closed"} inert={dialog !== null || confirmation !== null}>
+  return <><main className="catalog-shell" data-layout={layout} data-drawer={railOpen ? "open" : "closed"} inert={modalOpen}>
     <header className="catalog-topbar">
       <button className="icon-button rail-toggle" aria-label="打开分类" title="打开分类" onClick={() => setRailOpen(true)}><FolderIcon size={18} /></button>
       <h1>会议本</h1>
       <div className="topbar-actions">
         <span className={`sync-state ${online ? "" : "offline"}`} aria-live="polite">{stateText()}</span>
-        <button className="icon-button" aria-label="同步会议" title="同步会议" disabled={!online || pendingOperation === "sync"} onClick={() => void syncNow()}><RefreshCw size={18} /></button>
+        {pendingStatus?.conflict && <button className="conflict-button" onClick={(event) => openConflict(event.currentTarget)}>处理冲突</button>}
+        <button ref={syncTrigger} className="icon-button" aria-label="同步会议" title="同步会议" disabled={!online || pendingOperation === "sync"} onClick={() => void syncNow()}><RefreshCw size={18} /></button>
         {onLogout && <button className="text-button" onClick={onLogout}>退出</button>}
       </div>
     </header>
@@ -318,6 +420,7 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
   </main>
     {dialog && <div className="dialog-backdrop"><form ref={setModal} className="dialog" role="dialog" aria-modal="true" aria-labelledby="catalog-dialog-title" onSubmit={(event) => void submit(event)}><h2 id="catalog-dialog-title">{dialogTitle}</h2><label>{dialog.kind.includes("Folder") || dialog.kind === "folder" ? "分类名称" : "会议名称"}<input name="name" autoFocus defaultValue={dialog.initial} maxLength={dialog.kind.includes("Folder") || dialog.kind === "folder" ? 80 : 120} aria-invalid={Boolean(formError)} aria-describedby="name-help" /></label><p id="name-help" className="field-error" role={formError ? "alert" : undefined} aria-live="polite">{formError}</p><div className="dialog-actions"><button type="button" disabled={pendingOperation === "form"} onClick={closeModal}>取消</button><button className="primary-button" type="submit" disabled={pendingOperation === "form"}>{dialog.kind === "meeting" || dialog.kind === "folder" ? "创建" : "保存"}</button></div></form></div>}
     {confirmation && <div className="dialog-backdrop"><section ref={setModal} className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="remove-folder-title"><h2 id="remove-folder-title">删除分类？</h2><p>分类内的会议将保留为未分类。</p><p className="field-error" role={confirmationError ? "alert" : undefined} aria-live="polite">{confirmationError}</p><div className="dialog-actions"><button disabled={pendingOperation === "removeFolder"} onClick={closeModal}>取消</button><button className="danger-button" disabled={pendingOperation === "removeFolder"} onClick={() => void removeFolder()}>删除</button></div></section></div>}
+    {conflictOpen && pendingStatus?.conflict && <div className="dialog-backdrop"><section ref={setModal} className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="resolve-conflict-title"><h2 id="resolve-conflict-title">处理同步冲突</h2><p className="conflict-detail"><strong>{pendingStatus.conflict.entityName}</strong><span>{conflictActionLabel(pendingStatus.conflict.kind)}与服务端内容冲突。</span></p><p>放弃本地修改后，将恢复服务端内容并继续同步其他项目。</p><p className="field-error" role={conflictError ? "alert" : undefined} aria-live="polite">{conflictError}</p><div className="dialog-actions"><button disabled={pendingOperation === "resolveConflict"} onClick={closeModal}>取消</button><button className="danger-button" disabled={!online || pendingOperation === "resolveConflict"} onClick={() => void resolveCurrentConflict()}>{resolvedConflictSequence === pendingStatus.conflict.sequence ? "重试同步" : "放弃本地修改"}</button></div></section></div>}
   </>;
 }
 

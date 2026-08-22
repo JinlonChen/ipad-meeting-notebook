@@ -27,6 +27,7 @@ test("installs the meeting notebook shell and starts it offline", async ({ conte
   expect(manifest).toMatchObject({
     name: "会议本",
     short_name: "会议本",
+    description: "个人会议目录与离线同步",
     display: "standalone",
     start_url: "/",
     scope: "/",

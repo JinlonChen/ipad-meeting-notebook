@@ -196,4 +196,108 @@ describe("MeetingCatalogRepository", () => {
       expect.objectContaining({ kind: "folder.remove", entityId: folder.id, payload: { updatedAt: "2026-08-21T00:04:00.000Z", expectedSyncVersion: 1 } }),
     ]);
   });
+
+  test("summarizes the first conflict with a local name and pending count", async () => {
+    const catalog = repository();
+    const meeting = await catalog.create("冲突会议", null, now);
+    const operation = (await catalog.pendingOperations())[0]!;
+    await catalog.syncRecordFailure(operation, "CONFLICT");
+
+    await expect(catalog.pendingStatus()).resolves.toEqual({
+      count: 1,
+      conflict: {
+        sequence: operation.sequence,
+        kind: "meeting.create",
+        entityName: "冲突会议",
+      },
+    });
+  });
+
+  test("abandons a conflicted meeting create and only its later entity mutations", async () => {
+    const catalog = repository();
+    const earlier = await catalog.create("其他会议", null, now);
+    const abandoned = await catalog.create("放弃会议", null, "2026-08-21T00:01:00.000Z");
+    await catalog.rename(abandoned.id, "放弃会议新名", "2026-08-21T00:02:00.000Z");
+    const later = await catalog.create("后续会议", null, "2026-08-21T00:03:00.000Z");
+    const conflict = (await catalog.pendingOperations()).find((item) => item.entityId === abandoned.id && item.kind === "meeting.create")!;
+    await catalog.syncRecordFailure(conflict, "CONFLICT");
+
+    await catalog.resolveConflict(conflict.sequence!);
+
+    await expect(catalog.get(abandoned.id)).resolves.toBeNull();
+    await expect(catalog.pendingOperations()).resolves.toEqual([
+      expect.objectContaining({ entityId: earlier.id, kind: "meeting.create" }),
+      expect.objectContaining({ entityId: later.id, kind: "meeting.create" }),
+    ]);
+    await expect(catalog.pendingStatus()).resolves.toEqual({ count: 2, conflict: null });
+  });
+
+  test("abandons a conflicted meeting mutation and later mutations without deleting earlier work", async () => {
+    const catalog = repository();
+    const remote = {
+      id: crypto.randomUUID(), title: "服务端标题", folderId: null, status: "draft" as const,
+      startedAt: null, endedAt: null, createdAt: now, updatedAt: now, trashedAt: null, syncVersion: 4,
+    };
+    const other = await catalog.create("其他会议", null, "2026-08-21T00:01:00.000Z");
+    await catalog.syncRefresh([], [remote]);
+    await catalog.rename(remote.id, "本地标题", "2026-08-21T00:02:00.000Z");
+    await catalog.trash(remote.id, "2026-08-21T00:03:00.000Z");
+    const conflict = (await catalog.pendingOperations()).find((item) => item.kind === "meeting.rename")!;
+    await catalog.syncRecordFailure(conflict, "CONFLICT");
+
+    await catalog.resolveConflict(conflict.sequence!);
+
+    await expect(catalog.pendingOperations()).resolves.toEqual([
+      expect.objectContaining({ entityId: other.id, kind: "meeting.create" }),
+    ]);
+    await expect(catalog.get(remote.id)).resolves.toMatchObject({ title: "本地标题", status: "trashed" });
+  });
+
+  test("abandons a conflicted folder create transactionally and unfiles pending meeting creates without changing versions", async () => {
+    const catalog = repository();
+    const other = await catalog.createFolder("其他分类", now);
+    const folder = await catalog.createFolder("放弃分类", "2026-08-21T00:01:00.000Z");
+    const meeting = await catalog.create("仍需同步", folder.id, "2026-08-21T00:02:00.000Z");
+    await catalog.renameFolder(folder.id, "放弃分类新名", "2026-08-21T00:03:00.000Z");
+    const conflict = (await catalog.pendingOperations()).find((item) => item.entityId === folder.id && item.kind === "folder.create")!;
+    await catalog.syncRecordFailure(conflict, "CONFLICT");
+
+    await catalog.resolveConflict(conflict.sequence!);
+
+    await expect(catalog.listFolders()).resolves.toEqual([expect.objectContaining({ id: other.id })]);
+    await expect(catalog.get(meeting.id)).resolves.toMatchObject({ folderId: null, syncVersion: 0 });
+    await expect(catalog.pendingOperations()).resolves.toEqual([
+      expect.objectContaining({ entityId: other.id, kind: "folder.create" }),
+      expect.objectContaining({
+        entityId: meeting.id,
+        kind: "meeting.create",
+        payload: expect.objectContaining({ folderId: null }),
+        lastError: null,
+      }),
+    ]);
+  });
+
+  test("abandons a conflicted folder mutation and later folder mutations for authoritative refresh", async () => {
+    const catalog = repository();
+    const remoteFolder = { id: crypto.randomUUID(), name: "服务端分类", createdAt: now, updatedAt: now, syncVersion: 2 };
+    const remoteMeeting = {
+      id: crypto.randomUUID(), title: "服务端会议", folderId: remoteFolder.id, status: "draft" as const,
+      startedAt: null, endedAt: null, createdAt: now, updatedAt: now, trashedAt: null, syncVersion: 2,
+    };
+    const other = await catalog.createFolder("其他分类", "2026-08-21T00:01:00.000Z");
+    await catalog.syncRefresh([remoteFolder], [remoteMeeting]);
+    await catalog.renameFolder(remoteFolder.id, "本地分类", "2026-08-21T00:02:00.000Z");
+    await catalog.removeFolder(remoteFolder.id, "2026-08-21T00:03:00.000Z");
+    const conflict = (await catalog.pendingOperations()).find((item) => item.kind === "folder.rename")!;
+    await catalog.syncRecordFailure(conflict, "CONFLICT");
+
+    await catalog.resolveConflict(conflict.sequence!);
+
+    await expect(catalog.pendingOperations()).resolves.toEqual([
+      expect.objectContaining({ entityId: other.id, kind: "folder.create" }),
+    ]);
+    await catalog.syncRefresh([remoteFolder], [remoteMeeting]);
+    await expect(catalog.listFolders()).resolves.toEqual(expect.arrayContaining([remoteFolder]));
+    await expect(catalog.get(remoteMeeting.id)).resolves.toEqual(remoteMeeting);
+  });
 });

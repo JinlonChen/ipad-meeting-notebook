@@ -57,6 +57,17 @@ export type MeetingCatalogRepositoryOptions = {
   beforeOutboxWrite?: (operation: OutboxOperation) => undefined;
 };
 
+export type PendingConflict = {
+  sequence: number;
+  kind: OutboxKind;
+  entityName: string;
+};
+
+export type PendingStatus = {
+  count: number;
+  conflict: PendingConflict | null;
+};
+
 export class MeetingCatalogRepository {
   private readonly db: MeetingCatalogDatabase;
   private readonly beforeOutboxWrite: NonNullable<MeetingCatalogRepositoryOptions["beforeOutboxWrite"]>;
@@ -116,6 +127,60 @@ export class MeetingCatalogRepository {
 
   async pendingOperations(): Promise<OutboxOperation[]> {
     return this.db.outbox.orderBy("sequence").toArray();
+  }
+
+  async pendingStatus(): Promise<PendingStatus> {
+    return this.db.transaction("r", this.db.meetings, this.db.folders, this.db.outbox, async () => {
+      const operations = await this.db.outbox.orderBy("sequence").toArray();
+      const conflict = operations.find((item) => item.lastError === "CONFLICT" && item.sequence !== undefined);
+      if (!conflict || conflict.sequence === undefined) return { count: operations.length, conflict: null };
+      const meeting = conflict.kind.startsWith("meeting.") ? await this.db.meetings.get(conflict.entityId) : undefined;
+      const folder = conflict.kind.startsWith("folder.") ? await this.db.folders.get(conflict.entityId) : undefined;
+      return {
+        count: operations.length,
+        conflict: {
+          sequence: conflict.sequence,
+          kind: conflict.kind,
+          entityName: meeting?.title ?? folder?.name ?? (conflict.kind.startsWith("meeting.") ? "该会议" : "该分类"),
+        },
+      };
+    });
+  }
+
+  async resolveConflict(sequenceInput: number): Promise<void> {
+    const sequence = z.number().int().nonnegative().parse(sequenceInput);
+    await this.db.transaction("rw", this.db.meetings, this.db.folders, this.db.outbox, this.db.settings, async () => {
+      const conflict = await this.db.outbox.get(sequence);
+      if (!conflict || conflict.lastError !== "CONFLICT") throw new Error("Conflict operation not found");
+      const operations = await this.db.outbox.orderBy("sequence").toArray();
+      const discardedSequences = operations
+        .filter((item) => item.entityId === conflict.entityId && item.sequence !== undefined && item.sequence >= sequence)
+        .map((item) => item.sequence!);
+
+      if (conflict.kind === "meeting.create") {
+        await this.db.meetings.delete(conflict.entityId);
+        await this.db.settings.delete(restoreSettingKey(conflict.entityId));
+      }
+
+      if (conflict.kind === "folder.create") {
+        await this.db.folders.delete(conflict.entityId);
+        const meetings = await this.db.meetings.where("folderId").equals(conflict.entityId).toArray();
+        for (const meeting of meetings) {
+          await this.db.meetings.put(MeetingSchema.parse({ ...meeting, folderId: null }));
+        }
+        for (const item of operations) {
+          if (item.kind !== "meeting.create" || item.sequence === undefined || discardedSequences.includes(item.sequence)) continue;
+          const payload = CreateMeetingInputSchema.parse(item.payload);
+          if (payload.folderId === conflict.entityId) {
+            await this.db.outbox.update(item.sequence, {
+              payload: CreateMeetingInputSchema.parse({ ...payload, folderId: null }),
+            });
+          }
+        }
+      }
+
+      await this.db.outbox.bulkDelete(discardedSequences);
+    });
   }
 
   async createFolder(name: string, now: string): Promise<Folder> {

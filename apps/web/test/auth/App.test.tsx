@@ -54,7 +54,7 @@ describe("App session gate", () => {
     const valid = repository();
     await valid.authorizeDevice(expiry, now);
     const rendered = render(<App repository={valid} auth={api({ me: vi.fn().mockRejectedValue(new AuthNetworkError()) })} synchronizer={synchronizer()} now={() => now} />);
-    await screen.findByText("离线，等待同步");
+    await screen.findByText("离线，0 项待同步");
     rendered.unmount();
 
     const expired = repository();

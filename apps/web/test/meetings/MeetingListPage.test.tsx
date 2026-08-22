@@ -32,6 +32,26 @@ function renderPage(repository = catalog(), initialEntries = ["/meetings"]) {
   return repository;
 }
 
+async function acknowledgePending(repository: MeetingCatalogRepository): Promise<void> {
+  const remoteFolders = new Map((await repository.listFolders()).map((folder) => [folder.id, folder]));
+  for (const operation of await repository.pendingOperations()) {
+    if (operation.kind === "folder.remove") {
+      await repository.syncApplySuccessfulOperation(operation, {});
+    } else if (operation.kind.startsWith("folder.")) {
+      const payload = operation.payload as { id?: string; name?: string; clientCreatedAt?: string; updatedAt?: string; expectedSyncVersion?: number };
+      const previous = remoteFolders.get(operation.entityId);
+      const folder = operation.kind === "folder.create"
+        ? { id: operation.entityId, name: payload.name!, createdAt: payload.clientCreatedAt!, updatedAt: payload.clientCreatedAt!, syncVersion: 0 }
+        : { ...previous!, name: payload.name!, updatedAt: payload.updatedAt!, syncVersion: (payload.expectedSyncVersion ?? 0) + 1 };
+      remoteFolders.set(folder.id, folder);
+      await repository.syncApplySuccessfulOperation(operation, { folder });
+    } else {
+      const meeting = await repository.get(operation.entityId);
+      if (meeting) await repository.syncApplySuccessfulOperation(operation, { meeting });
+    }
+  }
+}
+
 afterEach(async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   await Promise.all(repositories.splice(0).map((repository) => repository.deleteDatabase()));
@@ -44,7 +64,7 @@ describe("MeetingListPage", () => {
     const shell = await screen.findByRole("main");
     expect(shell).toHaveAttribute("data-layout", "portrait");
     expect(shell).toHaveAttribute("data-drawer", "closed");
-    expect(screen.getByText("离线，等待同步")).toBeVisible();
+    expect(await screen.findByText("离线，0 项待同步")).toBeVisible();
     await userEvent.setup().click(screen.getByRole("button", { name: "打开分类" }));
     expect(shell).toHaveAttribute("data-drawer", "open");
     portrait.unmount();
@@ -139,6 +159,223 @@ describe("MeetingListPage", () => {
     render(<MemoryRouter><MeetingListPage repository={repository} refresh={async () => { throw new Error("offline"); }} now={() => now} online /></MemoryRouter>);
     await screen.findByText("同步出错");
     expect(screen.getByRole("button", { name: "新建会议" })).toBeVisible();
+  });
+
+  test("starts automatic synchronization after a meeting create before navigation unmounts the page", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    const automatic = deferred<{ state: "idle" }>();
+    const refresh = vi.fn()
+      .mockResolvedValueOnce({ state: "idle" as const })
+      .mockImplementationOnce(() => automatic.promise);
+    render(<MemoryRouter initialEntries={["/meetings"]}><Routes>
+      <Route path="/meetings" element={<MeetingListPage repository={repository} refresh={refresh} now={() => now} online />} />
+      <Route path="/meetings/:id" element={<WorkspacePlaceholder />} />
+    </Routes></MemoryRouter>);
+    await screen.findByText("还没有会议");
+    const delayedList = deferred<Awaited<ReturnType<MeetingCatalogRepository["list"]>>>();
+    vi.spyOn(repository, "list").mockImplementationOnce(() => delayedList.promise);
+
+    await user.click(screen.getByRole("button", { name: "新建会议" }));
+    await user.type(screen.getByLabelText("会议名称"), "导航前同步");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+
+    await screen.findByText("会议工作区将在录音阶段启用");
+    expect(refresh).toHaveBeenCalledTimes(2);
+    delayedList.resolve([]);
+    automatic.resolve({ state: "idle" });
+  });
+
+  test("keeps populated rows interactive while a background reload is pending", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    await repository.create("保持可见", null, now);
+    const refresh = vi.fn().mockResolvedValue({ state: "idle" as const });
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={refresh} now={() => now} online /></MemoryRouter>);
+    await screen.findByText("保持可见");
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const delayedList = deferred<Awaited<ReturnType<MeetingCatalogRepository["list"]>>>();
+    vi.spyOn(repository, "list").mockImplementationOnce(() => delayedList.promise);
+
+    await user.click(screen.getByRole("button", { name: "同步会议" }));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByText("保持可见")).toBeVisible();
+    expect(screen.queryByText("正在载入会议...")).not.toBeInTheDocument();
+    delayedList.resolve(await repository.list({ includeTrashed: true }));
+  });
+
+  test("automatically syncs a successful local mutation and only reports synced after pending is empty", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    const refresh = vi.fn(async () => {
+      await acknowledgePending(repository);
+      return { state: "idle" as const };
+    });
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={refresh} now={() => now} online /></MemoryRouter>);
+    await screen.findByText("已同步");
+
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    await user.type(screen.getByLabelText("分类名称"), "自动同步");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+    await waitFor(async () => expect(await repository.pendingOperations()).toEqual([]));
+    await screen.findByText("已同步");
+  });
+
+  test("keeps the real pending count after automatic sync errors and allows manual retry", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    const refresh = vi.fn()
+      .mockResolvedValueOnce({ state: "idle" as const })
+      .mockResolvedValueOnce({ state: "error" as const })
+      .mockImplementationOnce(async () => {
+        await acknowledgePending(repository);
+        return { state: "idle" as const };
+      });
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={refresh} now={() => now} online /></MemoryRouter>);
+    await screen.findByText("已同步");
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    await user.type(screen.getByLabelText("分类名称"), "稍后同步");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+
+    await screen.findByText("同步出错，1 项待同步");
+    await user.click(screen.getByRole("button", { name: "同步会议" }));
+    await screen.findByText("已同步");
+    await expect(repository.pendingOperations()).resolves.toEqual([]);
+  });
+
+  test("uses repository pending data offline and never reports pending work as synced", async () => {
+    const repository = catalog();
+    await repository.create("离线会议", null, now);
+    const refresh = vi.fn().mockResolvedValue({ state: "idle" as const });
+    const rendered = render(<MemoryRouter><MeetingListPage repository={repository} refresh={refresh} now={() => now} online={false} /></MemoryRouter>);
+    await screen.findByText("离线，1 项待同步");
+    expect(refresh).not.toHaveBeenCalled();
+    rendered.unmount();
+
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={refresh} now={() => now} online /></MemoryRouter>);
+    await screen.findByText("1 项待同步");
+    expect(screen.queryByText("已同步")).not.toBeInTheDocument();
+  });
+
+  test("shows an understandable conflict dialog, resolves it, and continues synchronization", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    const meeting = await repository.create("季度复盘", null, now);
+    const operation = (await repository.pendingOperations())[0]!;
+    await repository.syncRecordFailure(operation, "CONFLICT");
+    const resolveConflict = vi.spyOn(repository, "resolveConflict");
+    const refresh = vi.fn()
+      .mockResolvedValueOnce({ state: "conflict" as const })
+      .mockResolvedValue({ state: "idle" as const });
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={refresh} now={() => now} online /></MemoryRouter>);
+    const trigger = await screen.findByRole("button", { name: "处理冲突" });
+
+    await user.click(trigger);
+    const dialog = screen.getByRole("alertdialog", { name: "处理同步冲突" });
+    expect(dialog).toHaveTextContent("季度复盘");
+    expect(dialog).toHaveTextContent("新建会议");
+    expect(dialog).not.toHaveTextContent(operation.id);
+    expect(document.querySelector("main")).toHaveAttribute("inert");
+    await user.click(screen.getByRole("button", { name: "放弃本地修改" }));
+
+    await waitFor(() => expect(resolveConflict).toHaveBeenCalledWith(operation.sequence));
+    await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "处理同步冲突" })).not.toBeInTheDocument());
+    expect(refresh).toHaveBeenCalledTimes(2);
+    await expect(repository.get(meeting.id)).resolves.toBeNull();
+    expect(screen.getByRole("button", { name: "同步会议" })).toHaveFocus();
+  });
+
+  test("keeps a failed conflict resolution open with an alert and preserves escape focus", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    const meeting = await repository.create("失败冲突", null, now);
+    const operation = (await repository.pendingOperations())[0]!;
+    await repository.syncRecordFailure(operation, "CONFLICT");
+    vi.spyOn(repository, "resolveConflict").mockRejectedValueOnce(new Error("transaction failed"));
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={async () => ({ state: "conflict" })} now={() => now} online /></MemoryRouter>);
+    const trigger = await screen.findByRole("button", { name: "处理冲突" });
+    await user.click(trigger);
+    const abandon = screen.getByRole("button", { name: "放弃本地修改" });
+    expect(screen.getByRole("button", { name: "取消" })).toHaveFocus();
+    await user.keyboard("{Shift>}{Tab}{/Shift}");
+    expect(abandon).toHaveFocus();
+    await user.click(abandon);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("冲突处理失败，请重试。");
+    expect(screen.getByRole("alertdialog", { name: "处理同步冲突" })).toBeVisible();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("alertdialog", { name: "处理同步冲突" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  test("keeps a resolved conflict in sync-retry mode when reloading the pending summary fails", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    await repository.create("仍需处理", null, now);
+    const operation = (await repository.pendingOperations())[0]!;
+    await repository.syncRecordFailure(operation, "CONFLICT");
+    const refresh = vi.fn().mockResolvedValue({ state: "conflict" as const });
+    const resolveConflict = vi.spyOn(repository, "resolveConflict");
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={refresh} now={() => now} online /></MemoryRouter>);
+    await user.click(await screen.findByRole("button", { name: "处理冲突" }));
+    vi.spyOn(repository, "pendingStatus").mockRejectedValueOnce(new Error("indexeddb read failed"));
+
+    await user.click(screen.getByRole("button", { name: "放弃本地修改" }));
+
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("alertdialog", { name: "处理同步冲突" })).toBeVisible();
+    expect(screen.getByText("同步冲突")).toBeVisible();
+    expect(document.querySelector("main")).toHaveAttribute("inert");
+    await user.click(screen.getByRole("button", { name: "重试同步" }));
+
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(3));
+    expect(resolveConflict).toHaveBeenCalledTimes(1);
+  });
+
+  test("reopens a resolved conflict as a sync retry without resolving the deleted operation twice", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    await repository.create("重试同步", null, now);
+    const operation = (await repository.pendingOperations())[0]!;
+    await repository.syncRecordFailure(operation, "CONFLICT");
+    const resolveConflict = vi.spyOn(repository, "resolveConflict");
+    const refresh = vi.fn()
+      .mockResolvedValueOnce({ state: "conflict" as const })
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({ state: "idle" as const });
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={refresh} now={() => now} online /></MemoryRouter>);
+    const trigger = await screen.findByRole("button", { name: "处理冲突" });
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "放弃本地修改" }));
+    await screen.findByRole("alert");
+    await user.keyboard("{Escape}");
+    await user.click(trigger);
+
+    await user.click(screen.getByRole("button", { name: "重试同步" }));
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "处理同步冲突" })).not.toBeInTheDocument());
+    expect(resolveConflict).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(3);
+  });
+
+  test("shows conflict details offline without attempting destructive resolution or refresh", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    await repository.create("离线冲突", null, now);
+    const operation = (await repository.pendingOperations())[0]!;
+    await repository.syncRecordFailure(operation, "CONFLICT");
+    const resolveConflict = vi.spyOn(repository, "resolveConflict");
+    const refresh = vi.fn().mockResolvedValue({ state: "idle" as const });
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={refresh} now={() => now} online={false} /></MemoryRouter>);
+    await user.click(await screen.findByRole("button", { name: "处理冲突" }));
+
+    expect(screen.getByRole("button", { name: "放弃本地修改" })).toBeDisabled();
+    expect(resolveConflict).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
   });
 
   test("keeps the toolbar available while deferred local catalog loading resolves to empty", async () => {
@@ -255,7 +492,7 @@ describe("MeetingListPage", () => {
     const folder = await repository.createFolder("工作", now);
     const meeting = await repository.create("待恢复", null, now);
     await repository.trash(meeting.id, "2026-08-21T00:01:00.000Z");
-    const refresh = vi.fn().mockResolvedValueOnce({ state: "idle" as const }).mockRejectedValueOnce(new Error("sync failed")).mockResolvedValue({ state: "idle" as const });
+    const refresh = vi.fn().mockResolvedValue({ state: "idle" as const });
     const removeFolder = vi.spyOn(repository, "removeFolder").mockRejectedValueOnce(new Error("delete failed"));
     const restore = vi.spyOn(repository, "restore").mockRejectedValueOnce(new Error("restore failed"));
     render(<MemoryRouter><MeetingListPage repository={repository} refresh={refresh} now={() => now} online /></MemoryRouter>);
@@ -277,8 +514,13 @@ describe("MeetingListPage", () => {
     await user.click(screen.getByRole("button", { name: "全部会议" }));
     await screen.findByText("待恢复");
 
+    refresh.mockRejectedValueOnce(new Error("sync failed"));
     await user.click(screen.getByRole("button", { name: "同步会议" }));
-    await screen.findByText("同步出错");
+    await screen.findByText(/同步出错/);
+    refresh.mockImplementationOnce(async () => {
+      await acknowledgePending(repository);
+      return { state: "idle" as const };
+    });
     await user.click(screen.getByRole("button", { name: "同步会议" }));
     await screen.findByText("已同步");
   });
