@@ -58,8 +58,8 @@ create policy meetings_owner_select on public.meetings for select using (auth.ui
 revoke all on public.catalog_mutation_replays from anon;
 revoke all on public.catalog_mutation_replays from public;
 
--- The public entry point remains invoker-security.  The private implementation
--- is definer-security so callers do not receive direct table mutation grants.
+-- Both entry point and implementation are definer-security so callers do not
+-- receive direct table mutation or replay-table grants.
 create or replace function public._apply_catalog_mutation_impl(
   p_operation_id uuid,
   p_kind text,
