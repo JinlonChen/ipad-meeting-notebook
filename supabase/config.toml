@@ -1,0 +1,14 @@
+project_id = "meeting-notebook"
+
+[db]
+major_version = 15
+
+[api]
+enabled = true
+
+[auth]
+enabled = true
+
+[auth.email]
+enable_signup = false
+
