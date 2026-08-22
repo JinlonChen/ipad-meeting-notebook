@@ -21,8 +21,9 @@ async function expireDeviceMarker(page: Parameters<typeof openCatalog>[0]): Prom
 }
 
 test("installs the meeting notebook shell and enforces offline authorization", async ({ browser, context, page }) => {
+  const appPath = "/";
   const meeting = offlineMeeting();
-  await openCatalog(page, [meeting]);
+  await openCatalog(page, [meeting], appPath);
 
   const manifestLink = page.locator('link[rel="manifest"]');
   await expect(manifestLink).toHaveCount(1);
@@ -40,14 +41,14 @@ test("installs the meeting notebook shell and enforces offline authorization", a
     short_name: "会议本",
     description: "个人会议目录与离线同步",
     display: "standalone",
-    start_url: "/",
-    scope: "/",
+    start_url: appPath,
+    scope: appPath,
     lang: "zh-CN",
   });
   expect(manifest.icons).toEqual([
-    { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
-    { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
-    { src: "/icons/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+    { src: `${appPath}icons/icon-192.png`, sizes: "192x192", type: "image/png" },
+    { src: `${appPath}icons/icon-512.png`, sizes: "512x512", type: "image/png" },
+    { src: `${appPath}icons/icon-maskable-512.png`, sizes: "512x512", type: "image/png", purpose: "maskable" },
   ]);
 
   const catalogHeading = page.getByRole("heading", { name: "会议本", exact: true });

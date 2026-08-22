@@ -72,9 +72,9 @@ export async function removeSupabaseRoutes(page: Page): Promise<void> {
   await page.unroute(`${supabaseOrigin}/**`);
 }
 
-export async function openCatalog(page: Page, meetings: RemoteMeeting[] = []): Promise<void> {
+export async function openCatalog(page: Page, meetings: RemoteMeeting[] = [], appPath = "/"): Promise<void> {
   await installSupabaseRoutes(page, meetings);
-  await page.goto("/");
+  await page.goto(appPath);
   await page.getByLabel("邮箱").fill("owner@example.com");
   await page.getByLabel("密码").fill("e2e-password");
   await page.getByRole("button", { name: "登录", exact: true }).click();
