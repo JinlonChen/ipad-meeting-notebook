@@ -11,7 +11,8 @@
     "dev": "concurrently -n api,web -c blue,green \"npm run dev -w @meeting/api\" \"npm run dev -w @meeting/web\"",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present && npm run typecheck:test -w @meeting/api",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run test:contracts && npm run test --workspaces --if-present",
+    "test:contracts": "node --test test/*.test.mjs",
     "test:e2e": "npm run test:e2e -w @meeting/web"
   },
   "engines": {
