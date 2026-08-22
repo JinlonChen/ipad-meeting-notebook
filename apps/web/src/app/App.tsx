@@ -1,22 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 
-import { legacyHttpAuthApi, AuthApiError, AuthNetworkError, type AuthApi } from "../auth/api.js";
+import { AuthApiError, AuthNetworkError, type AuthApi } from "../auth/api.js";
 import { LoginPage } from "../auth/LoginPage.js";
-import { MeetingCatalogHttpApi } from "../meetings/api.js";
 import { MeetingListPage, WorkspacePlaceholder } from "../meetings/MeetingListPage.js";
 import { MeetingCatalogRepository } from "../meetings/repository.js";
-import { CatalogSync, type SyncResult } from "../meetings/sync.js";
+import { CatalogSync, type MeetingCatalogApi, type SyncResult } from "../meetings/sync.js";
 
-const defaultRepository = new MeetingCatalogRepository();
-const defaultAuth = legacyHttpAuthApi();
 const defaultNow = () => new Date().toISOString();
+const noopSynchronizer: CatalogSynchronizer = {
+  refresh: async () => ({ state: "idle" }),
+  resumeAfterLogin: () => undefined,
+};
 
 type Props = {
   repository?: MeetingCatalogRepository;
   auth?: AuthApi;
+  catalog?: MeetingCatalogApi;
   synchronizer?: CatalogSynchronizer;
   now?: () => string;
+  configurationError?: boolean;
 };
 export type CatalogSynchronizer = {
   refresh(): Promise<SyncResult>;
@@ -29,9 +32,30 @@ function isUnauthorized(error: unknown): boolean {
   return error instanceof AuthApiError ? error.status === 401 : typeof error === "object" && error !== null && "status" in error && error.status === 401;
 }
 
-export function App({ repository = defaultRepository, auth = defaultAuth, synchronizer: injectedSynchronizer, now = defaultNow }: Props) {
-  const localSynchronizer = useMemo(() => new CatalogSync(repository, new MeetingCatalogHttpApi()), [repository]);
-  const synchronizer = injectedSynchronizer ?? localSynchronizer;
+export function App({ repository, auth, catalog, synchronizer, now, configurationError = false }: Props) {
+  const resolvedSynchronizer = useMemo(() => {
+    if (synchronizer) return synchronizer;
+    if (repository && catalog) return new CatalogSync(repository, catalog);
+    return noopSynchronizer;
+  }, [catalog, repository, synchronizer]);
+  if (configurationError || !repository || !auth) {
+    return <ConfigurationPanel />;
+  }
+  return <SessionApp repository={repository} auth={auth} synchronizer={resolvedSynchronizer} now={now ?? defaultNow} />;
+}
+
+function ConfigurationPanel() {
+  return <main className="login-page"><section className="login-panel" aria-labelledby="configuration-title"><h1 id="configuration-title">需要配置云端服务</h1><p>请先配置 Supabase 后再启动会议本。</p></section></main>;
+}
+
+type SessionProps = {
+  repository: MeetingCatalogRepository;
+  auth: AuthApi;
+  synchronizer: CatalogSynchronizer;
+  now: () => string;
+};
+
+function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [gate, setGate] = useState<Gate>("loading");
   const mounted = useRef(true);

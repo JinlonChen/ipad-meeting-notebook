@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { App } from "../../src/app/App.js";
 import { AuthApiError, AuthNetworkError, type AuthApi } from "../../src/auth/api.js";
 import { MeetingCatalogRepository } from "../../src/meetings/repository.js";
+import type { MeetingCatalogApi } from "../../src/meetings/sync.js";
 
 const now = "2026-08-21T00:00:00.000Z";
 const expiry = "2026-09-21T00:00:00.000Z";
@@ -35,6 +36,22 @@ afterEach(async () => {
 });
 
 describe("App session gate", () => {
+  test("renders with injected dependencies without reading runtime configuration", async () => {
+    const catalog = repository();
+    render(<App repository={catalog} auth={api()} synchronizer={synchronizer()} now={() => now} />);
+
+    await screen.findByRole("heading", { name: "会议本" });
+    expect(screen.queryByText("Supabase")).not.toBeInTheDocument();
+  });
+
+  test("shows a fixed configuration panel without exposing runtime values", () => {
+    render(<App configurationError />);
+
+    expect(screen.getByRole("heading", { name: "需要配置云端服务" })).toBeVisible();
+    expect(screen.getByText("请先配置 Supabase 后再启动会议本。")).toBeVisible();
+    expect(screen.queryByText(/SUPABASE_CONFIGURATION_REQUIRED|https?:\/\//)).not.toBeInTheDocument();
+  });
+
   test("authorizes a successful session and enters the meeting catalog", async () => {
     const catalog = repository();
     render(<App repository={catalog} auth={api()} synchronizer={synchronizer()} now={() => now} />);
@@ -81,23 +98,19 @@ describe("App session gate", () => {
     await expect(catalog.hasDeviceAccess(now)).resolves.toBe(false);
   });
 
-  test("uses the injected repository for its default sync instance", async () => {
+  test("composes synchronization from an injected catalog without runtime configuration", async () => {
     const catalog = repository();
     const meeting = await catalog.create("待同步", null, now);
-    const fetcher = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify(meeting), { status: 201, headers: { "content-type": "application/json" } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify([]), { headers: { "content-type": "application/json" } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify([meeting]), { headers: { "content-type": "application/json" } }));
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = fetcher;
-    try {
-      render(<App repository={catalog} auth={api()} now={() => now} />);
-      await screen.findByRole("heading", { name: "会议本" });
-      await waitFor(async () => expect(await catalog.pendingOperations()).toEqual([]));
-      expect(fetcher).toHaveBeenCalledWith("/api/meetings", expect.objectContaining({ method: "POST" }));
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    const remote: MeetingCatalogApi = {
+      send: vi.fn().mockResolvedValue({ meeting }),
+      listFolders: vi.fn().mockResolvedValue([]),
+      listMeetings: vi.fn().mockResolvedValue([meeting]),
+    };
+
+    render(<App repository={catalog} auth={api()} catalog={remote} now={() => now} />);
+    await screen.findByRole("heading", { name: "会议本" });
+    await waitFor(async () => expect(await catalog.pendingOperations()).toEqual([]));
+    expect(remote.send).toHaveBeenCalledTimes(1);
   });
 
   test("resumes the same injected catalog synchronizer before retrying catalog refresh", async () => {
