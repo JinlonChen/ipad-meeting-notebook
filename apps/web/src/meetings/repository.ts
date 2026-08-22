@@ -142,7 +142,7 @@ export class MeetingCatalogRepository {
       if (!current) throw new MeetingNotFoundError(meetingId);
       const meeting = MeetingSchema.parse({ ...current, title: normalizedTitle, updatedAt, syncVersion: current.syncVersion + 1 });
       await this.db.meetings.put(meeting);
-      await this.enqueueOutbox(operation("meeting.rename", meetingId, { title: normalizedTitle, updatedAt }, updatedAt));
+      await this.enqueueOutbox(operation("meeting.rename", meetingId, { title: normalizedTitle, updatedAt, expectedSyncVersion: current.syncVersion }, updatedAt));
       return meeting;
     });
   }
@@ -174,7 +174,7 @@ export class MeetingCatalogRepository {
       if (trashed) await this.db.settings.put({ key: settingKey, value: current.status });
       else await this.db.settings.delete(settingKey);
       await this.db.meetings.put(meeting);
-      await this.enqueueOutbox(operation(trashed ? "meeting.trash" : "meeting.restore", meetingId, { updatedAt }, updatedAt));
+      await this.enqueueOutbox(operation(trashed ? "meeting.trash" : "meeting.restore", meetingId, { updatedAt, expectedSyncVersion: current.syncVersion }, updatedAt));
       return meeting;
     });
   }
@@ -188,7 +188,7 @@ export class MeetingCatalogRepository {
       if (!current) throw new FolderNotFoundError(folderId);
       const folder = FolderSchema.parse({ ...current, name: normalizedName, updatedAt, syncVersion: current.syncVersion + 1 });
       await this.db.folders.put(folder);
-      await this.enqueueOutbox(operation("folder.rename", folderId, { name: normalizedName, updatedAt }, updatedAt));
+      await this.enqueueOutbox(operation("folder.rename", folderId, { name: normalizedName, updatedAt, expectedSyncVersion: current.syncVersion }, updatedAt));
       return folder;
     });
   }
@@ -197,13 +197,14 @@ export class MeetingCatalogRepository {
     const folderId = MeetingIdSchema.parse(id);
     const updatedAt = timestamp(now);
     await this.db.transaction("rw", this.db.meetings, this.db.folders, this.db.outbox, async () => {
-      if (!(await this.db.folders.get(folderId))) throw new FolderNotFoundError(folderId);
+      const currentFolder = await this.db.folders.get(folderId);
+      if (!currentFolder) throw new FolderNotFoundError(folderId);
       const meetings = await this.db.meetings.where("folderId").equals(folderId).toArray();
       await Promise.all(meetings.map((meeting) => this.db.meetings.put(MeetingSchema.parse({
         ...meeting, folderId: null, updatedAt, syncVersion: meeting.syncVersion + 1,
       }))));
       await this.db.folders.delete(folderId);
-      await this.enqueueOutbox(operation("folder.remove", folderId, { updatedAt }, updatedAt));
+      await this.enqueueOutbox(operation("folder.remove", folderId, { updatedAt, expectedSyncVersion: currentFolder.syncVersion }, updatedAt));
     });
   }
 

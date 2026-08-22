@@ -396,6 +396,22 @@ describe("CatalogSync", () => {
     await expect(store.get(meeting.id)).resolves.toMatchObject({ folderId: null });
   });
 
+  test("clears a folder removal when the first 204 was lost and retry returns only FOLDER_NOT_FOUND", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    const folder = await store.createFolder("Work", now);
+    const send = vi.fn()
+      .mockResolvedValueOnce({ folder })
+      .mockRejectedValueOnce(new Error("response lost after 204"))
+      .mockRejectedValueOnce(new CatalogApiError(404, "FOLDER_NOT_FOUND"));
+    const sync = new CatalogSync(store, api(send));
+    await expect(sync.flush()).resolves.toEqual({ state: "idle" });
+    await store.removeFolder(folder.id, "2026-08-21T00:01:00.000Z");
+    await expect(sync.flush()).resolves.toEqual({ state: "error" });
+    await expect(sync.flush()).resolves.toEqual({ state: "idle" });
+    await expect(store.pendingOperations()).resolves.toEqual([]);
+  });
+
   test("hydrates a clean device from the server catalog", async () => {
     const store = catalog();
     catalogs.push(store);

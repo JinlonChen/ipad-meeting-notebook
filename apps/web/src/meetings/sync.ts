@@ -93,6 +93,10 @@ export class CatalogSync {
           await this.repository.syncRecordFailure(operation, "CONFLICT");
           return { state: "conflict" };
         }
+        if (operation.kind === "folder.remove" && status === 404 && error instanceof CatalogApiError && error.code === "FOLDER_NOT_FOUND") {
+          await this.repository.syncApplySuccessfulOperation(operation, {});
+          continue;
+        }
         await this.repository.syncRecordFailure(operation, "SYNC_FAILED");
         return { state: "error" };
       }

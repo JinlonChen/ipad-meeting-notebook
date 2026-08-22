@@ -2,11 +2,12 @@ import { CreateFolderInputSchema, FolderSchema } from "@meeting/contracts";
 import type { FastifyInstance, FastifyRequest, onRequestHookHandler } from "fastify";
 import { z } from "zod";
 
-import { FolderConflictError, FolderNotFoundError, type FolderRepository } from "./repository.js";
+import { FolderConflictError, FolderNotFoundError, FolderSyncVersionConflictError, type FolderRepository } from "./repository.js";
 
 const IdParamsSchema = z.object({ id: z.uuid() }).strict();
 const CreateSchema = CreateFolderInputSchema.strict();
-const PatchSchema = z.object({ name: CreateFolderInputSchema.shape.name }).strict();
+const PatchSchema = z.object({ name: CreateFolderInputSchema.shape.name, expectedSyncVersion: z.number().int().nonnegative().optional() }).strict();
+const MutationBodySchema = z.object({ expectedSyncVersion: z.number().int().nonnegative() }).strict().optional();
 const EmptyQuerySchema = z.object({}).strict();
 const NoBodySchema = z.undefined();
 
@@ -50,9 +51,10 @@ export function registerFolderRoutes(app: FastifyInstance, options: {
     const patch = PatchSchema.safeParse(request.body);
     if (!params.success || !patch.success || !EmptyQuerySchema.safeParse(request.query).success) return invalid(reply);
     try {
-      return reply.send(FolderSchema.parse(options.folders.rename(params.data.id, patch.data.name, now().toISOString())));
+      return reply.send(FolderSchema.parse(options.folders.rename(params.data.id, patch.data.name, now().toISOString(), patch.data.expectedSyncVersion)));
     } catch (error) {
       if (error instanceof FolderNotFoundError) return reply.code(404).send({ code: "FOLDER_NOT_FOUND" });
+      if (error instanceof FolderSyncVersionConflictError) return reply.code(409).send({ code: "SYNC_VERSION_CONFLICT" });
       if (isUniqueError(error)) return reply.code(409).send({ code: "FOLDER_NAME_CONFLICT" });
       throw error;
     }
@@ -60,12 +62,14 @@ export function registerFolderRoutes(app: FastifyInstance, options: {
 
   app.delete("/api/folders/:id", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
-    if (!params.success || !EmptyQuerySchema.safeParse(request.query).success || !NoBodySchema.safeParse(request.body).success || hasUnexpectedBody(request)) return invalid(reply);
+    const body = MutationBodySchema.safeParse(request.body);
+    if (!params.success || !EmptyQuerySchema.safeParse(request.query).success || !body.success || (hasUnexpectedBody(request) && request.body === undefined)) return invalid(reply);
     try {
-      options.folders.remove(params.data.id, now().toISOString());
+      options.folders.remove(params.data.id, now().toISOString(), body.data?.expectedSyncVersion);
       return reply.code(204).send();
     } catch (error) {
       if (error instanceof FolderNotFoundError) return reply.code(404).send({ code: "FOLDER_NOT_FOUND" });
+      if (error instanceof FolderSyncVersionConflictError) return reply.code(409).send({ code: "SYNC_VERSION_CONFLICT" });
       throw error;
     }
   });

@@ -25,8 +25,8 @@ export interface FolderRepository {
   createOrReplay(input: CreateFolderInput): { folder: Folder; created: boolean };
   get(id: string): Folder | null;
   list(): Folder[];
-  rename(id: string, name: string, now: string): Folder;
-  remove(id: string, now: string): void;
+  rename(id: string, name: string, now: string, expectedSyncVersion?: number): Folder;
+  remove(id: string, now: string, expectedSyncVersion?: number): void;
 }
 
 export class FolderConflictError extends Error {
@@ -40,6 +40,13 @@ export class FolderNotFoundError extends Error {
   constructor(id: string) {
     super(`Folder not found: ${id}`);
     this.name = "FolderNotFoundError";
+  }
+}
+
+export class FolderSyncVersionConflictError extends Error {
+  constructor(id: string) {
+    super(`Folder sync version conflict: ${id}`);
+    this.name = "FolderSyncVersionConflictError";
   }
 }
 
@@ -107,25 +114,32 @@ export class SqliteFolderRepository implements FolderRepository {
     return rows.map(mapFolder);
   }
 
-  rename(id: string, name: string, now: string): Folder {
+  rename(id: string, name: string, now: string, expectedSyncVersion?: number): Folder {
     const folderId = FolderIdSchema.parse(id);
     const normalizedName = FolderNameSchema.parse(name);
     const timestamp = canonicalizeTimestamp(now);
     const result = this.db.prepare(`
       UPDATE folders
       SET name = ?, updated_at = ?, sync_version = sync_version + 1
-      WHERE id = ?
-    `).run(normalizedName, timestamp, folderId);
-    if (result.changes === 0) throw new FolderNotFoundError(folderId);
+      WHERE id = ?${expectedSyncVersion === undefined ? "" : " AND sync_version = ?"}
+    `).run(normalizedName, timestamp, folderId, ...(expectedSyncVersion === undefined ? [] : [expectedSyncVersion]));
+    if (result.changes === 0) {
+      if (expectedSyncVersion !== undefined && this.get(folderId)) throw new FolderSyncVersionConflictError(folderId);
+      throw new FolderNotFoundError(folderId);
+    }
     return this.require(folderId);
   }
 
-  remove(id: string, now: string): void {
+  remove(id: string, now: string, expectedSyncVersion?: number): void {
     const folderId = FolderIdSchema.parse(id);
     const timestamp = canonicalizeTimestamp(now);
     this.db.transaction(() => {
       const existing = this.db.prepare("SELECT id FROM folders WHERE id = ?").get(folderId);
       if (!existing) throw new FolderNotFoundError(folderId);
+      if (expectedSyncVersion !== undefined) {
+        const version = this.db.prepare("SELECT sync_version FROM folders WHERE id = ?").get(folderId) as { sync_version: number };
+        if (version.sync_version !== expectedSyncVersion) throw new FolderSyncVersionConflictError(folderId);
+      }
 
       this.db.prepare(`
         UPDATE meetings

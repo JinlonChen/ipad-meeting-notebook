@@ -45,17 +45,24 @@ export class MeetingCatalogHttpApi implements MeetingCatalogApi {
       case "meeting.create":
         return { meeting: await parsed(this.fetcher("/api/meetings", init("POST", CreateMeetingInputSchema.parse(operation.payload))), MeetingSchema) };
       case "meeting.rename":
-        return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}`, init("PATCH", { title: z.object({ title: z.string() }).parse(operation.payload).title })), MeetingSchema) };
+        return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}`, init("PATCH", z.object({ title: z.string(), expectedSyncVersion: z.number().int().nonnegative().optional() }).parse(operation.payload))), MeetingSchema) };
       case "meeting.trash":
-        return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}`, init("DELETE")), MeetingSchema) };
+        { const payload = z.object({ expectedSyncVersion: z.number().int().nonnegative().optional() }).parse(operation.payload); return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}`, init("DELETE", payload.expectedSyncVersion === undefined ? undefined : payload)), MeetingSchema) }; }
       case "meeting.restore":
-        return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}/restore`, init("POST")), MeetingSchema) };
+        { const payload = z.object({ expectedSyncVersion: z.number().int().nonnegative().optional() }).parse(operation.payload); return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}/restore`, init("POST", payload.expectedSyncVersion === undefined ? undefined : payload)), MeetingSchema) }; }
       case "folder.create":
         return { folder: await parsed(this.fetcher("/api/folders", init("POST", CreateFolderInputSchema.parse(operation.payload))), FolderSchema) };
       case "folder.rename":
-        return { folder: await parsed(this.fetcher(`/api/folders/${operation.entityId}`, init("PATCH", { name: z.object({ name: z.string() }).parse(operation.payload).name })), FolderSchema) };
+        return { folder: await parsed(this.fetcher(`/api/folders/${operation.entityId}`, init("PATCH", z.object({ name: z.string(), expectedSyncVersion: z.number().int().nonnegative().optional() }).parse(operation.payload))), FolderSchema) };
       case "folder.remove": {
-        const response = await this.fetcher(`/api/folders/${operation.entityId}`, init("DELETE"));
+        const payload = z.object({ expectedSyncVersion: z.number().int().nonnegative().optional() }).parse(operation.payload);
+        const response = await this.fetcher(`/api/folders/${operation.entityId}`, init("DELETE", payload.expectedSyncVersion === undefined ? undefined : payload));
+        if (response.status === 404) {
+          try {
+            const body = await response.clone().json() as { code?: unknown };
+            if (body.code === "FOLDER_NOT_FOUND") return {};
+          } catch { /* preserve non-JSON errors */ }
+        }
         if (!response.ok) throw failure(response);
         return {};
       }

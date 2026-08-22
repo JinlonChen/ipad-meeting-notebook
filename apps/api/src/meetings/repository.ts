@@ -31,10 +31,10 @@ export interface MeetingRepository {
   createOrReplay(input: CreateMeetingInput): { meeting: Meeting; created: boolean };
   get(id: string): Meeting | null;
   list(query: { search: string; includeTrashed: boolean }): Meeting[];
-  rename(id: string, title: string, now: string): Meeting;
-  update(id: string, patch: { title?: string | undefined; folderId?: string | null | undefined }, now: string): Meeting;
-  trash(id: string, now: string): Meeting;
-  restore(id: string, now: string): Meeting;
+  rename(id: string, title: string, now: string, expectedSyncVersion?: number): Meeting;
+  update(id: string, patch: { title?: string | undefined; folderId?: string | null | undefined }, now: string, expectedSyncVersion?: number): Meeting;
+  trash(id: string, now: string, expectedSyncVersion?: number): Meeting;
+  restore(id: string, now: string, expectedSyncVersion?: number): Meeting;
   purgeTrashedBefore(cutoff: string): number;
 }
 
@@ -56,6 +56,13 @@ export class MeetingNotFoundError extends Error {
   constructor(id: string) {
     super(`Meeting not found: ${id}`);
     this.name = "MeetingNotFoundError";
+  }
+}
+
+export class MeetingSyncVersionConflictError extends Error {
+  constructor(id: string) {
+    super(`Meeting sync version conflict: ${id}`);
+    this.name = "MeetingSyncVersionConflictError";
   }
 }
 
@@ -146,11 +153,11 @@ export class SqliteMeetingRepository implements MeetingRepository {
     return rows.map(mapMeeting);
   }
 
-  rename(id: string, title: string, now: string): Meeting {
-    return this.update(id, { title }, now);
+  rename(id: string, title: string, now: string, expectedSyncVersion?: number): Meeting {
+    return this.update(id, { title }, now, expectedSyncVersion);
   }
 
-  update(id: string, patch: { title?: string | undefined; folderId?: string | null | undefined }, now: string): Meeting {
+  update(id: string, patch: { title?: string | undefined; folderId?: string | null | undefined }, now: string, expectedSyncVersion?: number): Meeting {
     const meetingId = MeetingIdSchema.parse(id);
     const value = z.object({
       title: MeetingTitleSchema.optional(),
@@ -172,26 +179,29 @@ export class SqliteMeetingRepository implements MeetingRepository {
         fields.push("folder_id = ?");
         parameters.push(value.folderId);
       }
+      const versionClause = expectedSyncVersion === undefined ? "" : " AND sync_version = ?";
       const row = this.db.prepare(`
         UPDATE meetings
         SET ${fields.join(", ")}, updated_at = ?, sync_version = sync_version + 1
-        WHERE id = ?
+        WHERE id = ?${versionClause}
         RETURNING *
-      `).get(...parameters, timestamp, meetingId) as MeetingRow;
-      return mapMeeting(row);
+      `).get(...parameters, timestamp, meetingId, ...(expectedSyncVersion === undefined ? [] : [expectedSyncVersion])) as MeetingRow | undefined;
+      if (row) return mapMeeting(row);
+      if (expectedSyncVersion !== undefined && this.get(meetingId)) throw new MeetingSyncVersionConflictError(meetingId);
+      throw new MeetingNotFoundError(meetingId);
     }).immediate();
   }
 
-  trash(id: string, now: string): Meeting {
+  trash(id: string, now: string, expectedSyncVersion?: number): Meeting {
     const meetingId = MeetingIdSchema.parse(id);
     const timestamp = canonicalizeTimestamp(now);
-    return this.db.transaction(() => this.trashInTransaction(meetingId, timestamp)).immediate();
+    return this.db.transaction(() => this.trashInTransaction(meetingId, timestamp, expectedSyncVersion)).immediate();
   }
 
-  restore(id: string, now: string): Meeting {
+  restore(id: string, now: string, expectedSyncVersion?: number): Meeting {
     const meetingId = MeetingIdSchema.parse(id);
     const timestamp = canonicalizeTimestamp(now);
-    return this.db.transaction(() => this.restoreInTransaction(meetingId, timestamp)).immediate();
+    return this.db.transaction(() => this.restoreInTransaction(meetingId, timestamp, expectedSyncVersion)).immediate();
   }
 
   purgeTrashedBefore(cutoff: string): number {
@@ -202,33 +212,37 @@ export class SqliteMeetingRepository implements MeetingRepository {
     `).run(timestamp).changes;
   }
 
-  private trashInTransaction(meetingId: string, timestamp: string): Meeting {
+  private trashInTransaction(meetingId: string, timestamp: string, expectedSyncVersion?: number): Meeting {
     const row = this.db.prepare(`
       UPDATE meetings
       SET status = 'trashed', status_before_trash = status, trashed_at = ?,
           updated_at = ?, sync_version = sync_version + 1
-      WHERE id = ? AND status <> 'trashed'
+      WHERE id = ? AND status <> 'trashed'${expectedSyncVersion === undefined ? "" : " AND sync_version = ?"}
       RETURNING *
-    `).get(timestamp, timestamp, meetingId) as MeetingRow | undefined;
+    `).get(timestamp, timestamp, meetingId, ...(expectedSyncVersion === undefined ? [] : [expectedSyncVersion])) as MeetingRow | undefined;
     if (row) return mapMeeting(row);
 
     const current = this.get(meetingId);
-    if (current?.status === "trashed") return current;
+    if (current?.status === "trashed" && expectedSyncVersion === undefined) return current;
+    if (current?.status === "trashed" && current.syncVersion === expectedSyncVersion) return current;
+    if (current && expectedSyncVersion !== undefined) throw new MeetingSyncVersionConflictError(meetingId);
     throw new MeetingNotFoundError(meetingId);
   }
 
-  private restoreInTransaction(meetingId: string, timestamp: string): Meeting {
+  private restoreInTransaction(meetingId: string, timestamp: string, expectedSyncVersion?: number): Meeting {
     const row = this.db.prepare(`
       UPDATE meetings
       SET status = COALESCE(status_before_trash, 'draft'), status_before_trash = NULL,
           trashed_at = NULL, updated_at = ?, sync_version = sync_version + 1
-      WHERE id = ? AND status = 'trashed'
+      WHERE id = ? AND status = 'trashed'${expectedSyncVersion === undefined ? "" : " AND sync_version = ?"}
       RETURNING *
-    `).get(timestamp, meetingId) as MeetingRow | undefined;
+    `).get(timestamp, meetingId, ...(expectedSyncVersion === undefined ? [] : [expectedSyncVersion])) as MeetingRow | undefined;
     if (row) return mapMeeting(row);
 
     const current = this.get(meetingId);
-    if (current && current.status !== "trashed") return current;
+    if (current && expectedSyncVersion === undefined && current.status !== "trashed") return current;
+    if (current && expectedSyncVersion !== undefined && current.syncVersion === expectedSyncVersion && current.status !== "trashed") return current;
+    if (current && expectedSyncVersion !== undefined) throw new MeetingSyncVersionConflictError(meetingId);
     throw new MeetingNotFoundError(meetingId);
   }
 

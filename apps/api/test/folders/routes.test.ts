@@ -107,4 +107,19 @@ describe("folder routes", () => {
       await server.close();
     }
   });
+
+  test("rejects a stale conditional rename and remove", async () => {
+    const server = await createTestApp();
+    try {
+      const cookie = await login(server);
+      await server.inject({ method: "POST", url: "/api/folders", headers: { cookie }, payload: { id: FOLDER_ONE, name: "Work", clientCreatedAt: CREATED_AT } });
+      const first = await server.inject({ method: "PATCH", url: `/api/folders/${FOLDER_ONE}`, headers: { cookie }, payload: { name: "First", expectedSyncVersion: 0 } });
+      const stale = await server.inject({ method: "PATCH", url: `/api/folders/${FOLDER_ONE}`, headers: { cookie }, payload: { name: "Second", expectedSyncVersion: 0 } });
+      expect(first.statusCode).toBe(200);
+      expect(stale).toMatchObject({ statusCode: 409, body: '{"code":"SYNC_VERSION_CONFLICT"}' });
+      expect((await server.inject({ method: "GET", url: "/api/folders", headers: { cookie } })).json()[0]).toMatchObject({ name: "First", syncVersion: 1 });
+    } finally {
+      await server.close();
+    }
+  });
 });

@@ -174,10 +174,10 @@ describe("MeetingCatalogRepository", () => {
 
     await expect(catalog.pendingOperations()).resolves.toEqual([
       expect.objectContaining({ kind: "folder.create", entityId: folder.id, payload: { id: folder.id, name: "Work", clientCreatedAt: now } }),
-      expect.objectContaining({ kind: "folder.rename", entityId: folder.id, payload: { name: "Work renamed", updatedAt: "2026-08-21T00:01:00.000Z" } }),
+      expect.objectContaining({ kind: "folder.rename", entityId: folder.id, payload: { name: "Work renamed", updatedAt: "2026-08-21T00:01:00.000Z", expectedSyncVersion: 0 } }),
       expect.objectContaining({ kind: "meeting.create", entityId: meeting.id, payload: { id: meeting.id, title: "Agenda", folderId: folder.id, clientCreatedAt: "2026-08-21T00:02:00.000Z" } }),
-      expect.objectContaining({ kind: "meeting.rename", entityId: meeting.id, payload: { title: "Agenda renamed", updatedAt: "2026-08-21T00:03:00.000Z" } }),
-      expect.objectContaining({ kind: "folder.remove", entityId: folder.id, payload: { updatedAt: "2026-08-21T00:04:00.000Z" } }),
+      expect.objectContaining({ kind: "meeting.rename", entityId: meeting.id, payload: { title: "Agenda renamed", updatedAt: "2026-08-21T00:03:00.000Z", expectedSyncVersion: 0 } }),
+      expect.objectContaining({ kind: "folder.remove", entityId: folder.id, payload: { updatedAt: "2026-08-21T00:04:00.000Z", expectedSyncVersion: 1 } }),
     ]);
   });
 });

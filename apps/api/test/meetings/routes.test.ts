@@ -160,4 +160,19 @@ describe("meeting routes", () => {
       await server.close();
     }
   });
+
+  test("rejects a stale conditional mutation without overwriting the first device", async () => {
+    const server = await createTestApp();
+    try {
+      const cookie = await login(server);
+      await server.inject({ method: "POST", url: "/api/meetings", headers: { cookie }, payload: { id: MEETING_ONE, title: "Before", folderId: null, clientCreatedAt: CREATED_AT } });
+      const first = await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_ONE}`, headers: { cookie }, payload: { title: "First", expectedSyncVersion: 0 } });
+      const stale = await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_ONE}`, headers: { cookie }, payload: { title: "Second", expectedSyncVersion: 0 } });
+      expect(first.statusCode).toBe(200);
+      expect(stale).toMatchObject({ statusCode: 409, body: '{"code":"SYNC_VERSION_CONFLICT"}' });
+      expect((await server.inject({ method: "GET", url: "/api/meetings", headers: { cookie } })).json()[0]).toMatchObject({ title: "First", syncVersion: 1 });
+    } finally {
+      await server.close();
+    }
+  });
 });

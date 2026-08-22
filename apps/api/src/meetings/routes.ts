@@ -10,6 +10,7 @@ import {
   MeetingFolderNotFoundError,
   MeetingNotFoundError,
   MeetingConflictError,
+  MeetingSyncVersionConflictError,
   type MeetingRepository,
 } from "./repository.js";
 
@@ -18,7 +19,9 @@ const CreateSchema = CreateMeetingInputSchema.strict();
 const PatchSchema = z.object({
   title: CreateMeetingInputSchema.shape.title.optional(),
   folderId: CreateMeetingInputSchema.shape.folderId.optional(),
+  expectedSyncVersion: z.number().int().nonnegative().optional(),
 }).strict().refine((value) => value.title !== undefined || value.folderId !== undefined);
+const MutationBodySchema = z.object({ expectedSyncVersion: z.number().int().nonnegative() }).strict().optional();
 const QuerySchema = z.object({
   search: z.string().trim().max(120).optional().default(""),
   includeTrashed: z.enum(["true", "false"]).optional().default("false").transform((value) => value === "true"),
@@ -67,9 +70,11 @@ export function registerMeetingRoutes(app: FastifyInstance, options: {
     const patch = PatchSchema.safeParse(request.body);
     if (!params.success || !patch.success || !EmptyQuerySchema.safeParse(request.query).success) return invalid(reply);
     try {
-      return reply.send(MeetingSchema.parse(options.meetings.update(params.data.id, patch.data, now().toISOString())));
+      const { expectedSyncVersion, ...changes } = patch.data;
+      return reply.send(MeetingSchema.parse(options.meetings.update(params.data.id, changes, now().toISOString(), expectedSyncVersion)));
     } catch (error) {
       if (error instanceof MeetingNotFoundError) return reply.code(404).send({ code: "MEETING_NOT_FOUND" });
+      if (error instanceof MeetingSyncVersionConflictError) return reply.code(409).send({ code: "SYNC_VERSION_CONFLICT" });
       if (error instanceof MeetingFolderNotFoundError || error instanceof FolderNotFoundError || isForeignKeyError(error)) {
         return reply.code(404).send({ code: "FOLDER_NOT_FOUND" });
       }
@@ -79,22 +84,26 @@ export function registerMeetingRoutes(app: FastifyInstance, options: {
 
   app.delete("/api/meetings/:id", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
-    if (!params.success || !EmptyQuerySchema.safeParse(request.query).success || !NoBodySchema.safeParse(request.body).success || hasUnexpectedBody(request)) return invalid(reply);
+    const body = MutationBodySchema.safeParse(request.body);
+    if (!params.success || !EmptyQuerySchema.safeParse(request.query).success || !body.success || hasUnexpectedBody(request) && request.body === undefined) return invalid(reply);
     try {
-      return reply.send(MeetingSchema.parse(options.meetings.trash(params.data.id, now().toISOString())));
+      return reply.send(MeetingSchema.parse(options.meetings.trash(params.data.id, now().toISOString(), body.data?.expectedSyncVersion)));
     } catch (error) {
       if (error instanceof MeetingNotFoundError) return reply.code(404).send({ code: "MEETING_NOT_FOUND" });
+      if (error instanceof MeetingSyncVersionConflictError) return reply.code(409).send({ code: "SYNC_VERSION_CONFLICT" });
       throw error;
     }
   });
 
   app.post("/api/meetings/:id/restore", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
-    if (!params.success || !EmptyQuerySchema.safeParse(request.query).success || !NoBodySchema.safeParse(request.body).success || hasUnexpectedBody(request)) return invalid(reply);
+    const body = MutationBodySchema.safeParse(request.body);
+    if (!params.success || !EmptyQuerySchema.safeParse(request.query).success || !body.success || hasUnexpectedBody(request) && request.body === undefined) return invalid(reply);
     try {
-      return reply.send(MeetingSchema.parse(options.meetings.restore(params.data.id, now().toISOString())));
+      return reply.send(MeetingSchema.parse(options.meetings.restore(params.data.id, now().toISOString(), body.data?.expectedSyncVersion)));
     } catch (error) {
       if (error instanceof MeetingNotFoundError) return reply.code(404).send({ code: "MEETING_NOT_FOUND" });
+      if (error instanceof MeetingSyncVersionConflictError) return reply.code(409).send({ code: "SYNC_VERSION_CONFLICT" });
       throw error;
     }
   });
