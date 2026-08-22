@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { CreateMeetingInputSchema } from "@meeting/contracts";
 import Database from "better-sqlite3";
 
-export const CURRENT_DATABASE_VERSION = 4;
+export const CURRENT_DATABASE_VERSION = 5;
 
 const IsoDateTimeSchema = CreateMeetingInputSchema.shape.clientCreatedAt;
 const ActiveStatuses = "'draft', 'recording', 'recoverable', 'uploading', 'processing', 'ready', 'failed'";
@@ -14,6 +14,7 @@ const migrations = [
   { version: 2, migrate: migrateVersionTwo },
   { version: 3, migrate: migrateVersionThree },
   { version: 4, migrate: migrateVersionFour },
+  { version: 5, migrate: migrateVersionFive },
 ];
 
 export function canonicalizeTimestamp(value: string): string {
@@ -162,6 +163,21 @@ function migrateVersionFour(db: Database.Database): void {
       ALTER TABLE folder_creation_requests_v4 RENAME TO folder_creation_requests;
     `);
     db.pragma("user_version = 4");
+  })();
+}
+
+function migrateVersionFive(db: Database.Database): void {
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS catalog_mutation_replays (
+        operation_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        request_json TEXT NOT NULL,
+        response_json TEXT
+      );
+    `);
+    db.pragma("user_version = 5");
   })();
 }
 

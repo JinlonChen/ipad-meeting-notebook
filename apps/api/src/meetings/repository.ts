@@ -9,6 +9,7 @@ import {
 import { z } from "zod";
 
 import { canonicalizeTimestamp } from "../db/database.js";
+import { replayableMutation } from "../db/mutation-replay.js";
 
 const MeetingTitleSchema = z.string().trim().min(1).max(120);
 const MeetingIdSchema = CreateMeetingInputSchema.shape.id;
@@ -31,10 +32,10 @@ export interface MeetingRepository {
   createOrReplay(input: CreateMeetingInput): { meeting: Meeting; created: boolean };
   get(id: string): Meeting | null;
   list(query: { search: string; includeTrashed: boolean }): Meeting[];
-  rename(id: string, title: string, now: string, expectedSyncVersion?: number): Meeting;
-  update(id: string, patch: { title?: string | undefined; folderId?: string | null | undefined }, now: string, expectedSyncVersion?: number): Meeting;
-  trash(id: string, now: string, expectedSyncVersion?: number): Meeting;
-  restore(id: string, now: string, expectedSyncVersion?: number): Meeting;
+  rename(id: string, title: string, now: string, expectedSyncVersion?: number, operationId?: string): Meeting;
+  update(id: string, patch: { title?: string | undefined; folderId?: string | null | undefined }, now: string, expectedSyncVersion?: number, operationId?: string): Meeting;
+  trash(id: string, now: string, expectedSyncVersion?: number, operationId?: string): Meeting;
+  restore(id: string, now: string, expectedSyncVersion?: number, operationId?: string): Meeting;
   purgeTrashedBefore(cutoff: string): number;
 }
 
@@ -153,18 +154,18 @@ export class SqliteMeetingRepository implements MeetingRepository {
     return rows.map(mapMeeting);
   }
 
-  rename(id: string, title: string, now: string, expectedSyncVersion?: number): Meeting {
-    return this.update(id, { title }, now, expectedSyncVersion);
+  rename(id: string, title: string, now: string, expectedSyncVersion?: number, operationId?: string): Meeting {
+    return this.update(id, { title }, now, expectedSyncVersion, operationId);
   }
 
-  update(id: string, patch: { title?: string | undefined; folderId?: string | null | undefined }, now: string, expectedSyncVersion?: number): Meeting {
+  update(id: string, patch: { title?: string | undefined; folderId?: string | null | undefined }, now: string, expectedSyncVersion?: number, operationId?: string): Meeting {
     const meetingId = MeetingIdSchema.parse(id);
     const value = z.object({
       title: MeetingTitleSchema.optional(),
       folderId: MeetingIdSchema.nullable().optional(),
     }).strict().refine((candidate) => candidate.title !== undefined || candidate.folderId !== undefined).parse(patch);
     const timestamp = canonicalizeTimestamp(now);
-    return this.db.transaction(() => {
+    return replayableMutation(this.db, operationId, "meeting.update", meetingId, { ...value, expectedSyncVersion }, (response) => MeetingSchema.parse(response), () => this.db.transaction(() => {
       if (!this.get(meetingId)) throw new MeetingNotFoundError(meetingId);
       if (value.folderId && !this.db.prepare("SELECT 1 FROM folders WHERE id = ?").get(value.folderId)) {
         throw new MeetingFolderNotFoundError(value.folderId);
@@ -189,19 +190,19 @@ export class SqliteMeetingRepository implements MeetingRepository {
       if (row) return mapMeeting(row);
       if (expectedSyncVersion !== undefined && this.get(meetingId)) throw new MeetingSyncVersionConflictError(meetingId);
       throw new MeetingNotFoundError(meetingId);
-    }).immediate();
+    }).immediate());
   }
 
-  trash(id: string, now: string, expectedSyncVersion?: number): Meeting {
+  trash(id: string, now: string, expectedSyncVersion?: number, operationId?: string): Meeting {
     const meetingId = MeetingIdSchema.parse(id);
     const timestamp = canonicalizeTimestamp(now);
-    return this.db.transaction(() => this.trashInTransaction(meetingId, timestamp, expectedSyncVersion)).immediate();
+    return replayableMutation(this.db, operationId, "meeting.trash", meetingId, { expectedSyncVersion }, (response) => MeetingSchema.parse(response), () => this.db.transaction(() => this.trashInTransaction(meetingId, timestamp, expectedSyncVersion)).immediate());
   }
 
-  restore(id: string, now: string, expectedSyncVersion?: number): Meeting {
+  restore(id: string, now: string, expectedSyncVersion?: number, operationId?: string): Meeting {
     const meetingId = MeetingIdSchema.parse(id);
     const timestamp = canonicalizeTimestamp(now);
-    return this.db.transaction(() => this.restoreInTransaction(meetingId, timestamp, expectedSyncVersion)).immediate();
+    return replayableMutation(this.db, operationId, "meeting.restore", meetingId, { expectedSyncVersion }, (response) => MeetingSchema.parse(response), () => this.db.transaction(() => this.restoreInTransaction(meetingId, timestamp, expectedSyncVersion)).immediate());
   }
 
   purgeTrashedBefore(cutoff: string): number {

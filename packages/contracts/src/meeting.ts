@@ -16,7 +16,8 @@ const MeetingTitleSchema = z.string().trim().min(1).max(120);
 const FolderNameSchema = z.string().trim().min(1).max(80);
 const IsoDateTimeSchema = z.iso.datetime();
 const SyncVersionSchema = z.int().nonnegative();
-export const ExpectedSyncVersionSchema = SyncVersionSchema.optional();
+export const ExpectedSyncVersionSchema = SyncVersionSchema;
+export const IdempotencyKeySchema = z.uuid();
 
 export const CreateMeetingInputSchema = z.object({
   id: MeetingIdSchema,
@@ -31,13 +32,14 @@ export const CreateFolderInputSchema = z.object({
   clientCreatedAt: IsoDateTimeSchema,
 });
 
-export const MeetingMutationSchema = z.object({
+export const MeetingMutationBodySchema = z.object({ expectedSyncVersion: ExpectedSyncVersionSchema }).strict();
+export const FolderMutationBodySchema = MeetingMutationBodySchema;
+export const MeetingPatchBodySchema = z.object({
+  title: MeetingTitleSchema.optional(),
+  folderId: MeetingIdSchema.nullable().optional(),
   expectedSyncVersion: ExpectedSyncVersionSchema,
-});
-
-export const FolderMutationSchema = z.object({
-  expectedSyncVersion: ExpectedSyncVersionSchema,
-});
+}).strict().refine((value) => value.title !== undefined || value.folderId !== undefined);
+export const FolderRenameBodySchema = z.object({ name: FolderNameSchema, expectedSyncVersion: ExpectedSyncVersionSchema }).strict();
 
 export const FolderSchema = z.object({
   id: MeetingIdSchema,
@@ -77,7 +79,7 @@ export type CreateMeetingInput = z.infer<typeof CreateMeetingInputSchema>;
 export type Meeting = z.infer<typeof MeetingSchema>;
 export type CreateFolderInput = z.infer<typeof CreateFolderInputSchema>;
 export type Folder = z.infer<typeof FolderSchema>;
-export type MeetingMutation = z.infer<typeof MeetingMutationSchema>;
-export type FolderMutation = z.infer<typeof FolderMutationSchema>;
+export type MeetingMutationBody = z.infer<typeof MeetingMutationBodySchema>;
+export type FolderMutationBody = z.infer<typeof FolderMutationBodySchema>;
 export type MeetingListQuery = z.output<typeof MeetingListQuerySchema>;
 export type MeetingListQueryInput = z.input<typeof MeetingListQuerySchema>;

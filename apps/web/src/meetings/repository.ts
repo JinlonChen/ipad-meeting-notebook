@@ -259,12 +259,18 @@ export class MeetingCatalogRepository {
         await this.db.folders.delete(operationToApply.entityId);
       } else if (!hasLaterEntityMutation) {
         if (receivedMeeting) {
-          await this.db.meetings.put(MeetingSchema.parse({
-            ...receivedMeeting,
-            folderId: receivedMeeting.folderId && pendingFolderRemovals.has(receivedMeeting.folderId) ? null : receivedMeeting.folderId,
-          }));
+          const current = await this.db.meetings.get(receivedMeeting.id);
+          if (!current || current.syncVersion <= receivedMeeting.syncVersion) {
+            await this.db.meetings.put(MeetingSchema.parse({
+              ...receivedMeeting,
+              folderId: receivedMeeting.folderId && pendingFolderRemovals.has(receivedMeeting.folderId) ? null : receivedMeeting.folderId,
+            }));
+          }
         }
-        if (receivedFolder && !pendingFolderRemovals.has(receivedFolder.id)) await this.db.folders.put(receivedFolder);
+        if (receivedFolder && !pendingFolderRemovals.has(receivedFolder.id)) {
+          const current = await this.db.folders.get(receivedFolder.id);
+          if (!current || current.syncVersion <= receivedFolder.syncVersion) await this.db.folders.put(receivedFolder);
+        }
       }
       await this.db.outbox.delete(sequence);
     });

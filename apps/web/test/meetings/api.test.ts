@@ -26,21 +26,21 @@ describe("MeetingCatalogHttpApi", () => {
     const api = new MeetingCatalogHttpApi(fetcher);
 
     await api.send({ id: "1", entityId: id, kind: "meeting.create", payload: { id, title: "Planning", folderId: null, clientCreatedAt: timestamp }, createdAt: timestamp, attempts: 0, lastError: null });
-    await api.send({ id: "2", entityId: id, kind: "meeting.rename", payload: { title: "Renamed", updatedAt: timestamp }, createdAt: timestamp, attempts: 0, lastError: null });
-    await api.send({ id: "3", entityId: id, kind: "meeting.trash", payload: { updatedAt: timestamp }, createdAt: timestamp, attempts: 0, lastError: null });
-    await api.send({ id: "4", entityId: id, kind: "meeting.restore", payload: { updatedAt: timestamp }, createdAt: timestamp, attempts: 0, lastError: null });
+    await api.send({ id: "00000000-0000-4000-8000-000000000012", entityId: id, kind: "meeting.rename", payload: { title: "Renamed", updatedAt: timestamp, expectedSyncVersion: 0 }, createdAt: timestamp, attempts: 0, lastError: null });
+    await api.send({ id: "00000000-0000-4000-8000-000000000013", entityId: id, kind: "meeting.trash", payload: { updatedAt: timestamp, expectedSyncVersion: 1 }, createdAt: timestamp, attempts: 0, lastError: null });
+    await api.send({ id: "00000000-0000-4000-8000-000000000014", entityId: id, kind: "meeting.restore", payload: { updatedAt: timestamp, expectedSyncVersion: 2 }, createdAt: timestamp, attempts: 0, lastError: null });
     await api.send({ id: "5", entityId: folderId, kind: "folder.create", payload: { id: folderId, name: "Work", clientCreatedAt: timestamp }, createdAt: timestamp, attempts: 0, lastError: null });
-    await api.send({ id: "6", entityId: folderId, kind: "folder.rename", payload: { name: "Renamed", updatedAt: timestamp }, createdAt: timestamp, attempts: 0, lastError: null });
-    await api.send({ id: "7", entityId: folderId, kind: "folder.remove", payload: { updatedAt: timestamp }, createdAt: timestamp, attempts: 0, lastError: null });
+    await api.send({ id: "00000000-0000-4000-8000-000000000016", entityId: folderId, kind: "folder.rename", payload: { name: "Renamed", updatedAt: timestamp, expectedSyncVersion: 0 }, createdAt: timestamp, attempts: 0, lastError: null });
+    await api.send({ id: "00000000-0000-4000-8000-000000000017", entityId: folderId, kind: "folder.remove", payload: { updatedAt: timestamp, expectedSyncVersion: 1 }, createdAt: timestamp, attempts: 0, lastError: null });
 
     expect(fetcher.mock.calls).toEqual([
       ["/api/meetings", expect.objectContaining({ method: "POST", credentials: "include", body: JSON.stringify({ id, title: "Planning", folderId: null, clientCreatedAt: timestamp }) })],
-      [`/api/meetings/${id}`, expect.objectContaining({ method: "PATCH", credentials: "include", body: JSON.stringify({ title: "Renamed" }) })],
-      [`/api/meetings/${id}`, expect.objectContaining({ method: "DELETE", credentials: "include" })],
-      [`/api/meetings/${id}/restore`, expect.objectContaining({ method: "POST", credentials: "include" })],
+      [`/api/meetings/${id}`, expect.objectContaining({ method: "PATCH", credentials: "include", headers: expect.objectContaining({ "idempotency-key": "00000000-0000-4000-8000-000000000012" }), body: JSON.stringify({ title: "Renamed", expectedSyncVersion: 0 }) })],
+      [`/api/meetings/${id}`, expect.objectContaining({ method: "DELETE", credentials: "include", headers: expect.objectContaining({ "idempotency-key": "00000000-0000-4000-8000-000000000013" }), body: JSON.stringify({ expectedSyncVersion: 1 }) })],
+      [`/api/meetings/${id}/restore`, expect.objectContaining({ method: "POST", credentials: "include", headers: expect.objectContaining({ "idempotency-key": "00000000-0000-4000-8000-000000000014" }), body: JSON.stringify({ expectedSyncVersion: 2 }) })],
       ["/api/folders", expect.objectContaining({ method: "POST", credentials: "include", body: JSON.stringify({ id: folderId, name: "Work", clientCreatedAt: timestamp }) })],
-      [`/api/folders/${folderId}`, expect.objectContaining({ method: "PATCH", credentials: "include", body: JSON.stringify({ name: "Renamed" }) })],
-      [`/api/folders/${folderId}`, expect.objectContaining({ method: "DELETE", credentials: "include" })],
+      [`/api/folders/${folderId}`, expect.objectContaining({ method: "PATCH", credentials: "include", headers: expect.objectContaining({ "idempotency-key": "00000000-0000-4000-8000-000000000016" }), body: JSON.stringify({ name: "Renamed", expectedSyncVersion: 0 }) })],
+      [`/api/folders/${folderId}`, expect.objectContaining({ method: "DELETE", credentials: "include", headers: expect.objectContaining({ "idempotency-key": "00000000-0000-4000-8000-000000000017" }), body: JSON.stringify({ expectedSyncVersion: 1 }) })],
     ]);
   });
 
@@ -68,5 +68,12 @@ describe("MeetingCatalogHttpApi", () => {
     await expect(api.listFolders()).rejects.toMatchObject({ name: "CatalogApiError", status: 0, code: "REQUEST_FAILED" });
     await expect(api.listFolders()).rejects.toMatchObject({ name: "CatalogApiError", status: 200, code: "REQUEST_FAILED" });
     await expect(api.listFolders()).rejects.toMatchObject({ name: "CatalogApiError", status: 200, code: "REQUEST_FAILED" });
+  });
+
+  test("treats only an exact folder-not-found removal response as an idempotent success", async () => {
+    const operation = { id: "00000000-0000-4000-8000-000000000099", entityId: folderId, kind: "folder.remove" as const, payload: { updatedAt: timestamp, expectedSyncVersion: 1 }, createdAt: timestamp, attempts: 0, lastError: null };
+    await expect(new MeetingCatalogHttpApi(vi.fn().mockResolvedValue(response({ code: "FOLDER_NOT_FOUND" }, 404))).send(operation)).resolves.toEqual({});
+    await expect(new MeetingCatalogHttpApi(vi.fn().mockResolvedValue(response({ code: "MEETING_NOT_FOUND" }, 404))).send(operation)).rejects.toMatchObject({ status: 404, code: "REQUEST_FAILED" });
+    await expect(new MeetingCatalogHttpApi(vi.fn().mockResolvedValue(new Response("not-json", { status: 404 }))).send(operation)).rejects.toMatchObject({ status: 404, code: "REQUEST_FAILED" });
   });
 });

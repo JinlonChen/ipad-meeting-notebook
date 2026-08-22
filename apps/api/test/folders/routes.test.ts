@@ -64,7 +64,7 @@ describe("folder routes", () => {
       expect(duplicate.statusCode).toBe(409);
       expect(duplicate.json()).toEqual({ code: "FOLDER_NAME_CONFLICT" });
 
-      const updated = await server.inject({ method: "PATCH", url: `/api/folders/${FOLDER_ONE}`, headers: { cookie }, payload: { name: " Archive " } });
+      const updated = await server.inject({ method: "PATCH", url: `/api/folders/${FOLDER_ONE}`, headers: { cookie }, payload: { name: " Archive ", expectedSyncVersion: 0 } });
       expect(updated.json()).toMatchObject({ name: "Archive", syncVersion: 1 });
       const replay = await server.inject({ method: "POST", url: "/api/folders", headers: { cookie }, payload: input });
       expect(replay.statusCode).toBe(200);
@@ -117,7 +117,28 @@ describe("folder routes", () => {
       const stale = await server.inject({ method: "PATCH", url: `/api/folders/${FOLDER_ONE}`, headers: { cookie }, payload: { name: "Second", expectedSyncVersion: 0 } });
       expect(first.statusCode).toBe(200);
       expect(stale).toMatchObject({ statusCode: 409, body: '{"code":"SYNC_VERSION_CONFLICT"}' });
+      const staleRemove = await server.inject({ method: "DELETE", url: `/api/folders/${FOLDER_ONE}`, headers: { cookie, "idempotency-key": "00000000-0000-4000-8000-000000000291" }, payload: { expectedSyncVersion: 0 } });
+      expect(staleRemove).toMatchObject({ statusCode: 409, body: '{"code":"SYNC_VERSION_CONFLICT"}' });
       expect((await server.inject({ method: "GET", url: "/api/folders", headers: { cookie } })).json()[0]).toMatchObject({ name: "First", syncVersion: 1 });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("replays rename and removal after a lost response and rejects key misuse", async () => {
+    const server = await createTestApp();
+    try {
+      const cookie = await login(server);
+      await server.inject({ method: "POST", url: "/api/folders", headers: { cookie }, payload: { id: FOLDER_ONE, name: "Work", clientCreatedAt: CREATED_AT } });
+      const renameKey = "00000000-0000-4000-8000-000000000281";
+      const headers = { cookie, "idempotency-key": renameKey };
+      const renamed = await server.inject({ method: "PATCH", url: `/api/folders/${FOLDER_ONE}`, headers, payload: { name: "After", expectedSyncVersion: 0 } });
+      expect((await server.inject({ method: "PATCH", url: `/api/folders/${FOLDER_ONE}`, headers, payload: { name: "After", expectedSyncVersion: 0 } })).json()).toEqual(renamed.json());
+      expect(await server.inject({ method: "PATCH", url: `/api/folders/${FOLDER_ONE}`, headers, payload: { name: "Misuse", expectedSyncVersion: 0 } })).toMatchObject({ statusCode: 409, body: '{"code":"IDEMPOTENCY_CONFLICT"}' });
+
+      const removeHeaders = { cookie, "idempotency-key": "00000000-0000-4000-8000-000000000282" };
+      expect(await server.inject({ method: "DELETE", url: `/api/folders/${FOLDER_ONE}`, headers: removeHeaders, payload: { expectedSyncVersion: 1 } })).toMatchObject({ statusCode: 204 });
+      expect(await server.inject({ method: "DELETE", url: `/api/folders/${FOLDER_ONE}`, headers: removeHeaders, payload: { expectedSyncVersion: 1 } })).toMatchObject({ statusCode: 204 });
     } finally {
       await server.close();
     }

@@ -75,7 +75,7 @@ describe("meeting routes", () => {
       expect((await server.inject({ method: "POST", url: "/api/meetings?extra=true", headers: { cookie }, payload: input })).json()).toEqual({ code: "INVALID_REQUEST" });
       expect((await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_ONE}?extra=true`, headers: { cookie }, payload: { title: "Ignored" } })).json()).toEqual({ code: "INVALID_REQUEST" });
 
-      const updated = await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_ONE}`, headers: { cookie }, payload: { title: "Renamed" } });
+      const updated = await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_ONE}`, headers: { cookie }, payload: { title: "Renamed", expectedSyncVersion: 0 } });
       expect(updated.statusCode).toBe(200);
       const replay = await server.inject({ method: "POST", url: "/api/meetings", headers: { cookie }, payload: input });
       expect(replay.statusCode).toBe(200);
@@ -115,11 +115,11 @@ describe("meeting routes", () => {
       await server.inject({ method: "POST", url: "/api/folders", headers: { cookie }, payload: { id: FOLDER_ONE, name: "Work", clientCreatedAt: CREATED_AT } });
       await server.inject({ method: "POST", url: "/api/meetings", headers: { cookie }, payload: { id: MEETING_ONE, title: "Before", folderId: null, clientCreatedAt: CREATED_AT } });
 
-      const changed = await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_ONE}`, headers: { cookie }, payload: { title: " After ", folderId: FOLDER_ONE } });
+      const changed = await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_ONE}`, headers: { cookie }, payload: { title: " After ", folderId: FOLDER_ONE, expectedSyncVersion: 0 } });
       expect(changed.statusCode).toBe(200);
       expect(changed.json()).toMatchObject({ title: "After", folderId: FOLDER_ONE, syncVersion: 1, updatedAt: "2026-08-21T00:00:00.000Z" });
 
-      const unknownFolder = await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_ONE}`, headers: { cookie }, payload: { folderId: UNKNOWN_FOLDER } });
+      const unknownFolder = await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_ONE}`, headers: { cookie }, payload: { folderId: UNKNOWN_FOLDER, expectedSyncVersion: 1 } });
       expect(unknownFolder.statusCode).toBe(404);
       expect(unknownFolder.json()).toEqual({ code: "FOLDER_NOT_FOUND" });
       const afterFailure = await server.inject({ method: "GET", url: "/api/meetings", headers: { cookie } });
@@ -170,7 +170,34 @@ describe("meeting routes", () => {
       const stale = await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_ONE}`, headers: { cookie }, payload: { title: "Second", expectedSyncVersion: 0 } });
       expect(first.statusCode).toBe(200);
       expect(stale).toMatchObject({ statusCode: 409, body: '{"code":"SYNC_VERSION_CONFLICT"}' });
-      expect((await server.inject({ method: "GET", url: "/api/meetings", headers: { cookie } })).json()[0]).toMatchObject({ title: "First", syncVersion: 1 });
+      const staleTrash = await server.inject({ method: "DELETE", url: `/api/meetings/${MEETING_ONE}`, headers: { cookie, "idempotency-key": "00000000-0000-4000-8000-000000000191" }, payload: { expectedSyncVersion: 0 } });
+      expect(staleTrash).toMatchObject({ statusCode: 409, body: '{"code":"SYNC_VERSION_CONFLICT"}' });
+      await server.inject({ method: "DELETE", url: `/api/meetings/${MEETING_ONE}`, headers: { cookie, "idempotency-key": "00000000-0000-4000-8000-000000000192" }, payload: { expectedSyncVersion: 1 } });
+      const staleRestore = await server.inject({ method: "POST", url: `/api/meetings/${MEETING_ONE}/restore`, headers: { cookie, "idempotency-key": "00000000-0000-4000-8000-000000000193" }, payload: { expectedSyncVersion: 1 } });
+      expect(staleRestore).toMatchObject({ statusCode: 409, body: '{"code":"SYNC_VERSION_CONFLICT"}' });
+      expect((await server.inject({ method: "GET", url: "/api/meetings?includeTrashed=true", headers: { cookie } })).json()[0]).toMatchObject({ title: "First", status: "trashed", syncVersion: 2 });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("replays rename, trash, and restore after a lost response and rejects key misuse", async () => {
+    const server = await createTestApp();
+    try {
+      const cookie = await login(server);
+      await server.inject({ method: "POST", url: "/api/meetings", headers: { cookie }, payload: { id: MEETING_ONE, title: "Before", folderId: null, clientCreatedAt: CREATED_AT } });
+      const mutate = (method: "PATCH" | "DELETE" | "POST", url: string, key: string, payload: Record<string, unknown>) => server.inject({ method, url, headers: { cookie, "idempotency-key": key }, payload });
+      const renameKey = "00000000-0000-4000-8000-000000000181";
+      const renamed = await mutate("PATCH", `/api/meetings/${MEETING_ONE}`, renameKey, { title: "After", expectedSyncVersion: 0 });
+      expect((await mutate("PATCH", `/api/meetings/${MEETING_ONE}`, renameKey, { title: "After", expectedSyncVersion: 0 })).json()).toEqual(renamed.json());
+      expect(await mutate("PATCH", `/api/meetings/${MEETING_ONE}`, renameKey, { title: "Misuse", expectedSyncVersion: 0 })).toMatchObject({ statusCode: 409, body: '{"code":"IDEMPOTENCY_CONFLICT"}' });
+
+      const trashKey = "00000000-0000-4000-8000-000000000182";
+      const trashed = await mutate("DELETE", `/api/meetings/${MEETING_ONE}`, trashKey, { expectedSyncVersion: 1 });
+      expect((await mutate("DELETE", `/api/meetings/${MEETING_ONE}`, trashKey, { expectedSyncVersion: 1 })).json()).toEqual(trashed.json());
+      const restoreKey = "00000000-0000-4000-8000-000000000183";
+      const restored = await mutate("POST", `/api/meetings/${MEETING_ONE}/restore`, restoreKey, { expectedSyncVersion: 2 });
+      expect((await mutate("POST", `/api/meetings/${MEETING_ONE}/restore`, restoreKey, { expectedSyncVersion: 2 })).json()).toEqual(restored.json());
     } finally {
       await server.close();
     }

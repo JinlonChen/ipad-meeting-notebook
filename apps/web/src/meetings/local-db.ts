@@ -42,5 +42,13 @@ export class MeetingCatalogDatabase extends Dexie {
       outbox: "++sequence,id,entityId,kind,createdAt",
       settings: "key",
     });
+    this.version(2).stores({
+      meetings: "id,updatedAt,status,folderId,title",
+      folders: "id,name,updatedAt",
+      outbox: "++sequence,id,entityId,kind,createdAt",
+      settings: "key",
+    }).upgrade((transaction) => transaction.table<OutboxOperation>("outbox").toCollection().modify((item) => {
+      if (!item.id) item.id = globalThis.crypto.randomUUID();
+    }));
   }
 }

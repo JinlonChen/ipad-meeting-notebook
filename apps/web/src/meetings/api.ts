@@ -1,4 +1,4 @@
-import { CreateFolderInputSchema, CreateMeetingInputSchema, FolderSchema, MeetingSchema, type Folder, type Meeting } from "@meeting/contracts";
+import { CreateFolderInputSchema, CreateMeetingInputSchema, FolderMutationBodySchema, FolderRenameBodySchema, FolderSchema, MeetingMutationBodySchema, MeetingPatchBodySchema, MeetingSchema, type Folder, type Meeting } from "@meeting/contracts";
 import { z } from "zod";
 
 import { CatalogApiError, type MeetingCatalogApi } from "./sync.js";
@@ -38,25 +38,30 @@ export class MeetingCatalogHttpApi implements MeetingCatalogApi {
     const init = (method: string, body?: unknown): RequestInit => ({
       method,
       credentials: "include",
-      ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+      headers: {
+        "idempotency-key": operation.id,
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     try {
       switch (operation.kind) {
       case "meeting.create":
         return { meeting: await parsed(this.fetcher("/api/meetings", init("POST", CreateMeetingInputSchema.parse(operation.payload))), MeetingSchema) };
       case "meeting.rename":
-        return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}`, init("PATCH", z.object({ title: z.string(), expectedSyncVersion: z.number().int().nonnegative().optional() }).parse(operation.payload))), MeetingSchema) };
+        { const payload = z.object({ title: z.unknown(), expectedSyncVersion: z.unknown() }).passthrough().parse(operation.payload); return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}`, init("PATCH", MeetingPatchBodySchema.parse({ title: payload.title, expectedSyncVersion: payload.expectedSyncVersion }))), MeetingSchema) }; }
       case "meeting.trash":
-        { const payload = z.object({ expectedSyncVersion: z.number().int().nonnegative().optional() }).parse(operation.payload); return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}`, init("DELETE", payload.expectedSyncVersion === undefined ? undefined : payload)), MeetingSchema) }; }
+        { const payload = z.object({ expectedSyncVersion: z.unknown() }).passthrough().parse(operation.payload); return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}`, init("DELETE", MeetingMutationBodySchema.parse({ expectedSyncVersion: payload.expectedSyncVersion }))), MeetingSchema) }; }
       case "meeting.restore":
-        { const payload = z.object({ expectedSyncVersion: z.number().int().nonnegative().optional() }).parse(operation.payload); return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}/restore`, init("POST", payload.expectedSyncVersion === undefined ? undefined : payload)), MeetingSchema) }; }
+        { const payload = z.object({ expectedSyncVersion: z.unknown() }).passthrough().parse(operation.payload); return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}/restore`, init("POST", MeetingMutationBodySchema.parse({ expectedSyncVersion: payload.expectedSyncVersion }))), MeetingSchema) }; }
       case "folder.create":
         return { folder: await parsed(this.fetcher("/api/folders", init("POST", CreateFolderInputSchema.parse(operation.payload))), FolderSchema) };
       case "folder.rename":
-        return { folder: await parsed(this.fetcher(`/api/folders/${operation.entityId}`, init("PATCH", z.object({ name: z.string(), expectedSyncVersion: z.number().int().nonnegative().optional() }).parse(operation.payload))), FolderSchema) };
+        { const payload = z.object({ name: z.unknown(), expectedSyncVersion: z.unknown() }).passthrough().parse(operation.payload); return { folder: await parsed(this.fetcher(`/api/folders/${operation.entityId}`, init("PATCH", FolderRenameBodySchema.parse({ name: payload.name, expectedSyncVersion: payload.expectedSyncVersion }))), FolderSchema) }; }
       case "folder.remove": {
-        const payload = z.object({ expectedSyncVersion: z.number().int().nonnegative().optional() }).parse(operation.payload);
-        const response = await this.fetcher(`/api/folders/${operation.entityId}`, init("DELETE", payload.expectedSyncVersion === undefined ? undefined : payload));
+        const value = z.object({ expectedSyncVersion: z.unknown() }).passthrough().parse(operation.payload);
+        const payload = FolderMutationBodySchema.parse({ expectedSyncVersion: value.expectedSyncVersion });
+        const response = await this.fetcher(`/api/folders/${operation.entityId}`, init("DELETE", payload));
         if (response.status === 404) {
           try {
             const body = await response.clone().json() as { code?: unknown };

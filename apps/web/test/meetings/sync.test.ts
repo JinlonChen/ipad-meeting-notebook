@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { MeetingCatalogRepository } from "../../src/meetings/repository.js";
+import { MeetingCatalogHttpApi } from "../../src/meetings/api.js";
 import { CatalogApiError, CatalogSync, type MeetingCatalogApi } from "../../src/meetings/sync.js";
 
 const now = "2026-08-21T00:00:00.000Z";
@@ -396,6 +397,20 @@ describe("CatalogSync", () => {
     await expect(store.get(meeting.id)).resolves.toMatchObject({ folderId: null });
   });
 
+  test("does not roll a meeting back when a create acknowledgement predates a pending folder removal", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    const folder = await store.createFolder("Work", now);
+    const meeting = await store.create("Agenda", folder.id, "2026-08-21T00:01:00.000Z");
+    await store.removeFolder(folder.id, "2026-08-21T00:02:00.000Z");
+    const operations = await store.pendingOperations();
+    await store.syncApplySuccessfulOperation(operations[0]!, { folder });
+    await store.syncApplySuccessfulOperation(operations[1]!, { meeting });
+
+    expect(await store.get(meeting.id)).toMatchObject({ folderId: null, syncVersion: 1 });
+    expect((await store.pendingOperations()).find((item) => item.kind === "folder.remove")?.payload).toMatchObject({ expectedSyncVersion: 0 });
+  });
+
   test("clears a folder removal when the first 204 was lost and retry returns only FOLDER_NOT_FOUND", async () => {
     const store = catalog();
     catalogs.push(store);
@@ -410,6 +425,23 @@ describe("CatalogSync", () => {
     await expect(sync.flush()).resolves.toEqual({ state: "error" });
     await expect(sync.flush()).resolves.toEqual({ state: "idle" });
     await expect(store.pendingOperations()).resolves.toEqual([]);
+  });
+
+  test("flushes a conditional rename through the HTTP adapter with its stable operation key", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    const created = await store.create("Before", null, now);
+    await store.syncApplySuccessfulOperation((await store.pendingOperations())[0]!, { meeting: created });
+    const renamed = await store.rename(created.id, "After", "2026-08-21T00:01:00.000Z");
+    const operation = (await store.pendingOperations())[0]!;
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(renamed), { status: 200, headers: { "content-type": "application/json" } }));
+
+    await expect(new CatalogSync(store, new MeetingCatalogHttpApi(fetcher)).flush()).resolves.toEqual({ state: "idle" });
+    expect(fetcher).toHaveBeenCalledWith(`/api/meetings/${created.id}`, expect.objectContaining({
+      method: "PATCH",
+      headers: expect.objectContaining({ "idempotency-key": operation.id }),
+      body: JSON.stringify({ title: "After", expectedSyncVersion: 0 }),
+    }));
   });
 
   test("hydrates a clean device from the server catalog", async () => {

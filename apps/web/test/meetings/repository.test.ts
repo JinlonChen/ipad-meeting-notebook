@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
+import Dexie from "dexie";
 
 import { MeetingCatalogRepository } from "../../src/meetings/repository.js";
 
@@ -39,6 +40,21 @@ describe("MeetingCatalogRepository", () => {
         lastError: null,
       }),
     ]);
+  });
+
+  test("backfills one stable UUID for a legacy outbox row without an operation id", async () => {
+    const name = `meeting-catalog-test-${databaseNumber++}`;
+    const legacy = new Dexie(name);
+    legacy.version(1).stores({ meetings: "id,updatedAt,status,folderId,title", folders: "id,name,updatedAt", outbox: "++sequence,id,entityId,kind,createdAt", settings: "key" });
+    await legacy.table("outbox").add({ entityId: crypto.randomUUID(), kind: "meeting.create", payload: {}, createdAt: now, attempts: 0, lastError: null });
+    legacy.close();
+    const catalog = new MeetingCatalogRepository(name);
+    repositories.push(catalog);
+
+    const first = (await catalog.pendingOperations())[0]!;
+    const second = (await catalog.pendingOperations())[0]!;
+    expect(first.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(second.id).toBe(first.id);
   });
 
   test("rejects an unknown folder without writing either side of the mutation", async () => {

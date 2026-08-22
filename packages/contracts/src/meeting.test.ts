@@ -4,6 +4,11 @@ import {
   CreateFolderInputSchema,
   CreateMeetingInputSchema,
   FolderSchema,
+  FolderMutationBodySchema,
+  FolderRenameBodySchema,
+  IdempotencyKeySchema,
+  MeetingMutationBodySchema,
+  MeetingPatchBodySchema,
   MeetingListQuerySchema,
   MeetingSchema,
 } from "./meeting";
@@ -121,5 +126,15 @@ describe("meeting contracts", () => {
     expect(() => CreateFolderInputSchema.parse({ ...validInput, id: "folder" })).toThrow();
     expect(() => CreateFolderInputSchema.parse({ ...validInput, name: "" })).toThrow();
     expect(() => CreateFolderInputSchema.parse({ ...validInput, name: "a".repeat(81) })).toThrow();
+  });
+
+  test("shares strict conditional mutation wire schemas", () => {
+    expect(IdempotencyKeySchema.parse(meetingId)).toBe(meetingId);
+    expect(MeetingPatchBodySchema.parse({ title: " Rename ", expectedSyncVersion: 3 })).toEqual({ title: "Rename", expectedSyncVersion: 3 });
+    expect(FolderRenameBodySchema.parse({ name: " Work ", expectedSyncVersion: 2 })).toEqual({ name: "Work", expectedSyncVersion: 2 });
+    expect(MeetingMutationBodySchema.parse({ expectedSyncVersion: 1 })).toEqual({ expectedSyncVersion: 1 });
+    expect(FolderMutationBodySchema.parse({ expectedSyncVersion: 0 })).toEqual({ expectedSyncVersion: 0 });
+    expect(() => MeetingMutationBodySchema.parse({})).toThrow();
+    expect(() => FolderMutationBodySchema.parse({ expectedSyncVersion: 1, extra: true })).toThrow();
   });
 });

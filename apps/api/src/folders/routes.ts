@@ -1,15 +1,18 @@
-import { CreateFolderInputSchema, FolderSchema } from "@meeting/contracts";
+import { CreateFolderInputSchema, FolderMutationBodySchema, FolderRenameBodySchema, FolderSchema, IdempotencyKeySchema } from "@meeting/contracts";
 import type { FastifyInstance, FastifyRequest, onRequestHookHandler } from "fastify";
 import { z } from "zod";
 
 import { FolderConflictError, FolderNotFoundError, FolderSyncVersionConflictError, type FolderRepository } from "./repository.js";
+import { MutationReplayConflictError } from "../db/mutation-replay.js";
 
 const IdParamsSchema = z.object({ id: z.uuid() }).strict();
 const CreateSchema = CreateFolderInputSchema.strict();
-const PatchSchema = z.object({ name: CreateFolderInputSchema.shape.name, expectedSyncVersion: z.number().int().nonnegative().optional() }).strict();
-const MutationBodySchema = z.object({ expectedSyncVersion: z.number().int().nonnegative() }).strict().optional();
 const EmptyQuerySchema = z.object({}).strict();
 const NoBodySchema = z.undefined();
+
+function operationId(request: FastifyRequest) {
+  return IdempotencyKeySchema.optional().safeParse(request.headers["idempotency-key"]);
+}
 
 function invalid(reply: { code: (status: number) => { send: (body: unknown) => unknown } }) {
   return reply.code(400).send({ code: "INVALID_REQUEST" });
@@ -48,13 +51,15 @@ export function registerFolderRoutes(app: FastifyInstance, options: {
 
   app.patch("/api/folders/:id", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
-    const patch = PatchSchema.safeParse(request.body);
-    if (!params.success || !patch.success || !EmptyQuerySchema.safeParse(request.query).success) return invalid(reply);
+    const patch = FolderRenameBodySchema.safeParse(request.body);
+    const operation = operationId(request);
+    if (!params.success || !patch.success || !operation.success || !EmptyQuerySchema.safeParse(request.query).success) return invalid(reply);
     try {
-      return reply.send(FolderSchema.parse(options.folders.rename(params.data.id, patch.data.name, now().toISOString(), patch.data.expectedSyncVersion)));
+      return reply.send(FolderSchema.parse(options.folders.rename(params.data.id, patch.data.name, now().toISOString(), patch.data.expectedSyncVersion, operation.data)));
     } catch (error) {
       if (error instanceof FolderNotFoundError) return reply.code(404).send({ code: "FOLDER_NOT_FOUND" });
       if (error instanceof FolderSyncVersionConflictError) return reply.code(409).send({ code: "SYNC_VERSION_CONFLICT" });
+      if (error instanceof MutationReplayConflictError) return reply.code(409).send({ code: "IDEMPOTENCY_CONFLICT" });
       if (isUniqueError(error)) return reply.code(409).send({ code: "FOLDER_NAME_CONFLICT" });
       throw error;
     }
@@ -62,14 +67,16 @@ export function registerFolderRoutes(app: FastifyInstance, options: {
 
   app.delete("/api/folders/:id", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
-    const body = MutationBodySchema.safeParse(request.body);
-    if (!params.success || !EmptyQuerySchema.safeParse(request.query).success || !body.success || (hasUnexpectedBody(request) && request.body === undefined)) return invalid(reply);
+    const body = FolderMutationBodySchema.optional().safeParse(request.body);
+    const operation = operationId(request);
+    if (!params.success || !operation.success || !EmptyQuerySchema.safeParse(request.query).success || !body.success) return invalid(reply);
     try {
-      options.folders.remove(params.data.id, now().toISOString(), body.data?.expectedSyncVersion);
+      options.folders.remove(params.data.id, now().toISOString(), body.data?.expectedSyncVersion, operation.data);
       return reply.code(204).send();
     } catch (error) {
       if (error instanceof FolderNotFoundError) return reply.code(404).send({ code: "FOLDER_NOT_FOUND" });
       if (error instanceof FolderSyncVersionConflictError) return reply.code(409).send({ code: "SYNC_VERSION_CONFLICT" });
+      if (error instanceof MutationReplayConflictError) return reply.code(409).send({ code: "IDEMPOTENCY_CONFLICT" });
       throw error;
     }
   });

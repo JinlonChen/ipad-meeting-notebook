@@ -1,10 +1,14 @@
 import { FolderSchema, MeetingSchema } from "@meeting/contracts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { ZodError } from "zod";
 
 import { openDatabase } from "../../src/db/database.js";
 import {
   FolderNotFoundError,
+  FolderSyncVersionConflictError,
   SqliteFolderRepository,
 } from "../../src/folders/repository.js";
 import { SqliteMeetingRepository } from "../../src/meetings/repository.js";
@@ -89,5 +93,27 @@ describe("SqliteFolderRepository", () => {
     expect(() => folders.remove(FOLDER_ONE, "not-a-date")).toThrow(ZodError);
     expect(() => folders.rename(FOLDER_THREE, "Missing", LATER)).toThrow(FolderNotFoundError);
     expect(() => folders.remove(FOLDER_THREE, LATER)).toThrow(FolderNotFoundError);
+  });
+
+  test("classifies stale writes across two database connections and rolls back a stale removal", () => {
+    const directory = mkdtempSync(join(tmpdir(), "folder-conditional-"));
+    const path = join(directory, "catalog.sqlite");
+    const firstDb = openDatabase(path);
+    const secondDb = openDatabase(path);
+    try {
+      const first = new SqliteFolderRepository(firstDb);
+      const second = new SqliteFolderRepository(secondDb);
+      const meetings = new SqliteMeetingRepository(firstDb);
+      first.create({ id: FOLDER_ONE, name: "Shared", clientCreatedAt: CREATED_AT });
+      meetings.create({ id: MEETING_ONE, title: "Linked", folderId: FOLDER_ONE, clientCreatedAt: CREATED_AT });
+      expect(first.rename(FOLDER_ONE, "First", LATER, 0)).toMatchObject({ syncVersion: 1 });
+      expect(() => second.rename(FOLDER_ONE, "Stale", LATER, 0)).toThrow(FolderSyncVersionConflictError);
+      expect(() => second.remove(FOLDER_ONE, LATER, 0)).toThrow(FolderSyncVersionConflictError);
+      expect(meetings.get(MEETING_ONE)).toMatchObject({ folderId: FOLDER_ONE, syncVersion: 0 });
+    } finally {
+      secondDb.close();
+      firstDb.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

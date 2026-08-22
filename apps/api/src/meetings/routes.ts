@@ -1,11 +1,15 @@
 import {
   CreateMeetingInputSchema,
+  IdempotencyKeySchema,
+  MeetingMutationBodySchema,
+  MeetingPatchBodySchema,
   MeetingSchema,
 } from "@meeting/contracts";
 import type { FastifyInstance, FastifyRequest, onRequestHookHandler } from "fastify";
 import { z } from "zod";
 
 import { FolderNotFoundError } from "../folders/repository.js";
+import { MutationReplayConflictError } from "../db/mutation-replay.js";
 import {
   MeetingFolderNotFoundError,
   MeetingNotFoundError,
@@ -16,18 +20,16 @@ import {
 
 const IdParamsSchema = z.object({ id: z.uuid() }).strict();
 const CreateSchema = CreateMeetingInputSchema.strict();
-const PatchSchema = z.object({
-  title: CreateMeetingInputSchema.shape.title.optional(),
-  folderId: CreateMeetingInputSchema.shape.folderId.optional(),
-  expectedSyncVersion: z.number().int().nonnegative().optional(),
-}).strict().refine((value) => value.title !== undefined || value.folderId !== undefined);
-const MutationBodySchema = z.object({ expectedSyncVersion: z.number().int().nonnegative() }).strict().optional();
 const QuerySchema = z.object({
   search: z.string().trim().max(120).optional().default(""),
   includeTrashed: z.enum(["true", "false"]).optional().default("false").transform((value) => value === "true"),
 }).strict();
 const EmptyQuerySchema = z.object({}).strict();
 const NoBodySchema = z.undefined();
+
+function operationId(request: FastifyRequest) {
+  return IdempotencyKeySchema.optional().safeParse(request.headers["idempotency-key"]);
+}
 
 function invalid(reply: { code: (status: number) => { send: (body: unknown) => unknown } }) {
   return reply.code(400).send({ code: "INVALID_REQUEST" });
@@ -67,14 +69,16 @@ export function registerMeetingRoutes(app: FastifyInstance, options: {
 
   app.patch("/api/meetings/:id", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
-    const patch = PatchSchema.safeParse(request.body);
-    if (!params.success || !patch.success || !EmptyQuerySchema.safeParse(request.query).success) return invalid(reply);
+    const patch = MeetingPatchBodySchema.safeParse(request.body);
+    const operation = operationId(request);
+    if (!params.success || !patch.success || !operation.success || !EmptyQuerySchema.safeParse(request.query).success) return invalid(reply);
     try {
       const { expectedSyncVersion, ...changes } = patch.data;
-      return reply.send(MeetingSchema.parse(options.meetings.update(params.data.id, changes, now().toISOString(), expectedSyncVersion)));
+      return reply.send(MeetingSchema.parse(options.meetings.update(params.data.id, changes, now().toISOString(), expectedSyncVersion, operation.data)));
     } catch (error) {
       if (error instanceof MeetingNotFoundError) return reply.code(404).send({ code: "MEETING_NOT_FOUND" });
       if (error instanceof MeetingSyncVersionConflictError) return reply.code(409).send({ code: "SYNC_VERSION_CONFLICT" });
+      if (error instanceof MutationReplayConflictError) return reply.code(409).send({ code: "IDEMPOTENCY_CONFLICT" });
       if (error instanceof MeetingFolderNotFoundError || error instanceof FolderNotFoundError || isForeignKeyError(error)) {
         return reply.code(404).send({ code: "FOLDER_NOT_FOUND" });
       }
@@ -84,26 +88,30 @@ export function registerMeetingRoutes(app: FastifyInstance, options: {
 
   app.delete("/api/meetings/:id", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
-    const body = MutationBodySchema.safeParse(request.body);
-    if (!params.success || !EmptyQuerySchema.safeParse(request.query).success || !body.success || hasUnexpectedBody(request) && request.body === undefined) return invalid(reply);
+    const body = MeetingMutationBodySchema.optional().safeParse(request.body);
+    const operation = operationId(request);
+    if (!params.success || !operation.success || !EmptyQuerySchema.safeParse(request.query).success || !body.success) return invalid(reply);
     try {
-      return reply.send(MeetingSchema.parse(options.meetings.trash(params.data.id, now().toISOString(), body.data?.expectedSyncVersion)));
+      return reply.send(MeetingSchema.parse(options.meetings.trash(params.data.id, now().toISOString(), body.data?.expectedSyncVersion, operation.data)));
     } catch (error) {
       if (error instanceof MeetingNotFoundError) return reply.code(404).send({ code: "MEETING_NOT_FOUND" });
       if (error instanceof MeetingSyncVersionConflictError) return reply.code(409).send({ code: "SYNC_VERSION_CONFLICT" });
+      if (error instanceof MutationReplayConflictError) return reply.code(409).send({ code: "IDEMPOTENCY_CONFLICT" });
       throw error;
     }
   });
 
   app.post("/api/meetings/:id/restore", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
-    const body = MutationBodySchema.safeParse(request.body);
-    if (!params.success || !EmptyQuerySchema.safeParse(request.query).success || !body.success || hasUnexpectedBody(request) && request.body === undefined) return invalid(reply);
+    const body = MeetingMutationBodySchema.optional().safeParse(request.body);
+    const operation = operationId(request);
+    if (!params.success || !operation.success || !EmptyQuerySchema.safeParse(request.query).success || !body.success) return invalid(reply);
     try {
-      return reply.send(MeetingSchema.parse(options.meetings.restore(params.data.id, now().toISOString(), body.data?.expectedSyncVersion)));
+      return reply.send(MeetingSchema.parse(options.meetings.restore(params.data.id, now().toISOString(), body.data?.expectedSyncVersion, operation.data)));
     } catch (error) {
       if (error instanceof MeetingNotFoundError) return reply.code(404).send({ code: "MEETING_NOT_FOUND" });
       if (error instanceof MeetingSyncVersionConflictError) return reply.code(409).send({ code: "SYNC_VERSION_CONFLICT" });
+      if (error instanceof MutationReplayConflictError) return reply.code(409).send({ code: "IDEMPOTENCY_CONFLICT" });
       throw error;
     }
   });
