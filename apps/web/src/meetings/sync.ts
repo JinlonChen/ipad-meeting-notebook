@@ -11,7 +11,7 @@ export interface MeetingCatalogApi {
 
 export type SyncResult = { state: "idle" | "paused_auth" | "conflict" | "error" };
 type SyncRequestKind = "flush" | "refresh";
-type SyncTask = { kind: SyncRequestKind; epoch: number; promise: Promise<SyncResult> };
+type SyncTask = { kind: SyncRequestKind; epoch: number; started: boolean; promise: Promise<SyncResult> };
 
 export class CatalogApiError extends Error {
   constructor(public readonly status: number, public readonly code?: string) {
@@ -43,27 +43,29 @@ export class CatalogSync {
     const current = this.currentTask;
     if (current?.epoch === epoch) {
       if (current.kind === kind) return current.promise;
-      return this.startTask(kind, epoch, current);
+      return this.startTask(kind, epoch, current).promise;
     }
     if (this.authPaused) return Promise.resolve({ state: "paused_auth" });
-    return this.startTask(kind, epoch);
+    return this.startTask(kind, epoch).promise;
   }
 
-  private startTask(kind: SyncRequestKind, epoch: number, predecessor?: SyncTask): Promise<SyncResult> {
+  private startTask(kind: SyncRequestKind, epoch: number, predecessor?: SyncTask): SyncTask {
+    let task!: SyncTask;
     const promise = this.enqueue(async () => {
+      task.started = true;
       if (predecessor) {
         const result = await predecessor.promise;
         if (result.state !== "idle") return result;
       }
       return kind === "flush" ? this.flushInternal(epoch) : this.refreshInternal(epoch);
     });
-    const task: SyncTask = { kind, epoch, promise };
+    task = { kind, epoch, started: false, promise };
     this.currentTask = task;
     const clear = () => {
       if (this.currentTask === task) this.currentTask = undefined;
     };
     void promise.then(clear, clear);
-    return promise;
+    return task;
   }
 
   flush(): Promise<SyncResult> {
@@ -105,6 +107,16 @@ export class CatalogSync {
   }
 
   refresh(): Promise<SyncResult> {
+    return this.request("refresh");
+  }
+
+  scheduleRefresh(): Promise<SyncResult> {
+    const epoch = this.authEpoch;
+    const current = this.currentTask;
+    if (current?.epoch === epoch && current.kind === "refresh") {
+      if (!current.started) return current.promise;
+      return this.startTask("refresh", epoch, current).promise;
+    }
     return this.request("refresh");
   }
 

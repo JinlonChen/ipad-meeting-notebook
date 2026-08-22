@@ -9,6 +9,7 @@ import { MeetingCatalogRepository, type PendingStatus } from "./repository.js";
 type Props = {
   repository: MeetingCatalogRepository;
   refresh: () => Promise<SyncResult>;
+  scheduleRefresh?: () => Promise<SyncResult>;
   now?: () => string;
   online: boolean;
   onLogout?: () => void;
@@ -55,7 +56,7 @@ function conflictActionLabel(kind: NonNullable<PendingStatus["conflict"]>["kind"
   })[kind];
 }
 
-export function MeetingListPage({ repository, refresh, now = () => new Date().toISOString(), online, onLogout }: Props) {
+export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh, now = () => new Date().toISOString(), online, onLogout }: Props) {
   const navigate = useNavigate();
   const layout = useLayoutMode();
   const [meetings, setMeetings] = useState<Meeting[]>([]);
@@ -256,7 +257,7 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
   const synchronizeAfterMutation = useCallback(() => {
     if (!online || !mounted.current) return;
     setSyncState("syncing");
-    void refresh()
+    void scheduleRefresh()
       .then(async (result) => {
         if (mounted.current) setSyncState(result.state);
         try { await reload(); }
@@ -269,7 +270,7 @@ export function MeetingListPage({ repository, refresh, now = () => new Date().to
           void reload().catch(() => undefined);
         }
       });
-  }, [online, refresh, reload]);
+  }, [online, reload, scheduleRefresh]);
 
   const finishLocalMutation = useCallback(() => {
     if (!mounted.current) return;

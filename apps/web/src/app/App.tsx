@@ -20,6 +20,7 @@ type Props = {
 };
 export type CatalogSynchronizer = {
   refresh(): Promise<SyncResult>;
+  scheduleRefresh?(): Promise<SyncResult>;
   resumeAfterLogin(): void;
 };
 type Gate = "loading" | "catalog" | "login" | "offline-lock" | "logging-out" | "error";
@@ -31,7 +32,6 @@ function isUnauthorized(error: unknown): boolean {
 export function App({ repository = defaultRepository, auth = defaultAuth, synchronizer: injectedSynchronizer, now = defaultNow }: Props) {
   const localSynchronizer = useMemo(() => new CatalogSync(repository, new MeetingCatalogHttpApi()), [repository]);
   const synchronizer = injectedSynchronizer ?? localSynchronizer;
-  const syncRefresh = useCallback(() => synchronizer.refresh(), [synchronizer]);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [gate, setGate] = useState<Gate>("loading");
   const mounted = useRef(true);
@@ -102,15 +102,20 @@ export function App({ repository = defaultRepository, auth = defaultAuth, synchr
     synchronizer.resumeAfterLogin();
     setGate("catalog");
   }, [auth, nextGeneration, now, owns, repository, synchronizer]);
-  const guardedRefresh = useCallback(async () => {
+  const guardSync = useCallback(async (request: () => Promise<SyncResult>) => {
     const currentGeneration = generation.current;
-    const result = await syncRefresh();
+    const result = await request();
     if (result.state === "paused_auth" && owns(currentGeneration)) {
       await repository.clearDeviceAccess();
       if (owns(currentGeneration)) setGate("login");
     }
     return result;
-  }, [owns, repository, syncRefresh]);
+  }, [owns, repository]);
+  const guardedRefresh = useCallback(() => guardSync(() => synchronizer.refresh()), [guardSync, synchronizer]);
+  const guardedScheduledRefresh = useCallback(
+    () => guardSync(() => synchronizer.scheduleRefresh?.() ?? synchronizer.refresh()),
+    [guardSync, synchronizer],
+  );
   const logout = useCallback(async () => {
     explicitLogout.current = true;
     const currentGeneration = nextGeneration();
@@ -123,5 +128,5 @@ export function App({ repository = defaultRepository, auth = defaultAuth, synchr
   if (gate === "logging-out") return <main className="gate-loading" role="status">正在退出...</main>;
   if (gate === "login" || gate === "offline-lock") return <LoginPage onLogin={login} offline={gate === "offline-lock"} />;
   if (gate === "error") return <main className="login-page"><section className="login-panel"><h1>无法验证访问权限</h1><button className="primary-button" onClick={() => void authorize()}>重试</button></section></main>;
-  return <BrowserRouter><Routes><Route path="/meetings/:id" element={<WorkspacePlaceholder />} /><Route path="*" element={<MeetingListPage repository={repository} refresh={guardedRefresh} now={now} online={online} onLogout={() => void logout()} />} /></Routes></BrowserRouter>;
+  return <BrowserRouter><Routes><Route path="/meetings/:id" element={<WorkspacePlaceholder />} /><Route path="*" element={<MeetingListPage repository={repository} refresh={guardedRefresh} scheduleRefresh={guardedScheduledRefresh} now={now} online={online} onLogout={() => void logout()} />} /></Routes></BrowserRouter>;
 }

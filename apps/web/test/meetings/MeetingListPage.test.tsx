@@ -165,11 +165,10 @@ describe("MeetingListPage", () => {
     const user = userEvent.setup();
     const repository = catalog();
     const automatic = deferred<{ state: "idle" }>();
-    const refresh = vi.fn()
-      .mockResolvedValueOnce({ state: "idle" as const })
-      .mockImplementationOnce(() => automatic.promise);
+    const refresh = vi.fn().mockResolvedValue({ state: "idle" as const });
+    const scheduleRefresh = vi.fn(() => automatic.promise);
     render(<MemoryRouter initialEntries={["/meetings"]}><Routes>
-      <Route path="/meetings" element={<MeetingListPage repository={repository} refresh={refresh} now={() => now} online />} />
+      <Route path="/meetings" element={<MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={() => now} online />} />
       <Route path="/meetings/:id" element={<WorkspacePlaceholder />} />
     </Routes></MemoryRouter>);
     await screen.findByText("还没有会议");
@@ -181,7 +180,8 @@ describe("MeetingListPage", () => {
     await user.click(screen.getByRole("button", { name: "创建" }));
 
     await screen.findByText("会议工作区将在录音阶段启用");
-    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(scheduleRefresh).toHaveBeenCalledTimes(1);
     delayedList.resolve([]);
     automatic.resolve({ state: "idle" });
   });

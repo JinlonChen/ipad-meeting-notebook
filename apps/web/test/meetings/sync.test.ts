@@ -156,6 +156,41 @@ describe("CatalogSync", () => {
     expect(sent).toHaveLength(2);
   });
 
+  test("queues one trailing refresh for mutations added while the current refresh is pulling", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    let resolveFolders: ((value: []) => void) | undefined;
+    let resolveMeetings: ((value: []) => void) | undefined;
+    const foldersPull = new Promise<[]>((resolve) => { resolveFolders = resolve; });
+    const meetingsPull = new Promise<[]>((resolve) => { resolveMeetings = resolve; });
+    let remoteMeeting: Awaited<ReturnType<MeetingCatalogRepository["get"]>>;
+    const client: MeetingCatalogApi = {
+      send: vi.fn(async (operation) => {
+        remoteMeeting = await store.get(operation.entityId);
+        return { meeting: remoteMeeting! };
+      }),
+      listFolders: vi.fn().mockImplementationOnce(() => foldersPull).mockResolvedValue([]),
+      listMeetings: vi.fn().mockImplementationOnce(() => meetingsPull).mockImplementation(() => Promise.resolve(remoteMeeting ? [remoteMeeting] : [])),
+    };
+    const sync = new CatalogSync(store, client);
+    const refreshing = sync.refresh();
+    await vi.waitFor(() => expect(client.listMeetings).toHaveBeenCalledTimes(1));
+    await store.create("Created during pull", null, "2026-08-21T00:01:00.000Z");
+    const trailing = sync.scheduleRefresh();
+    const coalesced = sync.scheduleRefresh();
+
+    expect(coalesced).toBe(trailing);
+    expect(client.send).not.toHaveBeenCalled();
+    resolveFolders?.([]);
+    resolveMeetings?.([]);
+
+    await expect(refreshing).resolves.toEqual({ state: "idle" });
+    await expect(trailing).resolves.toEqual({ state: "idle" });
+    expect(client.send).toHaveBeenCalledTimes(1);
+    expect(client.listMeetings).toHaveBeenCalledTimes(2);
+    await expect(store.pendingOperations()).resolves.toEqual([]);
+  });
+
   test("serializes a stale refresh ahead of flush so pending local data and the later acknowledgement win", async () => {
     const store = catalog();
     catalogs.push(store);
