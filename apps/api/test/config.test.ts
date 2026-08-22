@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, test } from "vitest";
 
 import { loadConfig } from "../src/config.js";
@@ -5,6 +7,14 @@ import { loadConfig } from "../src/config.js";
 const PASSWORD = "correct horse battery staple";
 
 describe("loadConfig", () => {
+  test("loads the repository .env when starting the API development server", () => {
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { scripts?: Record<string, string> };
+
+    expect(packageJson.scripts?.dev).toBe("tsx watch --env-file=../../.env src/server.ts");
+  });
+
   test("uses documented defaults and parses the exact cookie boolean values", () => {
     expect(loadConfig({ ADMIN_PASSWORD: PASSWORD })).toEqual({
       apiPort: 8787,
