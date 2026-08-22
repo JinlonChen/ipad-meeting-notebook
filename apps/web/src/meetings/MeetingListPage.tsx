@@ -72,6 +72,7 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
   const [actionMeeting, setActionMeeting] = useState<string | null>(null);
   const [pendingOperation, setPendingOperation] = useState<string | null>(null);
   const [operationError, setOperationError] = useState("");
+  const [manualSyncError, setManualSyncError] = useState("");
   const [autoSyncError, setAutoSyncError] = useState("");
   const [confirmationError, setConfirmationError] = useState("");
   const [pendingStatus, setPendingStatus] = useState<PendingStatus | null>(null);
@@ -258,10 +259,12 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
   const synchronizeAfterMutation = useCallback(() => {
     if (!online || !mounted.current) return;
     setSyncState("syncing");
-    setAutoSyncError("");
     void scheduleRefresh()
       .then(async (result) => {
-        if (mounted.current) setSyncState(result.state);
+        if (mounted.current) {
+          setSyncState(result.state);
+          if (result.state === "idle") setAutoSyncError("");
+        }
         try { await reload(); }
         catch { if (mounted.current) { setSyncState("error"); setOperationError("读取目录失败，请重试。"); } }
       })
@@ -327,7 +330,7 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
   async function syncNow() {
     if (!online || pendingOperation) return;
     setSyncState("syncing");
-    setPendingOperation("sync"); setOperationError("");
+    setPendingOperation("sync"); setManualSyncError("");
     try {
       const result = await refresh();
       if (!mounted.current) return;
@@ -335,7 +338,7 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
       if (result.state === "idle") setAutoSyncError("");
       await reload();
     } catch {
-      if (mounted.current) { setSyncState("error"); setOperationError("操作未完成，请重试。"); }
+      if (mounted.current) { setSyncState("error"); setManualSyncError("操作未完成，请重试。"); }
     } finally {
       if (mounted.current) setPendingOperation(null);
     }
@@ -393,7 +396,7 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
     return "已同步";
   }
   const emptyText = search ? "没有匹配的会议" : filter === "trashed" ? "废纸篓为空" : filter !== "all" ? "此分类暂无会议" : "还没有会议";
-  const visibleOperationError = operationError || autoSyncError;
+  const visibleOperationError = operationError || manualSyncError || autoSyncError;
 
   return <><main className="catalog-shell" data-layout={layout} data-drawer={railOpen ? "open" : "closed"} inert={modalOpen}>
     <header className="catalog-topbar">
