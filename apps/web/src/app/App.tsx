@@ -20,24 +20,29 @@ type Props = {
   synchronizer?: CatalogSynchronizer;
   now?: () => string;
   configurationError?: boolean;
+  startupError?: boolean;
+  onStartupRetry?: () => void;
 };
 export type CatalogSynchronizer = {
   refresh(): Promise<SyncResult>;
   scheduleRefresh?(): Promise<SyncResult>;
   resumeAfterLogin(): void;
 };
-type Gate = "loading" | "catalog" | "login" | "offline-lock" | "logging-out" | "error";
+type Gate = "loading" | "catalog" | "login" | "offline-lock" | "logging-out" | "logout-error" | "error";
 
 function isUnauthorized(error: unknown): boolean {
   return error instanceof AuthApiError ? error.status === 401 : typeof error === "object" && error !== null && "status" in error && error.status === 401;
 }
 
-export function App({ repository, auth, catalog, synchronizer, now, configurationError = false }: Props) {
+export function App({ repository, auth, catalog, synchronizer, now, configurationError = false, startupError = false, onStartupRetry }: Props) {
   const resolvedSynchronizer = useMemo(() => {
     if (synchronizer) return synchronizer;
     if (repository && catalog) return new CatalogSync(repository, catalog);
     return noopSynchronizer;
   }, [catalog, repository, synchronizer]);
+  if (startupError) {
+    return <StartupErrorPanel onRetry={onStartupRetry ?? (() => window.location.reload())} />;
+  }
   if (configurationError || !repository || !auth) {
     return <ConfigurationPanel />;
   }
@@ -46,6 +51,10 @@ export function App({ repository, auth, catalog, synchronizer, now, configuratio
 
 function ConfigurationPanel() {
   return <main className="login-page"><section className="login-panel" aria-labelledby="configuration-title"><h1 id="configuration-title">需要配置云端服务</h1><p>请先配置 Supabase 后再启动会议本。</p></section></main>;
+}
+
+function StartupErrorPanel({ onRetry }: { onRetry: () => void }) {
+  return <main className="login-page"><section className="login-panel" aria-labelledby="startup-error-title"><h1 id="startup-error-title">无法启动会议本</h1><p>本地服务初始化未完成，请重试。</p><button className="primary-button" onClick={onRetry}>重试</button></section></main>;
 }
 
 type SessionProps = {
@@ -58,6 +67,7 @@ type SessionProps = {
 function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [gate, setGate] = useState<Gate>("loading");
+  const [deviceExpiresAt, setDeviceExpiresAt] = useState<string | null>(null);
   const mounted = useRef(true);
   const generation = useRef(0);
   const explicitLogout = useRef(false);
@@ -83,16 +93,18 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
         await repository.clearDeviceAccess(access);
         return;
       }
+      setDeviceExpiresAt(access.expiresAt);
       setOnline(true);
       setGate("catalog");
     } catch (error) {
       if (!owns(currentGeneration) || explicitLogout.current) return;
-      if (isUnauthorized(error)) { setGate("login"); return; }
+      if (isUnauthorized(error)) { setDeviceExpiresAt(null); setGate("login"); return; }
       if (error instanceof AuthNetworkError) {
         setOnline(false);
-        const hasAccess = await repository.hasDeviceAccess(now());
+        const access = await repository.validDeviceAccess(now());
         if (!owns(currentGeneration)) return;
-        setGate(hasAccess ? "catalog" : "offline-lock");
+        setDeviceExpiresAt(access?.expiresAt ?? null);
+        setGate(access ? "catalog" : "offline-lock");
         return;
       }
       setGate("error");
@@ -111,6 +123,30 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
     return () => { window.removeEventListener("online", becameOnline); window.removeEventListener("offline", becameOffline); };
   }, [authorize]);
 
+  useEffect(() => {
+    if (gate !== "catalog" || online || !deviceExpiresAt) return;
+    let timeout: number | undefined;
+    const lockIfExpired = () => {
+      if (!mounted.current || new Date(now()).getTime() < new Date(deviceExpiresAt).getTime()) return false;
+      nextGeneration();
+      setDeviceExpiresAt(null);
+      setGate("offline-lock");
+      return true;
+    };
+    const scheduleExpiryCheck = () => {
+      const remaining = new Date(deviceExpiresAt).getTime() - new Date(now()).getTime();
+      timeout = window.setTimeout(() => {
+        if (!lockIfExpired()) scheduleExpiryCheck();
+      }, Math.max(0, Math.min(remaining, 2_147_000_000)));
+    };
+    scheduleExpiryCheck();
+    document.addEventListener("visibilitychange", lockIfExpired);
+    return () => {
+      if (timeout !== undefined) window.clearTimeout(timeout);
+      document.removeEventListener("visibilitychange", lockIfExpired);
+    };
+  }, [deviceExpiresAt, gate, nextGeneration, now, online]);
+
   const login = useCallback(async (email: string, password: string) => {
     const currentGeneration = nextGeneration();
     await auth.login(email, password);
@@ -122,6 +158,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
       await repository.clearDeviceAccess(access);
       return;
     }
+    setDeviceExpiresAt(access.expiresAt);
     explicitLogout.current = false;
     synchronizer.resumeAfterLogin();
     setGate("catalog");
@@ -131,7 +168,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
     const result = await request();
     if (result.state === "paused_auth" && owns(currentGeneration)) {
       await repository.clearDeviceAccess();
-      if (owns(currentGeneration)) setGate("login");
+      if (owns(currentGeneration)) { setDeviceExpiresAt(null); setGate("login"); }
     }
     return result;
   }, [owns, repository]);
@@ -144,12 +181,22 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
     explicitLogout.current = true;
     const currentGeneration = nextGeneration();
     if (mounted.current) setGate("logging-out");
-    await Promise.allSettled([auth.logout(), repository.clearDeviceAccess()]);
+    const remoteLogout = auth.logout().catch(() => undefined);
+    try {
+      await repository.clearDeviceAccess();
+    } catch {
+      await remoteLogout;
+      if (owns(currentGeneration)) setGate("logout-error");
+      return;
+    }
+    if (owns(currentGeneration)) setDeviceExpiresAt(null);
+    await remoteLogout;
     if (owns(currentGeneration)) setGate("login");
   }, [auth, nextGeneration, owns, repository]);
 
   if (gate === "loading") return <main className="gate-loading" role="status">正在验证访问权限...</main>;
   if (gate === "logging-out") return <main className="gate-loading" role="status">正在退出...</main>;
+  if (gate === "logout-error") return <main className="login-page"><section className="login-panel"><h1>无法安全退出</h1><p>本地访问权限尚未清除。</p><button className="primary-button" onClick={() => void logout()}>重试退出</button></section></main>;
   if (gate === "login" || gate === "offline-lock") return <LoginPage onLogin={login} offline={gate === "offline-lock"} />;
   if (gate === "error") return <main className="login-page"><section className="login-panel"><h1>无法验证访问权限</h1><button className="primary-button" onClick={() => void authorize()}>重试</button></section></main>;
   return <BrowserRouter><Routes><Route path="/meetings/:id" element={<WorkspacePlaceholder />} /><Route path="*" element={<MeetingListPage repository={repository} refresh={guardedRefresh} scheduleRefresh={guardedScheduledRefresh} now={now} online={online} onLogout={() => void logout()} />} /></Routes></BrowserRouter>;

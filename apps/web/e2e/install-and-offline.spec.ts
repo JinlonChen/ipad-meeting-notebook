@@ -1,7 +1,28 @@
 import { expect, test } from "@playwright/test";
 
-test("installs the meeting notebook shell and starts it offline", async ({ context, page }) => {
-  await page.goto("/");
+import { installSupabaseRoutes, offlineMeeting, openCatalog, removeSupabaseRoutes, supabaseOrigin } from "./supabase-fixture.js";
+
+async function expireDeviceMarker(page: Parameters<typeof openCatalog>[0]): Promise<void> {
+  await page.evaluate(async () => {
+    await new Promise<void>((resolve, reject) => {
+      const open = indexedDB.open("meeting-catalog");
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const transaction = open.result.transaction("settings", "readwrite");
+        transaction.objectStore("settings").put({
+          key: "deviceAccess",
+          value: { authorizedAt: "2026-08-22T00:00:00.000Z", expiresAt: "2026-08-22T00:01:00.000Z" },
+        });
+        transaction.oncomplete = () => { open.result.close(); resolve(); };
+        transaction.onerror = () => reject(transaction.error);
+      };
+    });
+  });
+}
+
+test("installs the meeting notebook shell and enforces offline authorization", async ({ browser, context, page }) => {
+  const meeting = offlineMeeting();
+  await openCatalog(page, [meeting]);
 
   const manifestLink = page.locator('link[rel="manifest"]');
   await expect(manifestLink).toHaveCount(1);
@@ -30,8 +51,7 @@ test("installs the meeting notebook shell and starts it offline", async ({ conte
   ]);
 
   const catalogHeading = page.getByRole("heading", { name: "会议本", exact: true });
-  const configurationHeading = page.getByRole("heading", { name: "需要配置云端服务", exact: true });
-  await expect(catalogHeading.or(configurationHeading)).toBeVisible();
+  await expect(page.getByText(meeting.title, { exact: true })).toBeVisible();
   await page.evaluate(() => navigator.serviceWorker.ready);
 
   const cachedUrls = await page.evaluate(async () => {
@@ -42,14 +62,30 @@ test("installs the meeting notebook shell and starts it offline", async ({ conte
     return urls.flat();
   });
   expect(cachedUrls.some((url) => new URL(url).pathname.startsWith("/api/"))).toBe(false);
+  expect(cachedUrls.some((url) => new URL(url).origin === supabaseOrigin)).toBe(false);
 
+  await removeSupabaseRoutes(page);
   await context.setOffline(true);
   await page.reload();
 
-  await expect(catalogHeading.or(configurationHeading)).toBeVisible();
-  if (await configurationHeading.isVisible()) {
-    await expect(page.getByText("请先配置 Supabase 后再启动会议本。", { exact: true })).toBeVisible();
-  } else {
-    await expect(page.getByRole("button", { name: "新建会议", exact: true })).toBeVisible();
-  }
+  await expect(catalogHeading).toBeVisible();
+  await expect(page.getByText(meeting.title, { exact: true })).toBeVisible();
+
+  await expireDeviceMarker(page);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "离线解锁需要登录" })).toBeVisible();
+  await expect(catalogHeading).toHaveCount(0);
+
+  const freshContext = await browser.newContext();
+  const freshPage = await freshContext.newPage();
+  await installSupabaseRoutes(freshPage);
+  await freshPage.goto("/");
+  await expect(freshPage.getByRole("heading", { name: "登录会议本" })).toBeVisible();
+  await freshPage.evaluate(() => navigator.serviceWorker.ready);
+  await removeSupabaseRoutes(freshPage);
+  await freshContext.setOffline(true);
+  await freshPage.reload();
+  await expect(freshPage.getByRole("heading", { name: "登录会议本" })).toBeVisible();
+  await expect(freshPage.getByRole("heading", { name: "会议本", exact: true })).toHaveCount(0);
+  await freshContext.close();
 });

@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { App } from "../../src/app/App.js";
@@ -31,6 +31,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 afterEach(async () => {
+  vi.useRealTimers();
   await new Promise((resolve) => setTimeout(resolve, 0));
   await Promise.all(repositories.splice(0).map((item) => item.deleteDatabase()));
 });
@@ -50,6 +51,16 @@ describe("App session gate", () => {
     expect(screen.getByRole("heading", { name: "需要配置云端服务" })).toBeVisible();
     expect(screen.getByText("请先配置 Supabase 后再启动会议本。")).toBeVisible();
     expect(screen.queryByText(/SUPABASE_CONFIGURATION_REQUIRED|https?:\/\//)).not.toBeInTheDocument();
+  });
+
+  test("shows a distinct safe startup panel for non-configuration failures", () => {
+    const retry = vi.fn();
+    render(<App startupError onStartupRetry={retry} />);
+
+    expect(screen.getByRole("heading", { name: "无法启动会议本" })).toBeVisible();
+    expect(screen.queryByText(/SUPABASE_CONFIGURATION_REQUIRED|private-value|https?:\/\//)).not.toBeInTheDocument();
+    screen.getByRole("button", { name: "重试" }).click();
+    expect(retry).toHaveBeenCalledOnce();
   });
 
   test("authorizes a successful session and enters the meeting catalog", async () => {
@@ -78,6 +89,24 @@ describe("App session gate", () => {
     await expired.authorizeDevice(now, "2026-08-01T00:00:00.000Z");
     render(<App repository={expired} auth={api({ me: vi.fn().mockRejectedValue(new AuthNetworkError()) })} synchronizer={synchronizer()} now={() => now} />);
     await screen.findByRole("heading", { name: "离线解锁需要登录" });
+  });
+
+  test("locks an open offline catalog when its device authorization expires", async () => {
+    let currentNow = new Date("2026-08-21T00:00:00.000Z");
+    const expiresAt = "2026-08-21T00:01:00.000Z";
+    const catalog = repository();
+    render(<App repository={catalog} auth={api({ me: vi.fn().mockResolvedValue({ id: "owner", sessionExpiresAt: expiresAt }) })} synchronizer={synchronizer()} now={() => currentNow.toISOString()} />);
+    await screen.findByRole("heading", { name: "会议本" });
+
+    vi.useFakeTimers();
+    act(() => window.dispatchEvent(new Event("offline")));
+    currentNow = new Date(expiresAt);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+
+    expect(screen.getByRole("heading", { name: "离线解锁需要登录" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "会议本" })).not.toBeInTheDocument();
   });
 
   test("does not unlock local catalog for HTTP or malformed session failures", async () => {
@@ -277,6 +306,26 @@ describe("App session gate", () => {
     loggingOut.resolve();
 
     await screen.findByRole("heading", { name: "登录会议本" });
+  });
+
+  test("does not enter login when clearing local access fails and allows a safe retry", async () => {
+    const user = userEvent.setup();
+    const catalog = repository();
+    const clear = vi.spyOn(catalog, "clearDeviceAccess").mockRejectedValueOnce(new Error("private-value"));
+    const auth = api();
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
+    await screen.findByRole("heading", { name: "会议本" });
+
+    await user.click(screen.getByRole("button", { name: "退出" }));
+    await screen.findByRole("heading", { name: "无法安全退出" });
+    expect(screen.queryByRole("heading", { name: "登录会议本" })).not.toBeInTheDocument();
+    expect(screen.queryByText("private-value")).not.toBeInTheDocument();
+    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "重试退出" }));
+    await screen.findByRole("heading", { name: "登录会议本" });
+    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(false);
+    expect(clear).toHaveBeenCalledTimes(2);
   });
 
   test("keeps an explicit logout closed across online events even when logout fails", async () => {

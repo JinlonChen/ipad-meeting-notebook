@@ -280,9 +280,13 @@ export class MeetingCatalogRepository {
   }
 
   async hasDeviceAccess(now: string): Promise<boolean> {
+    return (await this.validDeviceAccess(now)) !== null;
+  }
+
+  async validDeviceAccess(now: string): Promise<DeviceAccess | null> {
     const setting = await this.db.settings.get("deviceAccess");
     const access = DeviceAccessSchema.safeParse(setting?.value);
-    return access.success && timestamp(now) < timestamp(access.data.expiresAt);
+    return access.success && timestamp(now) < timestamp(access.data.expiresAt) ? access.data : null;
   }
 
   async clearDeviceAccess(expected?: DeviceAccess): Promise<void> {

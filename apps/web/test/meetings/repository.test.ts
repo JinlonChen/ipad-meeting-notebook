@@ -130,8 +130,10 @@ describe("MeetingCatalogRepository", () => {
   test("keeps catalog data on logout while dropping an expired or cleared device marker", async () => {
     const catalog = repository();
     const meeting = await catalog.create("Offline", null, now);
-    await catalog.authorizeDevice("2026-09-20T00:00:00.000Z", now);
+    const access = await catalog.authorizeDevice("2026-09-20T00:00:00.000Z", now);
+    await expect(catalog.validDeviceAccess("2026-08-22T00:00:00.000Z")).resolves.toEqual(access);
     await expect(catalog.hasDeviceAccess("2026-08-22T00:00:00.000Z")).resolves.toBe(true);
+    await expect(catalog.validDeviceAccess("2026-09-20T00:00:00.000Z")).resolves.toBeNull();
     await expect(catalog.hasDeviceAccess("2026-09-20T00:00:00.000Z")).resolves.toBe(false);
 
     await catalog.clearDeviceAccess();

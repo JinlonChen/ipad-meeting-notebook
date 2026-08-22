@@ -1,20 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function openCatalog(page: Page): Promise<void> {
-  await page.route("**/api/**", async (route) => {
-    const url = new URL(route.request().url());
-    if (url.pathname === "/api/auth/me") {
-      await route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify({ id: "owner", sessionExpiresAt: "2099-01-01T00:00:00.000Z" }),
-      });
-      return;
-    }
-    await route.fulfill({ contentType: "application/json", body: "[]" });
-  });
-  await page.goto("/");
-  await expect(page.getByRole("heading", { name: "会议本", exact: true })).toBeVisible();
-}
+import { openCatalog } from "./supabase-fixture.js";
 
 async function activeControl(page: Page): Promise<{ label: string; inRail: boolean; left: number; right: number }> {
   return page.evaluate(() => {
