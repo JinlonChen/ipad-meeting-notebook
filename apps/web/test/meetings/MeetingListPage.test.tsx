@@ -225,6 +225,61 @@ describe("MeetingListPage", () => {
     await screen.findByText("已同步");
   });
 
+  test("reports a rejected automatic sync as locally saved and clears it after automatic recovery", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    const refresh = vi.fn().mockResolvedValue({ state: "idle" as const });
+    const scheduleRefresh = vi.fn()
+      .mockRejectedValueOnce(new Error("network unavailable"))
+      .mockImplementationOnce(async () => {
+        await acknowledgePending(repository);
+        return { state: "idle" as const };
+      });
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={() => now} online /></MemoryRouter>);
+    await screen.findByText("已同步");
+
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    await user.type(screen.getByLabelText("分类名称"), "已保存未同步");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("修改已保存在本机，自动同步失败，将稍后重试。");
+    expect(screen.queryByText("操作未完成，请重试。")).not.toBeInTheDocument();
+    await expect(repository.pendingOperations()).resolves.toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    await user.type(screen.getByLabelText("分类名称"), "触发自动恢复");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+
+    await waitFor(() => expect(scheduleRefresh).toHaveBeenCalledTimes(2));
+    await screen.findByText("已同步");
+    expect(screen.queryByText("修改已保存在本机，自动同步失败，将稍后重试。")).not.toBeInTheDocument();
+    await expect(repository.pendingOperations()).resolves.toEqual([]);
+  });
+
+  test("clears a rejected automatic sync error after a successful manual retry", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    const refresh = vi.fn()
+      .mockResolvedValueOnce({ state: "idle" as const })
+      .mockImplementationOnce(async () => {
+        await acknowledgePending(repository);
+        return { state: "idle" as const };
+      });
+    const scheduleRefresh = vi.fn().mockRejectedValueOnce(new Error("network unavailable"));
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={() => now} online /></MemoryRouter>);
+    await screen.findByText("已同步");
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    await user.type(screen.getByLabelText("分类名称"), "等待手动同步");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+    await screen.findByText("修改已保存在本机，自动同步失败，将稍后重试。");
+
+    await user.click(screen.getByRole("button", { name: "同步会议" }));
+
+    await screen.findByText("已同步");
+    expect(screen.queryByText("修改已保存在本机，自动同步失败，将稍后重试。")).not.toBeInTheDocument();
+    await expect(repository.pendingOperations()).resolves.toEqual([]);
+  });
+
   test("keeps the real pending count after automatic sync errors and allows manual retry", async () => {
     const user = userEvent.setup();
     const repository = catalog();

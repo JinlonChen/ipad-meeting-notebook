@@ -72,6 +72,7 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
   const [actionMeeting, setActionMeeting] = useState<string | null>(null);
   const [pendingOperation, setPendingOperation] = useState<string | null>(null);
   const [operationError, setOperationError] = useState("");
+  const [autoSyncError, setAutoSyncError] = useState("");
   const [confirmationError, setConfirmationError] = useState("");
   const [pendingStatus, setPendingStatus] = useState<PendingStatus | null>(null);
   const [pendingStatusKnown, setPendingStatusKnown] = useState(false);
@@ -257,6 +258,7 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
   const synchronizeAfterMutation = useCallback(() => {
     if (!online || !mounted.current) return;
     setSyncState("syncing");
+    setAutoSyncError("");
     void scheduleRefresh()
       .then(async (result) => {
         if (mounted.current) setSyncState(result.state);
@@ -266,7 +268,7 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
       .catch(() => {
         if (mounted.current) {
           setSyncState("error");
-          setOperationError("操作未完成，请重试。");
+          setAutoSyncError("修改已保存在本机，自动同步失败，将稍后重试。");
           void reload().catch(() => undefined);
         }
       });
@@ -330,6 +332,7 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
       const result = await refresh();
       if (!mounted.current) return;
       setSyncState(result.state);
+      if (result.state === "idle") setAutoSyncError("");
       await reload();
     } catch {
       if (mounted.current) { setSyncState("error"); setOperationError("操作未完成，请重试。"); }
@@ -390,6 +393,7 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
     return "已同步";
   }
   const emptyText = search ? "没有匹配的会议" : filter === "trashed" ? "废纸篓为空" : filter !== "all" ? "此分类暂无会议" : "还没有会议";
+  const visibleOperationError = operationError || autoSyncError;
 
   return <><main className="catalog-shell" data-layout={layout} data-drawer={railOpen ? "open" : "closed"} inert={modalOpen}>
     <header className="catalog-topbar">
@@ -414,7 +418,7 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
     {railOpen && <button className="drawer-scrim" aria-label="关闭分类抽屉" onClick={() => setRailOpen(false)} />}
     <section className="meeting-panel">
       <div className="meeting-toolbar"><label className="search-field"><Search size={17} /><input type="search" aria-label="搜索会议" placeholder="搜索会议" value={search} onChange={(event) => setSearch(event.target.value)} /></label><button className="primary-button" onClick={(event) => openDialog({ kind: "meeting" }, event.currentTarget)}><Plus size={17} />新建会议</button></div>
-      <p className="operation-error" role={operationError ? "alert" : undefined} aria-live="polite">{operationError}</p>
+      <p className="operation-error" role={visibleOperationError ? "alert" : undefined} aria-live="polite">{visibleOperationError}</p>
       <div className="list-heading"><h2>{filter === "all" ? "全部会议" : filter === "unfiled" ? "未分类" : filter === "trashed" ? "废纸篓" : activeFolder?.name ?? "分类"}</h2><span>{shown.length} 项</span></div>
       {loading ? <p className="list-message" role="status">正在载入会议...</p> : shown.length === 0 ? <p className="list-message">{emptyText}</p> : <ul className="meeting-list">{shown.map((meeting) => <li key={meeting.id} className="meeting-row"><button className="meeting-main" onClick={() => navigate(`/meetings/${meeting.id}`)}><span className="meeting-title">{meeting.title}</span><span className="meeting-meta">更新于 {dateTime(meeting.updatedAt)}{duration(meeting) ? ` · ${duration(meeting)}` : ""}</span></button><span className={`status-label status-${meeting.status}`}>{statusLabel(meeting.status)}</span><button ref={actionMeeting === meeting.id ? actionTrigger : undefined} className="icon-button" aria-label={`会议操作 ${meeting.title}`} title={`会议操作 ${meeting.title}`} aria-haspopup="menu" aria-expanded={actionMeeting === meeting.id} aria-controls={`meeting-menu-${meeting.id}`} onClick={(event) => { actionTrigger.current = event.currentTarget; if (actionMeeting === meeting.id) closeMenu(); else setActionMeeting(meeting.id); }}><MoreHorizontal size={18} /></button>{actionMeeting === meeting.id && <div ref={menu} id={`meeting-menu-${meeting.id}`} className="row-menu" role="menu"><button ref={(node) => { menuItems.current[0] = node; }} role="menuitem" disabled={pendingOperation === `meeting:${meeting.id}`} onClick={() => { openDialog({ kind: "renameMeeting", id: meeting.id, initial: meeting.title }, actionTrigger.current!); setActionMeeting(null); }}>重命名</button><button ref={(node) => { menuItems.current[1] = node; }} role="menuitem" disabled={pendingOperation === `meeting:${meeting.id}`} onClick={() => void changeMeetingStatus(meeting)}>{meeting.status === "trashed" ? "恢复" : "移至废纸篓"}</button></div>}</li>)}</ul>}
     </section>
