@@ -125,3 +125,44 @@ test("landscape rail stays semantic, focusable, and separate from meeting conten
   await expect(physicalRail).not.toHaveAttribute("aria-hidden", "true");
   await expect(createFolder).toBeFocused();
 });
+
+test("folder modal rotation falls back to the visible portrait drawer trigger", async ({ page }) => {
+  await page.setViewportSize({ width: 1133, height: 744 });
+  await openCatalog(page);
+  const createFolder = page.getByRole("button", { name: "新建分类" });
+  await createFolder.click();
+  const dialog = page.getByRole("dialog", { name: "新建分类" });
+  const input = page.getByRole("textbox", { name: "分类名称" });
+  await expect(dialog).toHaveAttribute("aria-modal", "true");
+  await expect(input).toBeFocused();
+
+  await page.setViewportSize({ width: 744, height: 1133 });
+  await expect(page.getByRole("main")).toHaveAttribute("data-layout", "portrait");
+  await expect(page.locator(".folder-rail")).toHaveAttribute("inert", "");
+  await expect(dialog).toBeVisible();
+  await expect(input).toBeFocused();
+
+  await page.getByRole("button", { name: "取消" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "打开分类" })).toBeFocused();
+});
+
+test("rotation never steals focus from a folder modal whose drawer remains open", async ({ page }) => {
+  await page.setViewportSize({ width: 744, height: 1133 });
+  await openCatalog(page);
+  await page.getByRole("button", { name: "打开分类" }).click();
+  const createFolder = page.getByRole("button", { name: "新建分类" });
+  await page.setViewportSize({ width: 1133, height: 744 });
+  await expect(createFolder).toBeFocused();
+  await createFolder.click();
+  const input = page.getByRole("textbox", { name: "分类名称" });
+  await expect(input).toBeFocused();
+
+  await page.setViewportSize({ width: 744, height: 1133 });
+  await expect(page.getByRole("main")).toHaveAttribute("data-layout", "portrait");
+  await expect(page.getByRole("dialog", { name: "新建分类" })).toBeVisible();
+  await expect(input).toBeFocused();
+
+  await page.getByRole("button", { name: "取消" }).click();
+  await expect(createFolder).toBeFocused();
+});

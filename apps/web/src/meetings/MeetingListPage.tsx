@@ -65,6 +65,15 @@ function conflictActionLabel(kind: NonNullable<PendingStatus["conflict"]>["kind"
   })[kind];
 }
 
+function canRestoreFocus(target: HTMLElement | null): target is HTMLElement {
+  if (!target?.isConnected || target.matches(":disabled") || target.closest("[inert], [aria-hidden='true']")) return false;
+  for (let current: HTMLElement | null = target; current; current = current.parentElement) {
+    const style = window.getComputedStyle(current);
+    if (current.hidden || style.display === "none" || style.visibility === "hidden") return false;
+  }
+  return true;
+}
+
 export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh, now = () => new Date().toISOString(), online, onLogout }: Props) {
   const navigate = useNavigate();
   const [railOpen, setRailOpen] = useState(false);
@@ -107,9 +116,12 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
   const menuItems = useRef<Array<HTMLButtonElement | null>>([]);
   const modal = useRef<HTMLElement>(null);
   const lastFocus = useRef<HTMLElement | null>(null);
+  const restoreFocusAfterModal = useRef(false);
   const syncTrigger = useRef<HTMLButtonElement>(null);
   const setModal = useCallback((element: HTMLElement | null) => { modal.current = element; }, []);
   const modalOpen = dialog !== null || confirmation !== null || conflictOpen;
+  const modalOpenRef = useRef(modalOpen);
+  modalOpenRef.current = modalOpen;
   const drawerHidden = layout === "portrait" && !railOpen;
 
   useEffect(() => {
@@ -192,12 +204,20 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
   const dismissMenu = useCallback(() => setActionMeeting(null), []);
 
   const closeModal = useCallback(() => {
+    restoreFocusAfterModal.current = true;
     setDialog(null);
     setConfirmation(null);
     setConflictOpen(false);
     setConflictError("");
-    queueMicrotask(() => lastFocus.current?.focus());
   }, []);
+
+  useEffect(() => {
+    if (modalOpen || !restoreFocusAfterModal.current) return;
+    restoreFocusAfterModal.current = false;
+    const fallback = layout === "portrait" && !railOpen ? railTrigger.current : null;
+    const target = canRestoreFocus(lastFocus.current) ? lastFocus.current : fallback;
+    if (canRestoreFocus(target)) target.focus();
+  }, [layout, modalOpen, railOpen]);
 
   const openDialog = useCallback((nextDialog: NonNullable<Dialog>, trigger: HTMLElement) => {
     lastFocus.current = trigger;
@@ -223,7 +243,7 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
   }, [layout]);
 
   useEffect(() => {
-    if (layout !== "portrait") return;
+    if (modalOpenRef.current || layout !== "portrait") return;
     if (railOpen) queueMicrotask(() => railClose.current?.focus());
     else if (restoreRailTriggerAfterLayout.current) {
       restoreRailTriggerAfterLayout.current = false;

@@ -988,6 +988,59 @@ describe("MeetingListPage", () => {
     expect(dialog).not.toBeInTheDocument();
   });
 
+  test.each([
+    { triggerName: "编辑分类 旋转分类", modalRole: "dialog" as const, modalName: "重命名" },
+    { triggerName: "删除分类 旋转分类", modalRole: "alertdialog" as const, modalName: "删除分类？" },
+  ])("falls back from the rotated $modalName folder modal to the portrait drawer trigger", async ({ triggerName, modalRole, modalName }) => {
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 1133 }, innerHeight: { configurable: true, value: 744 } });
+    const user = userEvent.setup();
+    const repository = catalog();
+    await repository.createFolder("旋转分类", now);
+    renderPage(repository);
+    const source = await screen.findByRole("button", { name: triggerName });
+    await user.click(source);
+    const modal = screen.getByRole(modalRole, { name: modalName });
+    expect(modal).toHaveAttribute("aria-modal", "true");
+    const modalFocus = document.activeElement;
+
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 744 }, innerHeight: { configurable: true, value: 1133 } });
+    window.dispatchEvent(new Event("resize"));
+    await waitFor(() => expect(screen.getByRole("main")).toHaveAttribute("data-layout", "portrait"));
+    expect(modal).toBeVisible();
+    expect(document.activeElement).toBe(modalFocus);
+
+    await user.click(screen.getByRole("button", { name: "取消" }));
+    expect(modal).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "打开分类" })).toHaveFocus();
+    expect(source).not.toHaveFocus();
+
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 1133 }, innerHeight: { configurable: true, value: 744 } });
+    window.dispatchEvent(new Event("resize"));
+    await waitFor(() => expect(screen.getByRole("main")).toHaveAttribute("data-layout", "landscape"));
+  });
+
+  test("keeps a visible meeting modal trigger as the focus target across rotation", async () => {
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 1133 }, innerHeight: { configurable: true, value: 744 } });
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("还没有会议");
+    const trigger = screen.getByRole("button", { name: "新建会议" });
+    await user.click(trigger);
+    const input = screen.getByRole("textbox", { name: "会议名称" });
+    expect(input).toHaveFocus();
+
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 744 }, innerHeight: { configurable: true, value: 1133 } });
+    window.dispatchEvent(new Event("resize"));
+    await waitFor(() => expect(screen.getByRole("main")).toHaveAttribute("data-layout", "portrait"));
+    expect(input).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "取消" }));
+    expect(trigger).toHaveFocus();
+
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 1133 }, innerHeight: { configurable: true, value: 744 } });
+    window.dispatchEvent(new Event("resize"));
+    await waitFor(() => expect(screen.getByRole("main")).toHaveAttribute("data-layout", "landscape"));
+  });
+
   test("returns focus to the dialog trigger after successful creation", async () => {
     const user = userEvent.setup();
     renderPage();
@@ -1068,5 +1121,27 @@ describe("MeetingListPage", () => {
     } finally {
       Object.defineProperty(window, "matchMedia", { configurable: true, value: previous });
     }
+  });
+
+  test("does not move focus out of an open folder modal when an open rail rotates to portrait", async () => {
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 744 }, innerHeight: { configurable: true, value: 1133 } });
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("还没有会议");
+    await user.click(screen.getByRole("button", { name: "打开分类" }));
+
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 1133 }, innerHeight: { configurable: true, value: 744 } });
+    window.dispatchEvent(new Event("resize"));
+    const createFolder = screen.getByRole("button", { name: "新建分类" });
+    await waitFor(() => expect(createFolder).toHaveFocus());
+    await user.click(createFolder);
+    const input = screen.getByRole("textbox", { name: "分类名称" });
+    expect(input).toHaveFocus();
+
+    Object.defineProperties(window, { innerWidth: { configurable: true, value: 744 }, innerHeight: { configurable: true, value: 1133 } });
+    window.dispatchEvent(new Event("resize"));
+    await waitFor(() => expect(screen.getByRole("main")).toHaveAttribute("data-layout", "portrait"));
+    expect(screen.getByRole("dialog", { name: "新建分类" })).toBeVisible();
+    expect(input).toHaveFocus();
   });
 });
