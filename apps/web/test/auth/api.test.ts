@@ -128,6 +128,14 @@ describe("supabaseAuthApi", () => {
     await expect(api.login("person@example.com", "not-retained-password")).rejects.toEqual(new AuthApiError(401, "AUTH_REQUIRED"));
     await expect(api.logout()).rejects.toEqual(new AuthApiError(500, "REQUEST_FAILED"));
   });
+
+  test.each(["session_expired", "no_authorization"])("maps 400 %s auth errors to AUTH_REQUIRED", async (code) => {
+    const api = supabaseAuthApi(client({
+      signInWithPassword: vi.fn().mockResolvedValue({ data: {}, error: { status: 400, code, message: "raw auth details" } }),
+    }));
+
+    await expect(api.login("person@example.com", "not-retained-password")).rejects.toEqual(new AuthApiError(401, "AUTH_REQUIRED"));
+  });
 });
 
 describe("legacyHttpAuthApi", () => {

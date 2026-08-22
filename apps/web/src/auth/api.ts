@@ -28,9 +28,11 @@ const authRequiredCodes = new Set([
   "bad_jwt",
   "invalid_credentials",
   "invalid_jwt",
+  "no_authorization",
   "refresh_token_already_used",
   "refresh_token_not_found",
   "session_not_found",
+  "session_expired",
   "user_not_found",
 ]);
 const authRequiredNames = new Set(["AuthInvalidCredentialsError", "AuthSessionMissingError"]);
