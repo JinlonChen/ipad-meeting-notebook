@@ -144,6 +144,7 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
       .then(async (result) => {
         if (!active || !mounted.current) return;
         setSyncState(result.state);
+        if (result.state === "idle") setAutoSyncError("");
         try { await reload(); }
         catch { if (active && mounted.current) setSyncState("error"); }
       })
@@ -366,6 +367,7 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
       const result = await refresh();
       if (!mounted.current) return;
       setSyncState(result.state);
+      if (result.state === "idle") setAutoSyncError("");
       if (result.state === "conflict") {
         const latestPendingStatus = await reload();
         if (mounted.current && latestPendingStatus !== undefined) setResolvedConflictSequence(null);

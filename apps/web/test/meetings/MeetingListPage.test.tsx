@@ -280,6 +280,115 @@ describe("MeetingListPage", () => {
     expect(screen.getByText("修改已保存在本机，自动同步失败，将稍后重试。")).toBeVisible();
   });
 
+  test("clears the saved-locally warning when reconnect synchronization completes", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    const refresh = vi.fn()
+      .mockResolvedValueOnce({ state: "idle" as const })
+      .mockImplementationOnce(async () => {
+        await acknowledgePending(repository);
+        return { state: "idle" as const };
+      });
+    const scheduleRefresh = vi.fn().mockRejectedValueOnce(new Error("network unavailable"));
+    const page = (online: boolean) => <MemoryRouter><MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={() => now} online={online} /></MemoryRouter>;
+    const rendered = render(page(true));
+    await screen.findByText("已同步");
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    await user.type(screen.getByLabelText("分类名称"), "等待重新联网");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+    await screen.findByText("修改已保存在本机，自动同步失败，将稍后重试。");
+
+    rendered.rerender(page(false));
+    await screen.findByText("离线，1 项待同步");
+    rendered.rerender(page(true));
+
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+    await screen.findByText("已同步");
+    expect(screen.queryByText("修改已保存在本机，自动同步失败，将稍后重试。")).not.toBeInTheDocument();
+    await expect(repository.pendingOperations()).resolves.toEqual([]);
+  });
+
+  test.each(["error", "conflict", "reject"] as const)("keeps the saved-locally warning when reconnect synchronization ends with %s", async (outcome) => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    const refresh = vi.fn().mockResolvedValueOnce({ state: "idle" as const });
+    if (outcome === "reject") refresh.mockRejectedValueOnce(new Error("still offline"));
+    else refresh.mockResolvedValueOnce({ state: outcome });
+    const scheduleRefresh = vi.fn().mockRejectedValueOnce(new Error("network unavailable"));
+    const page = (online: boolean) => <MemoryRouter><MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={() => now} online={online} /></MemoryRouter>;
+    const rendered = render(page(true));
+    await screen.findByText("已同步");
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    await user.type(screen.getByLabelText("分类名称"), `重新联网 ${outcome}`);
+    await user.click(screen.getByRole("button", { name: "创建" }));
+    await screen.findByText("修改已保存在本机，自动同步失败，将稍后重试。");
+
+    rendered.rerender(page(false));
+    rendered.rerender(page(true));
+
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("修改已保存在本机，自动同步失败，将稍后重试。")).toBeVisible();
+  });
+
+  test("reconnect recovery preserves an unrelated local operation error", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    const meeting = await repository.create("保留联网操作错误", null, now);
+    await acknowledgePending(repository);
+    const refresh = vi.fn()
+      .mockResolvedValueOnce({ state: "idle" as const })
+      .mockImplementationOnce(async () => {
+        await acknowledgePending(repository);
+        return { state: "idle" as const };
+      });
+    const scheduleRefresh = vi.fn().mockRejectedValueOnce(new Error("network unavailable"));
+    vi.spyOn(repository, "trash").mockRejectedValueOnce(new Error("local transaction failed"));
+    const page = (online: boolean) => <MemoryRouter><MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={() => now} online={online} /></MemoryRouter>;
+    const rendered = render(page(true));
+    await screen.findByText(meeting.title);
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    await user.type(screen.getByLabelText("分类名称"), "联网恢复操作错误");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+    await screen.findByText("修改已保存在本机，自动同步失败，将稍后重试。");
+    await user.click(screen.getByRole("button", { name: `会议操作 ${meeting.title}` }));
+    await user.click(screen.getByRole("menuitem", { name: "移至废纸篓" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("操作未完成，请重试。");
+
+    rendered.rerender(page(false));
+    rendered.rerender(page(true));
+
+    await screen.findByText("已同步");
+    expect(screen.getByRole("alert")).toHaveTextContent("操作未完成，请重试。");
+  });
+
+  test("reconnect recovery preserves an unrelated manual sync error", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    const refresh = vi.fn()
+      .mockResolvedValueOnce({ state: "idle" as const })
+      .mockRejectedValueOnce(new Error("manual sync failed"))
+      .mockImplementationOnce(async () => {
+        await acknowledgePending(repository);
+        return { state: "idle" as const };
+      });
+    const scheduleRefresh = vi.fn().mockRejectedValueOnce(new Error("network unavailable"));
+    const page = (online: boolean) => <MemoryRouter><MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={() => now} online={online} /></MemoryRouter>;
+    const rendered = render(page(true));
+    await screen.findByText("已同步");
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    await user.type(screen.getByLabelText("分类名称"), "联网恢复手动错误");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+    await screen.findByText("修改已保存在本机，自动同步失败，将稍后重试。");
+    await user.click(screen.getByRole("button", { name: "同步会议" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("操作未完成，请重试。");
+
+    rendered.rerender(page(false));
+    rendered.rerender(page(true));
+
+    await screen.findByText("已同步");
+    expect(screen.getByRole("alert")).toHaveTextContent("操作未完成，请重试。");
+  });
+
   test("clears a rejected automatic sync error after a successful manual retry", async () => {
     const user = userEvent.setup();
     const repository = catalog();
@@ -472,6 +581,66 @@ describe("MeetingListPage", () => {
 
     await waitFor(() => expect(dialog).toHaveTextContent("冲突处理失败，请重试。"));
     expect(screen.getByText("修改已保存在本机，自动同步失败，将稍后重试。")).toBeInTheDocument();
+  });
+
+  test("clears the saved-locally warning when conflict recovery completes synchronization", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    await repository.create("冲突恢复自动错误", null, now);
+    const operation = (await repository.pendingOperations())[0]!;
+    await repository.syncRecordFailure(operation, "CONFLICT");
+    const refresh = vi.fn()
+      .mockResolvedValueOnce({ state: "conflict" as const })
+      .mockImplementationOnce(async () => {
+        await acknowledgePending(repository);
+        return { state: "idle" as const };
+      });
+    const scheduleRefresh = vi.fn().mockRejectedValueOnce(new Error("network unavailable"));
+    render(<MemoryRouter><MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={() => now} online /></MemoryRouter>);
+    const conflictTrigger = await screen.findByRole("button", { name: "处理冲突" });
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    await user.type(screen.getByLabelText("分类名称"), "冲突恢复待同步");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+    await screen.findByText("修改已保存在本机，自动同步失败，将稍后重试。");
+
+    await user.click(conflictTrigger);
+    await user.click(screen.getByRole("button", { name: "放弃本地修改" }));
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "处理同步冲突" })).not.toBeInTheDocument());
+    expect(screen.queryByText("修改已保存在本机，自动同步失败，将稍后重试。")).not.toBeInTheDocument();
+    await expect(repository.pendingOperations()).resolves.toEqual([]);
+  });
+
+  test("reconnect recovery preserves a conflict-resolution error", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    await repository.create("保留联网冲突错误", null, now);
+    const operation = (await repository.pendingOperations())[0]!;
+    await repository.syncRecordFailure(operation, "CONFLICT");
+    const refresh = vi.fn()
+      .mockResolvedValueOnce({ state: "conflict" as const })
+      .mockResolvedValueOnce({ state: "idle" as const });
+    const scheduleRefresh = vi.fn().mockRejectedValueOnce(new Error("network unavailable"));
+    vi.spyOn(repository, "resolveConflict").mockRejectedValueOnce(new Error("transaction failed"));
+    const page = (online: boolean) => <MemoryRouter><MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={() => now} online={online} /></MemoryRouter>;
+    const rendered = render(page(true));
+    const conflictTrigger = await screen.findByRole("button", { name: "处理冲突" });
+    await user.click(screen.getByRole("button", { name: "新建分类" }));
+    await user.type(screen.getByLabelText("分类名称"), "联网恢复冲突错误");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+    await screen.findByText("修改已保存在本机，自动同步失败，将稍后重试。");
+    await user.click(conflictTrigger);
+    const dialog = screen.getByRole("alertdialog", { name: "处理同步冲突" });
+    await user.click(screen.getByRole("button", { name: "放弃本地修改" }));
+    await waitFor(() => expect(dialog).toHaveTextContent("冲突处理失败，请重试。"));
+
+    rendered.rerender(page(false));
+    rendered.rerender(page(true));
+
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+    expect(dialog).toHaveTextContent("冲突处理失败，请重试。");
+    await user.click(screen.getByRole("button", { name: "取消" }));
+    expect(screen.queryByText("修改已保存在本机，自动同步失败，将稍后重试。")).not.toBeInTheDocument();
   });
 
   test("keeps a resolved conflict in sync-retry mode when reloading the pending summary fails", async () => {
