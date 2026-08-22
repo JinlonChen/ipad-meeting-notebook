@@ -258,6 +258,30 @@ describe("MeetingCatalogSupabaseApi", () => {
     } });
   });
 
+  test("canonicalizes offset Postgres timestamps in an RPC row and preserves null timestamps", async () => {
+    const { client } = supabaseClient({ rpcResults: [{ data: { status: 200, meeting: {
+      ...meetingRow,
+      created_at: "2026-08-21T08:00:00+08:00",
+      updated_at: "2026-08-21T00:30:00+00:00",
+      started_at: "2026-08-21T02:00:00+01:30",
+      ended_at: null,
+      trashed_at: null,
+    } }, error: null }] });
+
+    await expect(new MeetingCatalogSupabaseApi(client).send(operations[0]!)).resolves.toEqual({ meeting: {
+      id,
+      title: "Planning",
+      folderId,
+      status: "draft",
+      startedAt: "2026-08-21T00:30:00.000Z",
+      endedAt: null,
+      createdAt: "2026-08-21T00:00:00.000Z",
+      updatedAt: "2026-08-21T00:30:00.000Z",
+      trashedAt: null,
+      syncVersion: 2,
+    } });
+  });
+
   test("pulls complete catalogs in deterministic server order and maps snake-case rows", async () => {
     const { client, queries } = supabaseClient({ tableResults: {
       folders: { data: [folderRow], error: null },
@@ -282,6 +306,31 @@ describe("MeetingCatalogSupabaseApi", () => {
       ["updated_at", { ascending: false }],
       ["id", { ascending: true }],
     ]);
+  });
+
+  test("canonicalizes offset Postgres timestamps across complete list responses", async () => {
+    const { client } = supabaseClient({ tableResults: {
+      folders: { data: [{
+        ...folderRow,
+        created_at: "2026-08-21T00:00:00+00:00",
+        updated_at: "2026-08-21T09:00:00+08:00",
+      }], error: null },
+      meetings: { data: [{
+        ...meetingRow,
+        created_at: "2026-08-21T00:00:00+00:00",
+        updated_at: "2026-08-21T09:00:00+08:00",
+      }], error: null },
+    } });
+    const api = new MeetingCatalogSupabaseApi(client);
+
+    await expect(api.listFolders()).resolves.toEqual([expect.objectContaining({
+      createdAt: "2026-08-21T00:00:00.000Z",
+      updatedAt: "2026-08-21T01:00:00.000Z",
+    })]);
+    await expect(api.listMeetings()).resolves.toEqual([expect.objectContaining({
+      createdAt: "2026-08-21T00:00:00.000Z",
+      updatedAt: "2026-08-21T01:00:00.000Z",
+    })]);
   });
 
   test.each([
@@ -326,12 +375,22 @@ describe("MeetingCatalogSupabaseApi", () => {
   test.each([
     ["missing RPC data", { data: null, error: null }],
     ["malformed RPC status", { data: { status: "200", meeting: meetingRow }, error: null }],
+    ["RPC status below the HTTP range", { data: { status: 99, meeting: meetingRow }, error: null }],
+    ["RPC status above the HTTP range", { data: { status: 600, meeting: meetingRow }, error: null }],
     ["missing success entity", { data: { status: 200 }, error: null }],
     ["malformed success row", { data: { status: 200, meeting: { ...meetingRow, sync_version: -1 } }, error: null }],
   ])("rejects %s as a safe request failure", async (_label, result) => {
     const { client } = supabaseClient({ rpcResults: [result] });
 
     await expect(new MeetingCatalogSupabaseApi(client).send(operations[0]!)).rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
+  });
+
+  test("rejects a non-JSON outbox payload before calling the RPC", async () => {
+    const { client, rpc } = supabaseClient();
+    const operation = { ...operations[1]!, payload: { title: "Renamed", expectedSyncVersion: 0n } };
+
+    await expect(new MeetingCatalogSupabaseApi(client).send(operation)).rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
+    expect(rpc).not.toHaveBeenCalled();
   });
 
   test("rejects a malformed row without returning any part of a catalog response", async () => {
@@ -343,5 +402,16 @@ describe("MeetingCatalogSupabaseApi", () => {
 
     await expect(api.listFolders()).rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
     await expect(api.listMeetings()).rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
+  });
+
+  test.each([
+    ["timezone-less", "2026-08-21T00:00:00"],
+    ["invalid", "not-a-timestamp"],
+  ])("rejects %s Postgres timestamps instead of guessing a timezone", async (_label, createdAt) => {
+    const { client } = supabaseClient({ tableResults: {
+      folders: { data: [{ ...folderRow, created_at: createdAt }], error: null },
+    } });
+
+    await expect(new MeetingCatalogSupabaseApi(client).listFolders()).rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
   });
 });

@@ -2,7 +2,7 @@ import { CreateFolderInputSchema, CreateMeetingInputSchema, FolderMutationBodySc
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
-import type { Database, Json } from "../supabase/types.js";
+import type { Database } from "../supabase/types.js";
 import { CatalogApiError, type MeetingCatalogApi } from "./sync.js";
 import type { OutboxOperation } from "./local-db.js";
 
@@ -133,14 +133,24 @@ export class MeetingCatalogHttpApi implements MeetingCatalogApi {
 type SupabaseCatalogClient = Pick<SupabaseClient<Database>, "from" | "rpc">;
 
 const RpcResultSchema = z.object({
-  status: z.number().int(),
+  status: z.number().int().min(100).max(599),
   code: z.string().optional(),
   meeting: z.unknown().optional(),
   folder: z.unknown().optional(),
 }).strict();
+const OffsetIsoDateTimeSchema = z.iso.datetime({ offset: true });
+const JsonSchema = z.json();
 
 function record(input: unknown): Record<string, unknown> {
   return z.record(z.string(), z.unknown()).parse(input);
+}
+
+function canonicalTimestamp(input: unknown): string {
+  return new Date(OffsetIsoDateTimeSchema.parse(input)).toISOString();
+}
+
+function nullableCanonicalTimestamp(input: unknown): string | null {
+  return input === null ? null : canonicalTimestamp(input);
 }
 
 function contractFolder(row: unknown): Folder {
@@ -148,8 +158,8 @@ function contractFolder(row: unknown): Folder {
   return FolderSchema.parse({
     id: value.id,
     name: value.name,
-    createdAt: value.created_at,
-    updatedAt: value.updated_at,
+    createdAt: canonicalTimestamp(value.created_at),
+    updatedAt: canonicalTimestamp(value.updated_at),
     syncVersion: value.sync_version,
   });
 }
@@ -161,11 +171,11 @@ function contractMeeting(row: unknown): Meeting {
     title: value.title,
     folderId: value.folder_id,
     status: value.status,
-    startedAt: value.started_at,
-    endedAt: value.ended_at,
-    createdAt: value.created_at,
-    updatedAt: value.updated_at,
-    trashedAt: value.trashed_at,
+    startedAt: nullableCanonicalTimestamp(value.started_at),
+    endedAt: nullableCanonicalTimestamp(value.ended_at),
+    createdAt: canonicalTimestamp(value.created_at),
+    updatedAt: canonicalTimestamp(value.updated_at),
+    trashedAt: nullableCanonicalTimestamp(value.trashed_at),
     syncVersion: value.sync_version,
   });
 }
@@ -195,11 +205,12 @@ export class MeetingCatalogSupabaseApi implements MeetingCatalogApi {
 
   async send(operation: OutboxOperation): Promise<{ meeting?: Meeting; folder?: Folder }> {
     try {
+      const payload = JsonSchema.parse(operation.payload);
       const { data, error, status } = await this.client.rpc("apply_catalog_mutation", {
         p_operation_id: operation.id,
         p_kind: operation.kind,
         p_entity_id: operation.entityId,
-        p_payload: operation.payload as Json,
+        p_payload: payload,
       });
       if (error) throw supabaseFailure(error, status);
 
