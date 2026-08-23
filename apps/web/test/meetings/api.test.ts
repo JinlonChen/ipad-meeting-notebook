@@ -219,6 +219,41 @@ const operations = [
 ].map((operation) => ({ ...operation, createdAt: timestamp, attempts: 0, lastError: null }));
 
 describe("MeetingCatalogSupabaseApi", () => {
+  test("pulls an authenticated catalog snapshot through one exact RPC", async () => {
+    const { client, rpc } = supabaseClient({ rpcResults: [{
+      data: { status: 200, folders: [folderRow], meetings: [meetingRow] }, error: null,
+    }] });
+
+    await expect(new MeetingCatalogSupabaseApi(client).pull(folderRow.user_id)).resolves.toEqual({
+      folders: [{ id: folderId, name: "Work", createdAt: timestamp, updatedAt: timestamp, syncVersion: 1 }],
+      meetings: [{
+        id, title: "Planning", folderId, status: "draft", startedAt: null, endedAt: null,
+        createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2,
+      }],
+    });
+    expect(rpc).toHaveBeenCalledWith("get_catalog_snapshot", { p_expected_user_id: folderRow.user_id });
+  });
+
+  test("accepts an actor-asserted empty snapshot", async () => {
+    const { client } = supabaseClient({ rpcResults: [{ data: { status: 200, folders: [], meetings: [] }, error: null }] });
+    await expect(new MeetingCatalogSupabaseApi(client).pull(folderRow.user_id)).resolves.toEqual({ folders: [], meetings: [] });
+  });
+
+  test("maps snapshot actor changes to auth required without applying empty arrays", async () => {
+    const { client } = supabaseClient({ rpcResults: [{ data: { status: 401, code: "AUTH_CONTEXT_CHANGED" }, error: null }] });
+    await expect(new MeetingCatalogSupabaseApi(client).pull(folderRow.user_id)).rejects.toEqual(new CatalogApiError(401, "AUTH_REQUIRED"));
+  });
+
+  test.each([
+    ["missing meetings", { status: 200, folders: [] }],
+    ["malformed folders", { status: 200, folders: {}, meetings: [] }],
+    ["one corrupt meeting", { status: 200, folders: [folderRow], meetings: [meetingRow, { ...meetingRow, id: "invalid" }] }],
+    ["wrong owner", { status: 200, folders: [{ ...folderRow, user_id: "00000000-0000-4000-8000-00000000000b" }], meetings: [] }],
+  ])("rejects a %s snapshot atomically", async (_label, data) => {
+    const { client } = supabaseClient({ rpcResults: [{ data, error: null }] });
+    await expect(new MeetingCatalogSupabaseApi(client).pull(folderRow.user_id)).rejects.toEqual(expect.objectContaining({ code: expect.stringMatching(/AUTH_REQUIRED|REQUEST_FAILED/) }));
+  });
+
   test("sends every outbox operation through the mutation RPC with exact parameters", async () => {
     const { client, rpc } = supabaseClient({ rpcResults: operations.map((operation) => ({
       data: operation.kind === "folder.remove"
@@ -401,6 +436,15 @@ describe("MeetingCatalogSupabaseApi", () => {
     const operation = { ...operations[1]!, payload: { title: "Renamed", expectedSyncVersion: 0n } };
 
     await expect(new MeetingCatalogSupabaseApi(client).send(operation, folderRow.user_id)).rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  test.each([null, "0", 1.5, -1])("rejects corrupt expectedSyncVersion %s before RPC", async (expectedSyncVersion) => {
+    const { client, rpc } = supabaseClient();
+    const operation = { ...operations[1]!, payload: { title: "Renamed", expectedSyncVersion } };
+
+    await expect(new MeetingCatalogSupabaseApi(client).send(operation, folderRow.user_id))
+      .rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
     expect(rpc).not.toHaveBeenCalled();
   });
 

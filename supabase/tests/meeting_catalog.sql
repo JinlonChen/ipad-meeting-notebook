@@ -1,5 +1,5 @@
 begin;
-select plan(38);
+select plan(42);
 
 select has_table('public', 'folders', 'folders table exists');
 select has_table('public', 'meetings', 'meetings table exists');
@@ -37,6 +37,8 @@ select is((select count(*) from public.folders), 0::bigint, 'second user cannot 
 select is((select count(*) from public.meetings), 0::bigint, 'second user cannot read first user meetings');
 select throws_ok($$insert into public.folders (user_id, id, name, created_at, updated_at, sync_version) values ('00000000-0000-4000-8000-000000000102', '00000000-0000-4000-8000-000000000303', 'Nope', now(), now(), 0)$$, '42501', 'second user cannot directly insert folders');
 select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000205', 'meeting.rename', '00000000-0000-4000-8000-000000000302', '{"title":"Cross user","expectedSyncVersion":1}'::jsonb)->>'code'), 'MEETING_NOT_FOUND', 'cross-user mutation cannot find meeting');
+select is((public.get_catalog_snapshot('00000000-0000-4000-8000-000000000101')->>'code'), 'AUTH_CONTEXT_CHANGED', 'empty snapshot still rejects a changed actor');
+select is(jsonb_array_length(public.get_catalog_snapshot('00000000-0000-4000-8000-000000000102')->'folders'), 0, 'matching actor authenticates an empty snapshot');
 select is((public.apply_catalog_mutation('00000000-0000-4000-8000-000000000216', 'folder.create', '00000000-0000-4000-8000-000000000305', '{"id":"00000000-0000-4000-8000-000000000305","name":"Actor guard","clientCreatedAt":"2026-08-22T00:07:00Z"}'::jsonb, '00000000-0000-4000-8000-000000000101')->>'code'), 'AUTH_CONTEXT_CHANGED', 'changed JWT actor is rejected');
 select is((select count(*) from public.folders where id = '00000000-0000-4000-8000-000000000305'), 0::bigint, 'changed actor writes no entity');
 select is((public.apply_catalog_mutation('00000000-0000-4000-8000-000000000216', 'folder.create', '00000000-0000-4000-8000-000000000305', '{"id":"00000000-0000-4000-8000-000000000305","name":"Actor guard","clientCreatedAt":"2026-08-22T00:07:00Z"}'::jsonb, '00000000-0000-4000-8000-000000000102')->>'status')::int, 200, 'changed actor writes no replay before a valid retry');
@@ -58,6 +60,8 @@ select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000211'
 select is((select status from public.meetings where user_id = '00000000-0000-4000-8000-000000000101' and id = '00000000-0000-4000-8000-000000000304'), 'draft', 'restore uses retained status');
 select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000215', 'meeting.restore', '00000000-0000-4000-8000-000000000304', '{}'::jsonb)->>'status')::int, 200, 'restore without expected version is idempotent in target state');
 select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000212', 'meeting.rename', '00000000-0000-4000-8000-000000000304', '{"title":"Bad","expectedSyncVersion":"oops"}'::jsonb)->>'code'), 'INVALID_REQUEST', 'invalid version returns typed failure');
+select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000217', 'meeting.rename', '00000000-0000-4000-8000-000000000304', '{"title":"Null bypass","expectedSyncVersion":null}'::jsonb)->>'code'), 'INVALID_REQUEST', 'null expected version cannot become unconditional');
+select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000217', 'meeting.rename', '00000000-0000-4000-8000-000000000304', '{"title":"Null bypass","expectedSyncVersion":null}'::jsonb)->>'code'), 'INVALID_REQUEST', 'invalid null version response is replayed');
 
 select * from finish();
 rollback;

@@ -50,6 +50,13 @@ export type ApplyCatalogMutationResult = {
   folder?: FolderRow;
 };
 
+export type CatalogSnapshotResult = {
+  status: number;
+  code?: string;
+  folders?: FolderRow[];
+  meetings?: MeetingRow[];
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -85,6 +92,10 @@ export type Database = {
       apply_catalog_mutation: {
         Args: ApplyCatalogMutationArgs;
         Returns: ApplyCatalogMutationResult;
+      };
+      get_catalog_snapshot: {
+        Args: { p_expected_user_id: string };
+        Returns: CatalogSnapshotResult;
       };
     };
     Enums: { [_ in never]: never };

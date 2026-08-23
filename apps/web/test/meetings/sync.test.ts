@@ -713,6 +713,23 @@ describe("CatalogSync", () => {
     await expect(store.list({ includeTrashed: true })).resolves.toEqual([remoteMeeting]);
   });
 
+  test("refreshes from one authenticated snapshot when the API provides pull", async () => {
+    const store = await catalog();
+    catalogs.push(store);
+    const pull = vi.fn().mockResolvedValue({ folders: [], meetings: [] });
+    const client: MeetingCatalogApi = {
+      send: vi.fn(),
+      pull,
+      listFolders: vi.fn().mockRejectedValue(new Error("split pull must not run")),
+      listMeetings: vi.fn().mockRejectedValue(new Error("split pull must not run")),
+    };
+
+    await expect(new CatalogSync(store, client).refresh()).resolves.toEqual({ state: "idle" });
+    expect(pull).toHaveBeenCalledWith(userA);
+    expect(client.listFolders).not.toHaveBeenCalled();
+    expect(client.listMeetings).not.toHaveBeenCalled();
+  });
+
   test("keeps pull-in-flight local changes and does not revive a pending folder removal", async () => {
     const store = await catalog();
     catalogs.push(store);

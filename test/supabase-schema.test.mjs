@@ -71,3 +71,12 @@ test("conditional mutations compare sync_version in their atomic DML", () => {
   assert.match(source, /when unique_violation/);
   assert.match(source, /when foreign_key_violation/);
 });
+
+test("snapshot and conditional payloads authenticate their exact shape", () => {
+  const source = normalizedSql();
+  assert.match(source, /create or replace function public\.get_catalog_snapshot\(p_expected_user_id uuid\)/);
+  assert.match(source, /if v_user_id is distinct from p_expected_user_id then return jsonb_build_object\('status', 401, 'code', 'auth_context_changed'\)/);
+  assert.match(source, /grant execute on function public\.get_catalog_snapshot\(uuid\) to authenticated/);
+  assert.match(source, /jsonb_typeof\(v_payload->'expectedsyncversion'\) <> 'number'/);
+  assert.match(source, /v_payload->>'expectedsyncversion' !~ '\^\[0-9\]\+\$'/);
+});

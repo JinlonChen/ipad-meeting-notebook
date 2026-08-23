@@ -113,7 +113,7 @@ export class MeetingCatalogHttpApi implements MeetingCatalogApi {
     }
   }
 
-  async listMeetings(): Promise<Meeting[]> {
+  async listMeetings(_expectedUserId?: string): Promise<Meeting[]> {
     try {
       return await parsed(this.fetcher("/api/meetings?includeTrashed=true", { credentials: "include" }), z.array(MeetingSchema));
     } catch (error) {
@@ -121,12 +121,17 @@ export class MeetingCatalogHttpApi implements MeetingCatalogApi {
     }
   }
 
-  async listFolders(): Promise<Folder[]> {
+  async listFolders(_expectedUserId?: string): Promise<Folder[]> {
     try {
       return await parsed(this.fetcher("/api/folders", { credentials: "include" }), z.array(FolderSchema));
     } catch (error) {
       throw normalizedFailure(error);
     }
+  }
+
+  async pull(expectedUserId: string): Promise<{ folders: Folder[]; meetings: Meeting[] }> {
+    const [folders, meetings] = await Promise.all([this.listFolders(expectedUserId), this.listMeetings(expectedUserId)]);
+    return { folders, meetings };
   }
 }
 
@@ -137,6 +142,12 @@ const RpcResultSchema = z.object({
   code: z.string().optional(),
   meeting: z.unknown().optional(),
   folder: z.unknown().optional(),
+}).strict();
+const SnapshotResultSchema = z.object({
+  status: z.number().int().min(100).max(599),
+  code: z.string().optional(),
+  folders: z.array(z.unknown()).optional(),
+  meetings: z.array(z.unknown()).optional(),
 }).strict();
 const OffsetIsoDateTimeSchema = z.iso.datetime({ offset: true });
 const JsonSchema = z.json();
@@ -214,6 +225,9 @@ export class MeetingCatalogSupabaseApi implements MeetingCatalogApi {
   async send(operation: OutboxOperation, expectedUserId: string): Promise<{ meeting?: Meeting; folder?: Folder }> {
     try {
       const payload = JsonSchema.parse(operation.payload);
+      if (typeof payload === "object" && payload !== null && !Array.isArray(payload) && Object.prototype.hasOwnProperty.call(payload, "expectedSyncVersion")) {
+        z.number().int().nonnegative().parse(payload.expectedSyncVersion);
+      }
       const { data, error, status } = await this.client.rpc("apply_catalog_mutation", {
         p_operation_id: operation.id,
         p_kind: operation.kind,
@@ -236,6 +250,25 @@ export class MeetingCatalogSupabaseApi implements MeetingCatalogApi {
       }
       if (result.meeting === undefined || result.folder !== undefined) throw new CatalogApiError(500, "REQUEST_FAILED");
       return { meeting: contractMeeting(result.meeting) };
+    } catch (error) {
+      if (error instanceof CatalogApiError) throw error;
+      throw new CatalogApiError(error instanceof z.ZodError ? 500 : 0, "REQUEST_FAILED");
+    }
+  }
+
+  async pull(expectedUserId: string): Promise<{ folders: Folder[]; meetings: Meeting[] }> {
+    try {
+      const actor = z.uuid().parse(expectedUserId);
+      const { data, error, status } = await this.client.rpc("get_catalog_snapshot", { p_expected_user_id: actor });
+      if (error) throw supabaseFailure(error, status);
+      const result = SnapshotResultSchema.parse(data);
+      if (result.status < 200 || result.status >= 300) throw rpcFailure(result.status, result.code);
+      if (result.folders === undefined || result.meetings === undefined) throw new CatalogApiError(500, "REQUEST_FAILED");
+      assertRowsOwnedBy(result.folders, actor);
+      assertRowsOwnedBy(result.meetings, actor);
+      const folders = z.array(FolderSchema).parse(result.folders.map(contractFolder));
+      const meetings = z.array(MeetingSchema).parse(result.meetings.map(contractMeeting));
+      return { folders, meetings };
     } catch (error) {
       if (error instanceof CatalogApiError) throw error;
       throw new CatalogApiError(error instanceof z.ZodError ? 500 : 0, "REQUEST_FAILED");

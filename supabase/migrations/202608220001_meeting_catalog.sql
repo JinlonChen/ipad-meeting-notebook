@@ -115,6 +115,10 @@ begin
   begin
   v_updated_at := coalesce(nullif(v_payload->>'updatedAt', '')::timestamptz, v_now);
   if v_payload ? 'expectedSyncVersion' then
+    if jsonb_typeof(v_payload->'expectedSyncVersion') <> 'number'
+      or v_payload->>'expectedSyncVersion' !~ '^[0-9]+$' then
+      raise invalid_text_representation;
+    end if;
     v_expected := (v_payload->>'expectedSyncVersion')::bigint;
   end if;
 
@@ -266,6 +270,38 @@ begin
 end;
 $function$;
 
+create or replace function public.get_catalog_snapshot(p_expected_user_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $function$
+declare
+  v_user_id uuid := auth.uid();
+  v_folders jsonb;
+  v_meetings jsonb;
+begin
+  if v_user_id is null then
+    return jsonb_build_object('status', 401, 'code', 'AUTH_REQUIRED');
+  end if;
+  if v_user_id is distinct from p_expected_user_id then
+    return jsonb_build_object('status', 401, 'code', 'AUTH_CONTEXT_CHANGED');
+  end if;
+
+  select coalesce(jsonb_agg(to_jsonb(f.*) order by lower(f.name), f.id), '[]'::jsonb)
+  into v_folders
+  from public.folders f
+  where f.user_id = v_user_id;
+
+  select coalesce(jsonb_agg(to_jsonb(m.*) order by m.updated_at desc, m.id), '[]'::jsonb)
+  into v_meetings
+  from public.meetings m
+  where m.user_id = v_user_id;
+
+  return jsonb_build_object('status', 200, 'folders', v_folders, 'meetings', v_meetings);
+end;
+$function$;
+
 create or replace function public.apply_catalog_mutation(
   p_operation_id uuid,
   p_kind text,
@@ -290,3 +326,7 @@ revoke all on function public.apply_catalog_mutation(uuid, text, uuid, jsonb, uu
 revoke execute on function public.apply_catalog_mutation(uuid, text, uuid, jsonb, uuid) from anon;
 revoke execute on function public.apply_catalog_mutation(uuid, text, uuid, jsonb, uuid) from public;
 grant execute on function public.apply_catalog_mutation(uuid, text, uuid, jsonb, uuid) to authenticated;
+revoke all on function public.get_catalog_snapshot(uuid) from public, anon;
+revoke execute on function public.get_catalog_snapshot(uuid) from anon;
+revoke execute on function public.get_catalog_snapshot(uuid) from public;
+grant execute on function public.get_catalog_snapshot(uuid) to authenticated;

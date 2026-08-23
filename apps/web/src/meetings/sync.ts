@@ -5,6 +5,7 @@ import { MeetingCatalogRepository } from "./repository.js";
 
 export interface MeetingCatalogApi {
   send(operation: OutboxOperation, expectedUserId: string): Promise<{ meeting?: Meeting; folder?: Folder }>;
+  pull?(expectedUserId: string): Promise<{ folders: Folder[]; meetings: Meeting[] }>;
   listMeetings(expectedUserId?: string): Promise<Meeting[]>;
   listFolders(expectedUserId?: string): Promise<Folder[]>;
 }
@@ -165,7 +166,10 @@ export class CatalogSync {
     if (flushed.state !== "idle") return flushed;
     if (this.isStale(epoch)) return { state: "paused_auth" };
     try {
-      const [folders, meetings] = await Promise.all([this.api.listFolders(expectedUserId), this.api.listMeetings(expectedUserId)]);
+      const { folders, meetings } = this.api.pull
+        ? await this.api.pull(expectedUserId)
+        : await Promise.all([this.api.listFolders(expectedUserId), this.api.listMeetings(expectedUserId)])
+          .then(([folders, meetings]) => ({ folders, meetings }));
       if (this.isStale(epoch)) return { state: "paused_auth" };
       await this.repository.syncRefresh(folders, meetings);
       if (this.isStale(epoch)) return { state: "paused_auth" };
