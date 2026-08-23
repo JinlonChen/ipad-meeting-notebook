@@ -149,17 +149,13 @@ describe("MeetingCatalogRepository", () => {
   test("only extends device access for the marker's verified user", async () => {
     const catalog = repository();
     const original = await catalog.authorizeDevice(userA, "2026-09-20T00:00:00.000Z", now);
+    const extended = { ...original, expiresAt: "2026-10-20T00:00:00.000Z" };
 
-    await expect(catalog.refreshDeviceAccess(userA, "2026-10-20T00:00:00.000Z")).resolves.toEqual({
-      ...original,
-      expiresAt: "2026-10-20T00:00:00.000Z",
-    });
-    await expect(catalog.refreshDeviceAccess(userA, "2026-09-01T00:00:00.000Z")).resolves.toBeNull();
+    await expect(catalog.refreshDeviceAccess(userA, "2026-10-20T00:00:00.000Z")).resolves.toEqual(extended);
+    await expect(catalog.refreshDeviceAccess(userA, "2026-10-20T00:00:00.000Z")).resolves.toEqual(extended);
+    await expect(catalog.refreshDeviceAccess(userA, "2026-09-01T00:00:00.000Z")).resolves.toEqual(extended);
     await expect(catalog.refreshDeviceAccess(userB, "2026-11-20T00:00:00.000Z")).resolves.toBeNull();
-    await expect(catalog.validDeviceAccess("2026-10-01T00:00:00.000Z")).resolves.toEqual({
-      ...original,
-      expiresAt: "2026-10-20T00:00:00.000Z",
-    });
+    await expect(catalog.validDeviceAccess("2026-10-01T00:00:00.000Z")).resolves.toEqual(extended);
 
     const userBAccess = await catalog.authorizeDevice(userB, "2026-10-25T00:00:00.000Z", now);
     await expect(catalog.refreshDeviceAccess(userA, "2026-11-20T00:00:00.000Z")).resolves.toBeNull();

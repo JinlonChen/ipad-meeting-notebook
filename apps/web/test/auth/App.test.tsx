@@ -296,6 +296,44 @@ describe("App session gate", () => {
     expect(screen.getByRole("heading", { name: "离线解锁需要登录" })).toBeVisible();
   });
 
+  test("adopts the longest current marker returned for an out-of-order same-user refresh", async () => {
+    let currentNow = new Date("2026-08-21T00:00:00.000Z");
+    const initialExpiry = "2026-08-21T00:01:00.000Z";
+    const longestExpiry = "2026-08-21T00:02:00.000Z";
+    const catalog = repository();
+    const refreshDeviceAccess = vi.spyOn(catalog, "refreshDeviceAccess").mockResolvedValue({
+      userId: userA,
+      authorizedAt: currentNow.toISOString(),
+      expiresAt: longestExpiry,
+    });
+    let authListener!: (change: AuthSessionChange) => void;
+    const auth = api({
+      me: vi.fn().mockResolvedValue({ id: userA, sessionExpiresAt: initialExpiry }),
+      onSessionChange: vi.fn().mockImplementation((listener) => {
+        authListener = listener;
+        return () => undefined;
+      }),
+    });
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => currentNow.toISOString()} />);
+    await screen.findByRole("heading", { name: "会议本" });
+
+    await act(async () => {
+      authListener({ event: "token_refreshed", userId: userA, sessionExpiresAt: "2026-08-21T00:00:30.000Z" });
+      await Promise.resolve();
+    });
+    expect(refreshDeviceAccess).toHaveBeenCalledWith(userA, "2026-08-21T00:00:30.000Z");
+
+    vi.useFakeTimers();
+    act(() => window.dispatchEvent(new Event("offline")));
+    currentNow = new Date(initialExpiry);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(screen.getByRole("heading", { name: "会议本" })).toBeVisible();
+
+    currentNow = new Date(longestExpiry);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(screen.getByRole("heading", { name: "离线解锁需要登录" })).toBeVisible();
+  });
+
   test("fully revalidates a token refresh that belongs to a different user", async () => {
     const catalog = repository();
     let authListener!: (change: AuthSessionChange) => void;

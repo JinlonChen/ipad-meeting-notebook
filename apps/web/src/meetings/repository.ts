@@ -391,7 +391,8 @@ export class MeetingCatalogRepository {
     const expiresAt = timestamp(sessionExpiresAt);
     return this.bootstrapDb.transaction("rw", this.bootstrapDb.settings, async () => {
       const current = DeviceAccessSchema.safeParse((await this.bootstrapDb.settings.get("deviceAccess"))?.value);
-      if (!current.success || current.data.userId !== userId || expiresAt <= current.data.expiresAt) return null;
+      if (!current.success || current.data.userId !== userId) return null;
+      if (expiresAt <= current.data.expiresAt) return current.data;
       const refreshed = DeviceAccessSchema.parse({ ...current.data, expiresAt });
       await this.bootstrapDb.settings.put({ key: "deviceAccess", value: refreshed });
       return refreshed;
