@@ -14,6 +14,7 @@ export type RemoteMeeting = {
   updated_at: string;
   trashed_at: string | null;
   sync_version: number;
+  note: string;
 };
 
 const defaultMeeting: RemoteMeeting = {
@@ -27,6 +28,7 @@ const defaultMeeting: RemoteMeeting = {
   updated_at: "2026-08-22T02:00:00.000Z",
   trashed_at: null,
   sync_version: 1,
+  note: "",
 };
 
 function base64Url(value: unknown): string {

@@ -16,6 +16,7 @@ const MeetingTitleSchema = z.string().trim().min(1).max(120);
 const FolderNameSchema = z.string().trim().min(1).max(80);
 const IsoDateTimeSchema = z.iso.datetime();
 const SyncVersionSchema = z.int().nonnegative();
+export const MeetingNoteSchema = z.string().max(200_000);
 export const ExpectedSyncVersionSchema = SyncVersionSchema;
 export const IdempotencyKeySchema = z.uuid();
 
@@ -33,6 +34,15 @@ export const CreateFolderInputSchema = z.object({
 });
 
 export const MeetingMutationBodySchema = z.object({ expectedSyncVersion: ExpectedSyncVersionSchema }).strict();
+export const MeetingNoteBodySchema = z.object({
+  note: MeetingNoteSchema,
+  expectedSyncVersion: ExpectedSyncVersionSchema,
+}).strict();
+export const MeetingNoteOperationSchema = z.object({
+  note: MeetingNoteSchema,
+  updatedAt: IsoDateTimeSchema,
+  expectedSyncVersion: ExpectedSyncVersionSchema,
+}).strict();
 export const FolderMutationBodySchema = MeetingMutationBodySchema;
 export const MeetingPatchBodySchema = z.object({
   title: MeetingTitleSchema.optional(),
@@ -64,6 +74,7 @@ export const MeetingSchema = z.object({
   updatedAt: IsoDateTimeSchema,
   trashedAt: IsoDateTimeSchema.nullable(),
   syncVersion: SyncVersionSchema,
+  note: MeetingNoteSchema.default(""),
 });
 
 export const MeetingListQuerySchema = z.object({
@@ -84,6 +95,8 @@ export type Meeting = z.infer<typeof MeetingSchema>;
 export type CreateFolderInput = z.infer<typeof CreateFolderInputSchema>;
 export type Folder = z.infer<typeof FolderSchema>;
 export type MeetingMutationBody = z.infer<typeof MeetingMutationBodySchema>;
+export type MeetingNoteBody = z.infer<typeof MeetingNoteBodySchema>;
+export type MeetingNoteOperation = z.infer<typeof MeetingNoteOperationSchema>;
 export type FolderMutationBody = z.infer<typeof FolderMutationBodySchema>;
 export type MeetingListQuery = z.output<typeof MeetingListQuerySchema>;
 export type MeetingListQueryInput = z.input<typeof MeetingListQuerySchema>;

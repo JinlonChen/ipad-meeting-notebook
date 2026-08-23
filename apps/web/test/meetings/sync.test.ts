@@ -165,7 +165,7 @@ describe("CatalogSync", () => {
     await store.activateUser(userA);
     const remoteA = {
       id: crypto.randomUUID(), title: "A remote", folderId: null, status: "ready" as const,
-      startedAt: null, endedAt: null, createdAt: now, updatedAt: now, trashedAt: null, syncVersion: 1,
+      startedAt: null, endedAt: null, createdAt: now, updatedAt: now, trashedAt: null, syncVersion: 1, note: "",
     };
     let releaseFolders!: (value: []) => void;
     let releaseMeetings!: (value: [typeof remoteA]) => void;
@@ -307,7 +307,7 @@ describe("CatalogSync", () => {
     catalogs.push(store);
     const meeting = {
       id: crypto.randomUUID(), title: "Version one", folderId: null, status: "draft" as const,
-      startedAt: null, endedAt: null, createdAt: now, updatedAt: now, trashedAt: null, syncVersion: 1,
+      startedAt: null, endedAt: null, createdAt: now, updatedAt: now, trashedAt: null, syncVersion: 1, note: "",
     };
     let resolveMeetings: ((value: typeof meeting[]) => void) | undefined;
     const stalePull = new Promise<typeof meeting[]>((resolve) => { resolveMeetings = resolve; });
