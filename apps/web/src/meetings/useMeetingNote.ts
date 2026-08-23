@@ -63,6 +63,38 @@ export function useMeetingNote({ meetingId, initialNote, repository, online, sch
     setError(message);
   }, []);
 
+  const rebaseCleanNote = useCallback(async (savedRevision: number): Promise<void> => {
+    const isCurrentCleanRevision = () =>
+      mountedRef.current &&
+      draftRevisionRef.current === savedRevision &&
+      persistedRevisionRef.current === savedRevision &&
+      draftRef.current === persistedRef.current;
+    if (!isCurrentCleanRevision()) return;
+
+    let refreshedMeeting;
+    try {
+      refreshedMeeting = await repository.get(meetingId);
+    } catch {
+      if (isCurrentCleanRevision()) {
+        setState("saved-local");
+        setError("");
+      }
+      return;
+    }
+    if (!isCurrentCleanRevision()) return;
+    if (!refreshedMeeting || refreshedMeeting.status === "trashed") {
+      setState("saved-local");
+      setError("");
+      return;
+    }
+
+    draftRef.current = refreshedMeeting.note;
+    persistedRef.current = refreshedMeeting.note;
+    setDraftState(refreshedMeeting.note);
+    setState("synced");
+    setError("");
+  }, [meetingId, repository]);
+
   const synchronize = useCallback(async (savedRevision: number): Promise<void> => {
     if (!onlineRef.current || !mountedRef.current) {
       if (mountedRef.current) setState("saved-local");
@@ -79,8 +111,7 @@ export function useMeetingNote({ meetingId, initialNote, repository, online, sch
       }
       if (!mountedRef.current || draftRevisionRef.current !== savedRevision) return;
       if (result.state === "idle") {
-        setState("synced");
-        setError("");
+        await rebaseCleanNote(savedRevision);
       } else if (result.state === "conflict") {
         setState("conflict");
         setError("会议笔记同步冲突，请在会议列表中处理。");
@@ -92,7 +123,7 @@ export function useMeetingNote({ meetingId, initialNote, repository, online, sch
     } finally {
       syncingRevisionsRef.current.delete(savedRevision);
     }
-  }, []);
+  }, [rebaseCleanNote]);
 
   const runSaveQueue = useCallback(async (): Promise<boolean> => {
     while (true) {

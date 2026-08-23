@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
-import type { Meeting } from "@meeting/contracts";
+import { MeetingNoteOperationSchema, type Meeting } from "@meeting/contracts";
 import { MeetingWorkspacePage } from "../../src/meetings/MeetingWorkspacePage.js";
 import { MeetingCatalogRepository } from "../../src/meetings/repository.js";
 import type { SyncResult } from "../../src/meetings/sync.js";
@@ -35,6 +35,22 @@ function remoteMeeting(overrides: Partial<Meeting> = {}): Meeting {
     note: "云端笔记",
     ...overrides,
   };
+}
+
+async function syncedMeeting(repository: MeetingCatalogRepository, title: string, note: string): Promise<Meeting> {
+  const created = await repository.create(title, null, now);
+  const createOperation = (await repository.pendingOperations())[0]!;
+  const synced = remoteMeeting({
+    id: created.id,
+    title,
+    status: "draft",
+    createdAt: created.createdAt,
+    updatedAt: created.updatedAt,
+    syncVersion: 1,
+    note,
+  });
+  await repository.syncApplySuccessfulOperation(createOperation, { meeting: synced });
+  return synced;
 }
 
 function deferred<T>() {
@@ -409,6 +425,91 @@ describe("MeetingWorkspacePage", () => {
     rendered.rerender(workspace(repository, meeting.id, true, refresh, scheduleRefresh));
     await waitFor(() => expect(scheduleRefresh).toHaveBeenCalledTimes(2));
     expect(refresh).not.toHaveBeenCalled();
+  });
+
+  test("rebases a clean note from the refreshed repository and saves later edits from the remote version", async () => {
+    const repository = catalog();
+    const local = await syncedMeeting(repository, "干净重连", "v1");
+    const remote = remoteMeeting({ ...local, note: "v2", syncVersion: 2, updatedAt: later });
+    const scheduleRefresh = vi.fn(async () => {
+      await repository.syncRefresh([], [remote]);
+      return { state: "idle" as const };
+    });
+    const rendered = renderWorkspace(repository, local.id, { online: false, scheduleRefresh });
+    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    expect(editor).toHaveValue("v1");
+
+    rendered.rerender(workspace(repository, local.id, true, rendered.refresh, scheduleRefresh));
+
+    await waitFor(() => expect(editor).toHaveValue("v2"));
+    expect(screen.getByRole("status")).toHaveTextContent("已同步");
+    fireEvent.change(editor, { target: { value: "v2 + local" } });
+    fireEvent.blur(editor);
+    await waitFor(async () => {
+      const noteOperation = (await repository.pendingOperations()).find((operation) => operation.kind === "meeting.note");
+      expect(noteOperation).toBeDefined();
+      expect(MeetingNoteOperationSchema.parse(noteOperation!.payload)).toMatchObject({
+        note: "v2 + local",
+        expectedSyncVersion: 2,
+      });
+    });
+    expect(editor).toHaveValue("v2 + local");
+  });
+
+  test("keeps a draft typed while reconnect refresh is in progress and saves it from the refreshed version", async () => {
+    const repository = catalog();
+    const local = await syncedMeeting(repository, "重连中编辑", "v1");
+    const remote = remoteMeeting({ ...local, note: "v2", syncVersion: 2, updatedAt: later });
+    const remoteApplied = deferred<void>();
+    const synchronization = deferred<SyncResult>();
+    const scheduleRefresh = vi.fn(async () => {
+      await repository.syncRefresh([], [remote]);
+      remoteApplied.resolve();
+      return synchronization.promise;
+    });
+    const rendered = renderWorkspace(repository, local.id, { online: false, scheduleRefresh });
+    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+
+    rendered.rerender(workspace(repository, local.id, true, rendered.refresh, scheduleRefresh));
+    await act(async () => remoteApplied.promise);
+    fireEvent.change(editor, { target: { value: "用户重连中的新草稿" } });
+    synchronization.resolve({ state: "idle" });
+    await flushPromises();
+
+    expect(editor).toHaveValue("用户重连中的新草稿");
+    expect(screen.getByRole("status")).not.toHaveTextContent("已同步");
+    fireEvent.blur(editor);
+    await waitFor(async () => {
+      const noteOperation = (await repository.pendingOperations()).find((operation) => operation.kind === "meeting.note");
+      expect(noteOperation).toBeDefined();
+      expect(MeetingNoteOperationSchema.parse(noteOperation!.payload)).toMatchObject({
+        note: "用户重连中的新草稿",
+        expectedSyncVersion: 2,
+      });
+    });
+  });
+
+  test.each([
+    ["missing", (_meeting: Meeting) => null],
+    ["trashed", (meeting: Meeting) => ({ ...meeting, status: "trashed" as const, trashedAt: later })],
+    ["read error", () => new Error("database unavailable")],
+  ])("keeps the local note safe when the refreshed meeting is %s", async (_case, refreshedMeeting) => {
+    const repository = catalog();
+    const local = await syncedMeeting(repository, `安全回退-${_case}`, "不能清空的本地笔记");
+    const scheduleRefresh = vi.fn().mockResolvedValue({ state: "idle" as const });
+    const rendered = renderWorkspace(repository, local.id, { online: false, scheduleRefresh });
+    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const get = vi.spyOn(repository, "get");
+    const refreshed = refreshedMeeting(local);
+    if (refreshed instanceof Error) get.mockRejectedValueOnce(refreshed);
+    else get.mockResolvedValueOnce(refreshed);
+
+    rendered.rerender(workspace(repository, local.id, true, rendered.refresh, scheduleRefresh));
+
+    await waitFor(() => expect(scheduleRefresh).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已保存到本机，待同步"));
+    expect(editor).toHaveValue("不能清空的本地笔记");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   test("keeps a restored outbox and local draft after reconnect failure without retry loops", async () => {
