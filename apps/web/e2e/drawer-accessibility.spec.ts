@@ -72,6 +72,27 @@ test("portrait drawer leaves focus and accessibility navigation only while open"
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
 
+test("iPad portrait shows the complete synchronization status", async ({ context, page }) => {
+  await page.setViewportSize({ width: 744, height: 1133 });
+  await openCatalog(page);
+  await context.setOffline(true);
+
+  const syncState = page.locator(".sync-state");
+  await expect(syncState).toHaveText("离线，0 项待同步");
+  expect(await syncState.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+});
+
+test("narrow portrait wraps the complete synchronization status without page overflow", async ({ context, page }) => {
+  await page.setViewportSize({ width: 320, height: 700 });
+  await openCatalog(page);
+  await context.setOffline(true);
+
+  const syncState = page.locator(".sync-state");
+  await expect(syncState).toHaveText("离线，0 项待同步");
+  expect(await syncState.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
 test("landscape rail stays semantic, focusable, and separate from meeting content", async ({ page }) => {
   await page.setViewportSize({ width: 1133, height: 744 });
   await openCatalog(page);
