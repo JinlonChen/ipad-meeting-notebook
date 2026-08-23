@@ -237,6 +237,12 @@ const meetingRow = {
   note: "",
 };
 
+function meetingRowWithoutNote(): Record<string, unknown> {
+  const row: Record<string, unknown> = { ...meetingRow };
+  delete row.note;
+  return row;
+}
+
 const folderRow = {
   user_id: "550e8400-e29b-41d4-a716-446655440000",
   id: folderId,
@@ -347,6 +353,7 @@ describe("MeetingCatalogSupabaseApi", () => {
     ["missing meeting", { status: 200 }],
     ["unexpected folder", { status: 200, meeting: meetingRow, folder: folderRow }],
     ["unknown response field", { status: 200, meeting: meetingRow, extra: true }],
+    ["success meeting without note", { status: 200, meeting: meetingRowWithoutNote() }],
     ["entity on failure", { status: 404, code: "MEETING_NOT_FOUND", meeting: meetingRow }],
     ["unrelated failure code", { status: 404, code: "FOLDER_NOT_FOUND" }],
     ["unexpected success status", { status: 299, meeting: meetingRow }],

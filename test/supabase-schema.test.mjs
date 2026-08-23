@@ -7,12 +7,15 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const migrationPath = resolve(root, "supabase/migrations/202608220001_meeting_catalog.sql");
 const noteMigrationPath = resolve(root, "supabase/migrations/202608230002_meeting_notes.sql");
+const catalogTestPath = resolve(root, "supabase/tests/meeting_catalog.sql");
 
 let sql;
 let noteSql;
+let catalogTestSql;
 test.before(async () => {
   sql = await readFile(migrationPath, "utf8");
   noteSql = await readFile(noteMigrationPath, "utf8");
+  catalogTestSql = await readFile(catalogTestPath, "utf8");
 });
 
 function normalizedSql() {
@@ -21,6 +24,10 @@ function normalizedSql() {
 
 function normalizedNoteSql() {
   return noteSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizedCatalogTestSql() {
+  return catalogTestSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
 }
 
 test("catalog tables enable row level security", () => {
@@ -105,4 +112,17 @@ test("meeting note migration adds a bounded column and dedicated conditional RPC
   assert.match(source, /where user_id = v_user_id and id = p_entity_id and sync_version = p_expected_sync_version/);
   assert.match(source, /revoke all on function public\.apply_meeting_note_mutation\([^;]+\) from public, anon/);
   assert.match(source, /grant execute on function public\.apply_meeting_note_mutation\([^;]+\) to authenticated/);
+});
+
+test("database note contracts exercise anon permissions and the column check directly", () => {
+  const source = normalizedCatalogTestSql();
+  assert.match(source, /set local role anon[^;]*; select is\(has_function_privilege\('anon', 'public\.apply_meeting_note_mutation\([^']+\)', 'execute'\), false/);
+  const anonRole = source.indexOf("set local role anon");
+  const deniedCall = source.indexOf("select throws_ok( $$select public.apply_meeting_note_mutation", anonRole);
+  const resetRole = source.indexOf("reset role", anonRole);
+  assert.ok(anonRole >= 0 && deniedCall > anonRole && resetRole > deniedCall, "anon RPC denial must run before resetting the role");
+  assert.match(source.slice(deniedCall, resetRole), /42501[^;]+permission denied for function apply_meeting_note_mutation/);
+  assert.match(source, /reset role[^;]*; select lives_ok\([^;]+update public\.meetings set note = repeat\('[^']+', 200000\)/);
+  assert.match(source, /select throws_ok\([^;]+update public\.meetings set note = repeat\('[^']+', 200001\)[^;]+23514/);
+  assert.match(source, /set local role authenticated/);
 });

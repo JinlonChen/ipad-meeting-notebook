@@ -148,8 +148,11 @@ const RpcResultSchema = z.object({
   meeting: z.unknown().optional(),
   folder: z.unknown().optional(),
 }).strict();
+const MeetingNoteRpcRowSchema = z.record(z.string(), z.unknown()).refine(
+  (row) => Object.prototype.hasOwnProperty.call(row, "note") && typeof row.note === "string",
+);
 const MeetingNoteRpcResultSchema = RpcResultSchema.pipe(z.discriminatedUnion("status", [
-  z.object({ status: z.literal(200), meeting: z.unknown() }).strict(),
+  z.object({ status: z.literal(200), meeting: MeetingNoteRpcRowSchema }).strict(),
   z.object({ status: z.literal(400), code: z.literal("INVALID_REQUEST") }).strict(),
   z.object({ status: z.literal(401), code: z.enum(["AUTH_REQUIRED", "AUTH_CONTEXT_CHANGED"]) }).strict(),
   z.object({ status: z.literal(404), code: z.literal("MEETING_NOT_FOUND") }).strict(),

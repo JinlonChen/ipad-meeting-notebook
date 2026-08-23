@@ -1,5 +1,5 @@
 begin;
-select plan(67);
+select plan(71);
 
 select has_table('public', 'folders', 'folders table exists');
 select has_table('public', 'meetings', 'meetings table exists');
@@ -25,6 +25,15 @@ values
   ('00000000-0000-4000-8000-000000000102', 'authenticated', 'authenticated', 'catalog-two@example.test', 'x')
 on conflict (id) do nothing;
 
+set local role anon;
+select is(has_function_privilege('anon', 'public.apply_meeting_note_mutation(uuid,uuid,text,timestamp with time zone,bigint,uuid)', 'EXECUTE'), false, 'anon cannot execute the meeting note RPC');
+select throws_ok(
+  $$select public.apply_meeting_note_mutation(null::uuid, null::uuid, null::text, null::timestamptz, null::bigint, null::uuid)$$,
+  '42501',
+  'permission denied for function apply_meeting_note_mutation',
+  'anon invocation of the meeting note RPC is denied'
+);
+reset role;
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '', true);
 select is((public.apply_meeting_note_mutation('00000000-0000-4000-8000-000000000219', '00000000-0000-4000-8000-000000000302', 'anonymous', '2026-08-22T00:02:30Z', 1, '00000000-0000-4000-8000-000000000101')->>'code'), 'AUTH_REQUIRED', 'note RPC rejects a missing auth actor');
@@ -33,6 +42,19 @@ select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000201'
 select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000201', 'folder.create', '00000000-0000-4000-8000-000000000301', '{"id":"00000000-0000-4000-8000-000000000301","name":"Work","clientCreatedAt":"2026-08-22T00:00:00Z"}'::jsonb)->>'status')::int, 200, 'successful mutation is persisted and replayed');
 select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000202', 'meeting.create', '00000000-0000-4000-8000-000000000302', '{"id":"00000000-0000-4000-8000-000000000302","title":"Planning","folderId":"00000000-0000-4000-8000-000000000301","clientCreatedAt":"2026-08-22T00:01:00Z"}'::jsonb)->>'status')::int, 200, 'owner can create meeting through RPC');
 select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000202', 'meeting.create', '00000000-0000-4000-8000-000000000302', '{"id":"00000000-0000-4000-8000-000000000302","title":"Planning","folderId":"00000000-0000-4000-8000-000000000301","clientCreatedAt":"2026-08-22T00:01:00Z"}'::jsonb)->>'status')::int, 200, 'matching operation replays idempotently');
+reset role;
+select lives_ok(
+  $$update public.meetings set note = repeat('😀', 200000) where user_id = '00000000-0000-4000-8000-000000000101' and id = '00000000-0000-4000-8000-000000000302'$$,
+  'meeting note column accepts 200000 Unicode code points directly'
+);
+select throws_ok(
+  $$update public.meetings set note = repeat('😀', 200001) where user_id = '00000000-0000-4000-8000-000000000101' and id = '00000000-0000-4000-8000-000000000302'$$,
+  '23514',
+  'new row for relation "meetings" violates check constraint "meetings_note_check"',
+  'meeting note column rejects 200001 Unicode code points directly'
+);
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-4000-8000-000000000101', true);
 select is((public.apply_meeting_note_mutation('00000000-0000-4000-8000-000000000202', '00000000-0000-4000-8000-000000000302', 'cross kind', '2026-08-22T00:01:30Z', 0, '00000000-0000-4000-8000-000000000101')->>'code'), 'IDEMPOTENCY_KEY_REUSED', 'note RPC rejects an operation id already stored by another mutation kind');
 select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000202', 'meeting.rename', '00000000-0000-4000-8000-000000000302', '{"title":"Reused","expectedSyncVersion":0}'::jsonb)->>'code'), 'IDEMPOTENCY_KEY_REUSED', 'reused operation with different fingerprint is rejected');
 select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000203', 'meeting.rename', '00000000-0000-4000-8000-000000000302', '{"title":"Renamed","updatedAt":"2026-08-22T00:02:00Z","expectedSyncVersion":0}'::jsonb)->>'status')::int, 200, 'conditional rename increments version');
