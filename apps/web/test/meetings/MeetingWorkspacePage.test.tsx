@@ -629,7 +629,7 @@ describe("MeetingWorkspacePage", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("正在同步"));
     expect(scheduleRefresh).toHaveBeenCalledTimes(1);
     synchronization.resolve({ state: "idle" });
-    expect(await screen.findByRole("status")).toHaveTextContent("已同步");
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已同步"));
   });
 
   test("keeps an online synchronization failure marked as saved locally and pending", async () => {
