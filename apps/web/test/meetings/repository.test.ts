@@ -264,10 +264,15 @@ describe("MeetingCatalogRepository", () => {
     await original.activateUser(userB);
     await original.create("B", null, now);
     const lookalikeName = `${name}-other--user--${userA}`;
+    const invalidUserDatabaseName = `${name}--user--not-a-uuid`;
     const lookalike = new Dexie(lookalikeName);
     lookalike.version(1).stores({ records: "id" });
     await lookalike.table("records").put({ id: "keep" });
     lookalike.close();
+    const invalidUserDatabase = new Dexie(invalidUserDatabaseName);
+    invalidUserDatabase.version(1).stores({ records: "id" });
+    await invalidUserDatabase.table("records").put({ id: "keep" });
+    invalidUserDatabase.close();
 
     try {
       const restarted = new MeetingCatalogRepository(name);
@@ -278,8 +283,9 @@ describe("MeetingCatalogRepository", () => {
       await expect(Dexie.exists(`${name}--user--${userA}`)).resolves.toBe(false);
       await expect(Dexie.exists(`${name}--user--${userB}`)).resolves.toBe(false);
       await expect(Dexie.exists(lookalikeName)).resolves.toBe(true);
+      await expect(Dexie.exists(invalidUserDatabaseName)).resolves.toBe(true);
     } finally {
-      await Dexie.delete(lookalikeName);
+      await Promise.all([Dexie.delete(lookalikeName), Dexie.delete(invalidUserDatabaseName)]);
     }
   });
 

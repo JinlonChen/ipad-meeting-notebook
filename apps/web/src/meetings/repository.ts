@@ -167,7 +167,9 @@ export class MeetingCatalogRepository {
     await this.activationQueue;
     for (const database of [this.bootstrapDb, ...this.userDatabases.values()]) database.close();
     const userPrefix = `${this.baseName}--user--`;
-    const databaseNames = (await Dexie.getDatabaseNames()).filter((name) => name === this.baseName || name.startsWith(userPrefix));
+    const databaseNames = (await Dexie.getDatabaseNames()).filter((name) =>
+      name === this.baseName || (name.startsWith(userPrefix) && UserIdSchema.safeParse(name.slice(userPrefix.length)).success),
+    );
     await Promise.all(databaseNames.map((name) => Dexie.delete(name)));
   }
 

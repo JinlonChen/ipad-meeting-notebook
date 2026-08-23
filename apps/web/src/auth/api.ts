@@ -20,6 +20,10 @@ export class AuthNetworkError extends Error {
 }
 
 type SessionIdentity = { id: string; sessionExpiresAt: string };
+export type AuthSessionChange =
+  | { event: "initial"; userId: string | null }
+  | { event: "session"; userId: string }
+  | { event: "signed_out" | "invalid"; userId: null };
 type SupabaseAuthClient = Pick<SupabaseClient<Database>, "auth">;
 type ErrorShape = { status?: unknown; code?: unknown; name?: unknown };
 
@@ -46,6 +50,17 @@ function requiredProperty(value: unknown, property: string): unknown {
     throw new AuthApiError(500, "REQUEST_FAILED");
   }
   return (value as Record<string, unknown>)[property];
+}
+
+function safeSessionChange(event: unknown, value: unknown): AuthSessionChange {
+  if (event === "INITIAL_SESSION" && value === null) return { event: "initial", userId: null };
+  if (event === "SIGNED_OUT" || value === null) return { event: "signed_out", userId: null };
+  if (typeof value !== "object" || !value) return { event: "invalid", userId: null };
+  const user = "user" in value ? value.user : undefined;
+  if (typeof user !== "object" || !user || !("id" in user) || typeof user.id !== "string" || !uuidPattern.test(user.id)) {
+    return { event: "invalid", userId: null };
+  }
+  return { event: event === "INITIAL_SESSION" ? "initial" : "session", userId: user.id.toLowerCase() };
 }
 
 function supabaseFailure(error: unknown): AuthApiError | AuthNetworkError {
@@ -102,10 +117,17 @@ export type AuthApi = {
   me(): Promise<SessionIdentity>;
   login(email: string, password: string): Promise<void>;
   logout(): Promise<void>;
+  onSessionChange(listener: (change: AuthSessionChange) => void): () => void;
 };
 
 export function supabaseAuthApi(client: SupabaseAuthClient): AuthApi {
   return {
+    onSessionChange(listener) {
+      const { data } = client.auth.onAuthStateChange((event, currentSession) => {
+        listener(safeSessionChange(event, currentSession));
+      });
+      return () => data.subscription.unsubscribe();
+    },
     async me() {
       const userResult = await supabaseResult(() => client.auth.getUser());
       const user = requiredProperty(userResult.data, "user");
@@ -140,6 +162,7 @@ export function supabaseAuthApi(client: SupabaseAuthClient): AuthApi {
 
 export function legacyHttpAuthApi(fetcher: Fetcher = fetch): AuthApi {
   return {
+    onSessionChange: () => () => undefined,
     me: () => session(fetcher("/api/auth/me", { credentials: "include" })),
     login(_email, password) {
       return noContent(fetcher("/api/auth/login", {

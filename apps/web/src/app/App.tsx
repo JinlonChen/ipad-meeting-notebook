@@ -75,12 +75,15 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
   const generation = useRef(0);
   const explicitLogout = useRef(false);
   const activeUserId = useRef<string | null>(null);
+  const authTransition = useRef<symbol | null>(null);
   const nextGeneration = useCallback(() => ++generation.current, []);
   const owns = useCallback((value: number) => mounted.current && generation.current === value, []);
 
   const clearAuthorization = useCallback(async (currentGeneration: number): Promise<boolean> => {
     try {
-      await repository.clearDeviceAccess();
+      const expected = await repository.validDeviceAccess(now());
+      if (!owns(currentGeneration)) return false;
+      if (expected) await repository.clearDeviceAccess(expected);
     } catch {
       if (owns(currentGeneration)) setGate("error");
       return false;
@@ -88,7 +91,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
     if (!owns(currentGeneration)) return false;
     setDeviceExpiresAt(null);
     return true;
-  }, [owns, repository]);
+  }, [now, owns, repository]);
 
   useEffect(() => {
     mounted.current = true;
@@ -98,7 +101,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
     };
   }, []);
 
-  const authorize = useCallback(async () => {
+  const authorize = useCallback(async (allowOfflineAccess = true) => {
     if (explicitLogout.current) return;
     const currentGeneration = nextGeneration();
     synchronizer.pauseForUserChange();
@@ -127,6 +130,10 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
       }
       if (error instanceof AuthNetworkError) {
         setOnline(false);
+        if (!allowOfflineAccess) {
+          if (await clearAuthorization(currentGeneration)) setGate("offline-lock");
+          return;
+        }
         const access = await repository.validDeviceAccess(now());
         if (!owns(currentGeneration)) return;
         if (access) {
@@ -150,6 +157,23 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
   }, [auth, clearAuthorization, nextGeneration, now, owns, repository, synchronizer]);
 
   useEffect(() => { void authorize(); }, [authorize]);
+  useEffect(() => auth.onSessionChange((change) => {
+    if (!mounted.current || authTransition.current) return;
+    if (change.event === "initial") return;
+    if (change.event === "session" && activeUserId.current === change.userId) return;
+    synchronizer.pauseForUserChange();
+    if (change.event === "session") {
+      setGate("loading");
+      void authorize(false);
+      return;
+    }
+    const currentGeneration = nextGeneration();
+    activeUserId.current = null;
+    setGate("loading");
+    void clearAuthorization(currentGeneration).then((cleared) => {
+      if (cleared) setGate(change.event === "signed_out" ? "login" : "error");
+    });
+  }), [auth, authorize, clearAuthorization, nextGeneration, synchronizer]);
   useEffect(() => {
     const becameOnline = () => {
       if (!explicitLogout.current) void authorize();
@@ -185,35 +209,41 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
   }, [deviceExpiresAt, gate, nextGeneration, now, online]);
 
   const login = useCallback(async (email: string, password: string) => {
+    const transition = Symbol("login");
+    authTransition.current = transition;
     const currentGeneration = nextGeneration();
     synchronizer.pauseForUserChange();
-    await auth.login(email, password);
-    if (!owns(currentGeneration)) return;
-    let session: Awaited<ReturnType<AuthApi["me"]>>;
     try {
-      session = await auth.me();
-    } catch (error) {
-      if (isUnauthorized(error)) {
-        if (await clearAuthorization(currentGeneration)) setGate("login");
+      await auth.login(email, password);
+      if (!owns(currentGeneration)) return;
+      let session: Awaited<ReturnType<AuthApi["me"]>>;
+      try {
+        session = await auth.me();
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          if (await clearAuthorization(currentGeneration)) setGate("login");
+          return;
+        }
+        throw error;
+      }
+      if (!owns(currentGeneration)) return;
+      if (activeUserId.current !== session.id) {
+        await repository.activateUser(session.id);
+        activeUserId.current = session.id;
+      }
+      if (!owns(currentGeneration)) return;
+      const access = await repository.authorizeDevice(session.id, session.sessionExpiresAt, now());
+      if (!owns(currentGeneration)) {
+        await repository.clearDeviceAccess(access);
         return;
       }
-      throw error;
+      setDeviceExpiresAt(access.expiresAt);
+      explicitLogout.current = false;
+      synchronizer.resumeAfterLogin();
+      setGate("catalog");
+    } finally {
+      if (authTransition.current === transition) authTransition.current = null;
     }
-    if (!owns(currentGeneration)) return;
-    if (activeUserId.current !== session.id) {
-      await repository.activateUser(session.id);
-      activeUserId.current = session.id;
-    }
-    if (!owns(currentGeneration)) return;
-    const access = await repository.authorizeDevice(session.id, session.sessionExpiresAt, now());
-    if (!owns(currentGeneration)) {
-      await repository.clearDeviceAccess(access);
-      return;
-    }
-    setDeviceExpiresAt(access.expiresAt);
-    explicitLogout.current = false;
-    synchronizer.resumeAfterLogin();
-    setGate("catalog");
   }, [auth, clearAuthorization, nextGeneration, now, owns, repository, synchronizer]);
   const guardSync = useCallback(async (request: () => Promise<SyncResult>) => {
     const currentGeneration = generation.current;
@@ -229,21 +259,27 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
     [guardSync, synchronizer],
   );
   const logout = useCallback(async () => {
+    const transition = Symbol("logout");
+    authTransition.current = transition;
     explicitLogout.current = true;
     synchronizer.pauseForUserChange();
     const currentGeneration = nextGeneration();
     if (mounted.current) setGate("logging-out");
     const remoteLogout = auth.logout().catch(() => undefined);
     try {
-      await repository.clearDeviceAccess();
-    } catch {
+      try {
+        await repository.clearDeviceAccess();
+      } catch {
+        await remoteLogout;
+        if (owns(currentGeneration)) setGate("logout-error");
+        return;
+      }
+      if (owns(currentGeneration)) setDeviceExpiresAt(null);
       await remoteLogout;
-      if (owns(currentGeneration)) setGate("logout-error");
-      return;
+      if (owns(currentGeneration)) setGate("login");
+    } finally {
+      if (authTransition.current === transition) authTransition.current = null;
     }
-    if (owns(currentGeneration)) setDeviceExpiresAt(null);
-    await remoteLogout;
-    if (owns(currentGeneration)) setGate("login");
   }, [auth, nextGeneration, owns, repository, synchronizer]);
 
   if (gate === "loading") return <main className="gate-loading" role="status">正在验证访问权限...</main>;

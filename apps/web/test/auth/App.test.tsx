@@ -4,9 +4,9 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { App } from "../../src/app/App.js";
-import { AuthApiError, AuthNetworkError, type AuthApi } from "../../src/auth/api.js";
+import { AuthApiError, AuthNetworkError, type AuthApi, type AuthSessionChange } from "../../src/auth/api.js";
 import { MeetingCatalogRepository } from "../../src/meetings/repository.js";
-import type { MeetingCatalogApi } from "../../src/meetings/sync.js";
+import { CatalogSync, type MeetingCatalogApi } from "../../src/meetings/sync.js";
 
 const now = "2026-08-21T00:00:00.000Z";
 const expiry = "2026-09-21T00:00:00.000Z";
@@ -21,7 +21,13 @@ function repository() {
   return result;
 }
 function api(overrides: Partial<AuthApi> = {}): AuthApi {
-  return { me: vi.fn().mockResolvedValue({ id: userA, sessionExpiresAt: expiry }), login: vi.fn().mockResolvedValue(undefined), logout: vi.fn().mockResolvedValue(undefined), ...overrides };
+  return {
+    me: vi.fn().mockResolvedValue({ id: userA, sessionExpiresAt: expiry }),
+    login: vi.fn().mockResolvedValue(undefined),
+    logout: vi.fn().mockResolvedValue(undefined),
+    onSessionChange: vi.fn().mockReturnValue(() => undefined),
+    ...overrides,
+  };
 }
 function synchronizer(state: "idle" | "paused_auth" | "conflict" | "error" = "idle") {
   return { refresh: vi.fn().mockResolvedValue({ state }), pauseForUserChange: vi.fn(), resumeAfterLogin: vi.fn() };
@@ -127,6 +133,176 @@ describe("App session gate", () => {
     await screen.findByRole("heading", { name: "登录会议本" });
     expect(sync.pauseForUserChange).toHaveBeenCalledTimes(2);
     expect(sync.pauseForUserChange.mock.invocationCallOrder[1]).toBeLessThan((auth.logout as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!);
+  });
+
+  test("switches users immediately for a cross-tab session without sending later A operations as B", async () => {
+    const catalog = repository();
+    await catalog.activateUser(userA);
+    const first = await catalog.create("A first", null, now);
+    const second = await catalog.create("A second", null, "2026-08-21T00:01:00.000Z");
+    let authListener!: (change: AuthSessionChange) => void;
+    const auth = api({
+      me: vi.fn()
+        .mockResolvedValueOnce({ id: userA, sessionExpiresAt: expiry })
+        .mockResolvedValueOnce({ id: userB, sessionExpiresAt: expiry }),
+      onSessionChange: vi.fn().mockImplementation((listener) => {
+        authListener = listener;
+        return () => undefined;
+      }),
+    });
+    let releaseFirst!: (response: { meeting: typeof first }) => void;
+    const firstResponse = new Promise<{ meeting: typeof first }>((resolve) => { releaseFirst = resolve; });
+    const send = vi.fn().mockImplementationOnce(() => firstResponse).mockResolvedValue({ meeting: second });
+    const remote: MeetingCatalogApi = {
+      send,
+      listFolders: vi.fn().mockResolvedValue([]),
+      listMeetings: vi.fn().mockResolvedValue([]),
+    };
+    const sync = new CatalogSync(catalog, remote);
+    render(<App repository={catalog} auth={auth} synchronizer={sync} now={() => now} />);
+    await waitFor(() => expect(send).toHaveBeenCalledOnce());
+
+    act(() => authListener({ event: "session", userId: userB }));
+    await screen.findByText("还没有会议");
+    releaseFirst({ meeting: first });
+
+    await waitFor(() => expect(remote.listMeetings).toHaveBeenCalled());
+    expect(send).toHaveBeenCalledOnce();
+    await expect(catalog.pendingOperations()).resolves.toEqual([]);
+    await catalog.activateUser(userA);
+    await expect(catalog.pendingOperations()).resolves.toEqual([expect.objectContaining({ entityId: second.id })]);
+  });
+
+  test("clears local authorization immediately when another tab signs out", async () => {
+    const catalog = repository();
+    let authListener!: (change: AuthSessionChange) => void;
+    const unsubscribe = vi.fn();
+    const auth = api({ onSessionChange: vi.fn().mockImplementation((listener) => {
+      authListener = listener;
+      return unsubscribe;
+    }) });
+    const sync = synchronizer();
+    const rendered = render(<App repository={catalog} auth={auth} synchronizer={sync} now={() => now} />);
+    await screen.findByRole("heading", { name: "会议本" });
+    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(true);
+    sync.pauseForUserChange.mockClear();
+
+    act(() => authListener({ event: "signed_out", userId: null }));
+
+    await screen.findByRole("heading", { name: "登录会议本" });
+    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(false);
+    expect(sync.pauseForUserChange).toHaveBeenCalledOnce();
+    rendered.unmount();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  test("does not let an older cross-tab sign-out clear a newer user marker", async () => {
+    const catalog = repository();
+    const originalClear = catalog.clearDeviceAccess.bind(catalog);
+    const releaseOldClear = deferred<void>();
+    const oldClearFinished = deferred<void>();
+    vi.spyOn(catalog, "clearDeviceAccess").mockImplementationOnce(async (expected) => {
+      await releaseOldClear.promise;
+      await originalClear(expected);
+      oldClearFinished.resolve();
+    });
+    let authListener!: (change: AuthSessionChange) => void;
+    const auth = api({
+      me: vi.fn()
+        .mockResolvedValueOnce({ id: userA, sessionExpiresAt: expiry })
+        .mockResolvedValueOnce({ id: userB, sessionExpiresAt: expiry }),
+      onSessionChange: vi.fn().mockImplementation((listener) => {
+        authListener = listener;
+        return () => undefined;
+      }),
+    });
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
+    await screen.findByRole("heading", { name: "会议本" });
+
+    act(() => authListener({ event: "signed_out", userId: null }));
+    await waitFor(() => expect(catalog.clearDeviceAccess).toHaveBeenCalledOnce());
+    act(() => authListener({ event: "session", userId: userB }));
+    await screen.findByRole("heading", { name: "会议本" });
+    await expect(catalog.validDeviceAccess(now)).resolves.toMatchObject({ userId: userB });
+
+    releaseOldClear.resolve();
+    await oldClearFinished.promise;
+    await expect(catalog.validDeviceAccess(now)).resolves.toMatchObject({ userId: userB });
+  });
+
+  test("ignores same-user session refresh events without switching catalogs or refreshing", async () => {
+    const catalog = repository();
+    let authListener!: (change: AuthSessionChange) => void;
+    const auth = api({ onSessionChange: vi.fn().mockImplementation((listener) => {
+      authListener = listener;
+      return () => undefined;
+    }) });
+    const sync = synchronizer();
+    render(<App repository={catalog} auth={auth} synchronizer={sync} now={() => now} />);
+    await screen.findByRole("heading", { name: "会议本" });
+    await waitFor(() => expect(sync.refresh).toHaveBeenCalledOnce());
+    vi.mocked(auth.me).mockClear();
+    sync.pauseForUserChange.mockClear();
+    sync.refresh.mockClear();
+
+    act(() => authListener({ event: "session", userId: userA }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sync.pauseForUserChange).not.toHaveBeenCalled();
+    expect(auth.me).not.toHaveBeenCalled();
+    expect(sync.refresh).not.toHaveBeenCalled();
+  });
+
+  test("fails closed on malformed cross-tab auth events without exposing event details", async () => {
+    const catalog = repository();
+    let authListener!: (change: AuthSessionChange) => void;
+    const auth = api({ onSessionChange: vi.fn().mockImplementation((listener) => {
+      authListener = listener;
+      return () => undefined;
+    }) });
+    const sync = synchronizer();
+    render(<App repository={catalog} auth={auth} synchronizer={sync} now={() => now} />);
+    await screen.findByRole("heading", { name: "会议本" });
+    sync.pauseForUserChange.mockClear();
+
+    act(() => authListener({ event: "invalid", userId: null }));
+
+    await screen.findByRole("heading", { name: "无法验证访问权限" });
+    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(false);
+    expect(sync.pauseForUserChange).toHaveBeenCalledOnce();
+    expect(document.body).not.toHaveTextContent(/token|email|private/i);
+  });
+
+  test("does not double-authorize callbacks emitted by this tab's login and logout", async () => {
+    const user = userEvent.setup();
+    const catalog = repository();
+    let authListener!: (change: AuthSessionChange) => void;
+    const me = vi.fn()
+      .mockRejectedValueOnce(new AuthApiError(401, "AUTH_REQUIRED"))
+      .mockResolvedValueOnce({ id: userB, sessionExpiresAt: expiry });
+    const auth = api({
+      me,
+      onSessionChange: vi.fn().mockImplementation((listener) => {
+        authListener = listener;
+        return () => undefined;
+      }),
+      login: vi.fn().mockImplementation(async () => { authListener({ event: "session", userId: userB }); }),
+      logout: vi.fn().mockImplementation(async () => { authListener({ event: "signed_out", userId: null }); }),
+    });
+    const sync = synchronizer();
+    render(<App repository={catalog} auth={auth} synchronizer={sync} now={() => now} />);
+    await screen.findByRole("heading", { name: "登录会议本" });
+
+    await user.type(screen.getByLabelText("邮箱"), "b@example.com");
+    await user.type(screen.getByLabelText("密码"), "private-secret");
+    await user.click(screen.getByRole("button", { name: "登录" }));
+    await screen.findByRole("heading", { name: "会议本" });
+    await user.click(screen.getByRole("button", { name: "退出" }));
+    await screen.findByRole("heading", { name: "登录会议本" });
+
+    expect(me).toHaveBeenCalledTimes(2);
+    expect(sync.pauseForUserChange).toHaveBeenCalledTimes(3);
+    expect(sync.resumeAfterLogin).toHaveBeenCalledOnce();
   });
 
   test("switches local catalogs with the authenticated Supabase user", async () => {
@@ -252,6 +428,23 @@ describe("App session gate", () => {
     await expired.authorizeDevice(userA, now, "2026-08-01T00:00:00.000Z");
     render(<App repository={expired} auth={api({ me: vi.fn().mockRejectedValue(new AuthNetworkError()) })} synchronizer={synchronizer()} now={() => now} />);
     await screen.findByRole("heading", { name: "离线解锁需要登录" });
+  });
+
+  test("does not treat Supabase's initial persisted session as an external offline user switch", async () => {
+    const catalog = repository();
+    await catalog.authorizeDevice(userA, expiry, now);
+    const auth = api({
+      me: vi.fn().mockRejectedValue(new AuthNetworkError()),
+      onSessionChange: vi.fn().mockImplementation((listener) => {
+        listener({ event: "initial", userId: userA } as AuthSessionChange);
+        return () => undefined;
+      }),
+    });
+
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
+
+    await screen.findByText("离线，0 项待同步");
+    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(true);
   });
 
   test("does not refresh as online until an offline catalog revalidates its session", async () => {
