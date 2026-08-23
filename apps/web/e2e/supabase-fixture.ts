@@ -21,12 +21,12 @@ export type RemoteMeeting = {
 };
 
 export type MeetingNoteMutation = {
-  p_operation_id: string;
-  p_entity_id: string;
-  p_note: string;
-  p_updated_at: string;
-  p_expected_sync_version: number;
-  p_expected_user_id: string;
+  p_operation_id: string | null;
+  p_entity_id: string | null;
+  p_note: string | null;
+  p_updated_at: string | null;
+  p_expected_sync_version: number | null;
+  p_expected_user_id: string | null;
 };
 
 type NoteTerminalResponse =
@@ -85,10 +85,12 @@ function parseNoteMutation(value: unknown): MeetingNoteMutation | null {
   const body = value as Record<string, unknown>;
   const keys = ["p_operation_id", "p_entity_id", "p_note", "p_updated_at", "p_expected_sync_version", "p_expected_user_id"];
   if (Object.keys(body).length !== keys.length || keys.some((key) => !Object.prototype.hasOwnProperty.call(body, key))) return null;
-  if (!isUuid(body.p_operation_id) || !isUuid(body.p_entity_id) || typeof body.p_note !== "string") return null;
-  if (typeof body.p_updated_at !== "string" || !Number.isFinite(Date.parse(body.p_updated_at))) return null;
-  if (!Number.isInteger(body.p_expected_sync_version)) return null;
-  if (!isUuid(body.p_expected_user_id)) return null;
+  if (body.p_operation_id !== null && !isUuid(body.p_operation_id)) return null;
+  if (body.p_entity_id !== null && !isUuid(body.p_entity_id)) return null;
+  if (body.p_note !== null && typeof body.p_note !== "string") return null;
+  if (body.p_updated_at !== null && (typeof body.p_updated_at !== "string" || !Number.isFinite(Date.parse(body.p_updated_at)))) return null;
+  if (body.p_expected_sync_version !== null && !Number.isInteger(body.p_expected_sync_version)) return null;
+  if (body.p_expected_user_id !== null && !isUuid(body.p_expected_user_id)) return null;
   return body as MeetingNoteMutation;
 }
 
@@ -174,6 +176,10 @@ export async function installSupabaseRoutes(page: Page, input: RemoteMeeting[] |
         await route.fulfill({ contentType: "application/json", body: JSON.stringify({ status: 401, code: "AUTH_CONTEXT_CHANGED" }) });
         return;
       }
+      if (mutation.p_operation_id === null) {
+        await route.fulfill({ contentType: "application/json", body: JSON.stringify({ status: 400, code: "INVALID_REQUEST" }) });
+        return;
+      }
 
       state.noteMutations.push({ ...mutation });
       const barrier = state.noteMutationBarrier;
@@ -186,7 +192,7 @@ export async function installSupabaseRoutes(page: Page, input: RemoteMeeting[] |
       const fingerprint = JSON.stringify({
         entityId: mutation.p_entity_id,
         note: mutation.p_note,
-        updatedAt: new Date(mutation.p_updated_at).toISOString(),
+        updatedAt: mutation.p_updated_at === null ? null : new Date(mutation.p_updated_at).toISOString(),
         expectedSyncVersion: mutation.p_expected_sync_version,
       });
       const replayKey = `${userId}:${mutation.p_operation_id}`;
@@ -199,7 +205,14 @@ export async function installSupabaseRoutes(page: Page, input: RemoteMeeting[] |
         return;
       }
 
-      if (mutation.p_expected_sync_version < 0 || exceedsCodePointLimit(mutation.p_note, 200_000)) {
+      if (
+        mutation.p_entity_id === null ||
+        mutation.p_note === null ||
+        mutation.p_updated_at === null ||
+        mutation.p_expected_sync_version === null ||
+        mutation.p_expected_sync_version < 0 ||
+        exceedsCodePointLimit(mutation.p_note, 200_000)
+      ) {
         const response = { status: 400 as const, code: "INVALID_REQUEST" as const };
         state.noteReplays.set(replayKey, { fingerprint, response });
         await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) });

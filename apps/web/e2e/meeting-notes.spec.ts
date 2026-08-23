@@ -400,6 +400,91 @@ test("meeting notes fixture counts Unicode code points and replays typed invalid
     .resolves.toMatchObject({ body: { status: 409, code: "IDEMPOTENCY_KEY_REUSED" } });
 });
 
+test("meeting notes fixture rejects a nullable actor before replay state", async ({ page }) => {
+  const meeting = offlineMeeting();
+  const fixture = createSupabaseFixtureState([meeting]);
+  const mutation = {
+    p_operation_id: "00000000-0000-4000-8000-000000000034",
+    p_entity_id: meeting.id,
+    p_note: "actor remains uncached",
+    p_updated_at: "2026-08-24T10:00:00.000Z",
+    p_expected_sync_version: 1,
+    p_expected_user_id: null,
+  };
+  const post = (body: unknown) => page.evaluate(async ({ url, requestBody }) => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(requestBody),
+    });
+    return { httpStatus: response.status, body: await response.json() };
+  }, { url: `${supabaseOrigin}/rest/v1/rpc/apply_meeting_note_mutation`, requestBody: body });
+
+  await installSupabaseRoutes(page, fixture);
+  await page.goto("/");
+  await expect(post(mutation)).resolves.toMatchObject({ body: { status: 401, code: "AUTH_CONTEXT_CHANGED" } });
+  await expect(post({ ...mutation, p_expected_user_id: "00000000-0000-4000-8000-000000000001" }))
+    .resolves.toMatchObject({ body: { status: 200, meeting: { note: mutation.p_note, sync_version: 2 } } });
+});
+
+test("meeting notes fixture rejects a null operation id without replay state", async ({ page }) => {
+  const meeting = offlineMeeting();
+  const fixture = createSupabaseFixtureState([meeting]);
+  await installSupabaseRoutes(page, fixture);
+  await page.goto("/");
+
+  const response = await page.evaluate(async ({ url, requestBody }) => {
+    const result = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(requestBody),
+    });
+    return result.json();
+  }, {
+    url: `${supabaseOrigin}/rest/v1/rpc/apply_meeting_note_mutation`,
+    requestBody: {
+      p_operation_id: null,
+      p_entity_id: meeting.id,
+      p_note: "null operation",
+      p_updated_at: "2026-08-24T10:00:00.000Z",
+      p_expected_sync_version: 1,
+      p_expected_user_id: "00000000-0000-4000-8000-000000000001",
+    },
+  });
+  expect(response).toMatchObject({ status: 400, code: "INVALID_REQUEST" });
+  expect(fixture.noteReplays).toHaveProperty("size", 0);
+});
+
+test("meeting notes fixture replays nullable typed mutation failures", async ({ page }) => {
+  const meeting = offlineMeeting();
+  const fixture = createSupabaseFixtureState([meeting]);
+  const mutation = {
+    p_operation_id: "00000000-0000-4000-8000-000000000035",
+    p_entity_id: meeting.id,
+    p_note: null,
+    p_updated_at: "2026-08-24T10:00:00.000Z",
+    p_expected_sync_version: 1,
+    p_expected_user_id: "00000000-0000-4000-8000-000000000001",
+  };
+  const post = (body: unknown) => page.evaluate(async ({ url, requestBody }) => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(requestBody),
+    });
+    return { httpStatus: response.status, body: await response.json() };
+  }, { url: `${supabaseOrigin}/rest/v1/rpc/apply_meeting_note_mutation`, requestBody: body });
+
+  await installSupabaseRoutes(page, fixture);
+  await page.goto("/");
+  const failure = await post(mutation);
+  expect(failure).toMatchObject({ body: { status: 400, code: "INVALID_REQUEST" } });
+  await expect(post(mutation)).resolves.toEqual(failure);
+  await expect(post({ ...mutation, p_note: "valid but reused" }))
+    .resolves.toMatchObject({ body: { status: 409, code: "IDEMPOTENCY_KEY_REUSED" } });
+  expect(meeting).toMatchObject({ note: "", sync_version: 1 });
+});
+
 for (const viewport of [
   { width: 744, height: 1133 },
   { width: 1133, height: 744 },
