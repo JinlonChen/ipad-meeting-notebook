@@ -54,6 +54,7 @@ test("Pages deployment is main-only, least-privileged, and gated by a complete v
     "npm test",
     "node --test test/supabase-schema.test.mjs",
     "npm run build",
+    "npm run scan:web-dist",
     "npx playwright install --with-deps chromium",
     "npm run test:e2e",
   ]) {
@@ -73,7 +74,12 @@ test("Pages deployment is main-only, least-privileged, and gated by a complete v
 
 test("Pages build receives only public Supabase web configuration and its repository base path", async () => {
   const workflow = await read(".github/workflows/deploy-pages.yml");
-  const secretReferences = [...workflow.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((match) => match[1]);
+  const dotReferences = [...workflow.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((match) => match[1]);
+  const bracketReferences = [...workflow.matchAll(/secrets\[([^\]]+)\]/g)].map((match) => {
+    const literal = match[1].trim().match(/^['"]([A-Z0-9_]+)['"]$/);
+    return literal?.[1] ?? "UNSAFE_DYNAMIC_SECRET_REFERENCE";
+  });
+  const secretReferences = [...dotReferences, ...bracketReferences];
 
   assert.deepEqual([...new Set(secretReferences)].sort(), ["VITE_SUPABASE_ANON_KEY", "VITE_SUPABASE_URL"]);
   assert.match(workflow, /VITE_SUPABASE_URL:\s*\$\{\{\s*secrets\.VITE_SUPABASE_URL\s*\}\}/);

@@ -11,6 +11,11 @@ function scan(path) {
   return spawnSync(process.execPath, [scanner, path], { encoding: "utf8" });
 }
 
+function jwtForRole(role) {
+  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${encode({ alg: "HS256", typ: "JWT" })}.${encode({ role })}.test-signature`;
+}
+
 test("scanner fails closed when the artifact directory is missing", () => {
   const result = scan(resolve("test/does-not-exist"));
 
@@ -41,13 +46,37 @@ test("scanner rejects every private configuration marker without echoing its val
   assert.doesNotMatch(result.stderr, /private-value/);
 });
 
-test("scanner accepts a clean artifact containing the public Supabase anon JWT", async (context) => {
+test("scanner rejects a legacy Supabase service-role JWT without echoing the token", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "meeting-dist-service-jwt-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const token = jwtForRole("service_role");
+  await writeFile(join(directory, "index.js"), `const configuredKey = "${token}";`);
+
+  const result = scan(directory);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /index\.js: privileged Supabase JWT/i);
+  assert.doesNotMatch(result.stderr, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("scanner scans unknown regular text extensions instead of skipping them", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "meeting-dist-unknown-text-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(join(directory, "runtime.config"), "DB_PASSWORD=private-value");
+
+  const result = scan(directory);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /runtime\.config: database password marker/i);
+});
+
+test("scanner accepts public anon and malformed JWT candidates", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "meeting-dist-public-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(join(directory, "index.html"), '<main data-sdk-check="sb_secret_">meeting notebook</main>');
   await writeFile(
     join(directory, "manifest.webmanifest"),
-    JSON.stringify({ publicKey: "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYW5vbiJ9.signature" }),
+    JSON.stringify({ publicKey: jwtForRole("anon"), malformed: "bm90LWpzb24.bm90LWpzb24.signature" }),
   );
 
   const result = scan(directory);

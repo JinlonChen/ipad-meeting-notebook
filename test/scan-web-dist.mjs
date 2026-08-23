@@ -2,7 +2,9 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { extname, relative, resolve } from "node:path";
 
 const artifactDirectory = resolve(process.argv[2] ?? "apps/web/dist");
-const textExtensions = new Set([".css", ".html", ".js", ".json", ".map", ".mjs", ".txt", ".webmanifest"]);
+const binaryExtensions = new Set([
+  ".avif", ".bmp", ".eot", ".gif", ".ico", ".jpeg", ".jpg", ".otf", ".png", ".ttf", ".webp", ".woff", ".woff2",
+]);
 const forbiddenMarkers = [
   ["service role marker", /service[_-]role/i],
   ["Supabase private key marker", /sb_secret_[a-z0-9_-]{16,}/i],
@@ -12,6 +14,20 @@ const forbiddenMarkers = [
   ["API key marker", /api[_-]key/i],
   ["API secret marker", /api[_-]secret/i],
 ];
+const jwtCandidatePattern = /\beyJ[a-z0-9_-]*\.[a-z0-9_-]+\.[a-z0-9_-]+\b/gi;
+
+function hasPrivilegedSupabaseJwt(source) {
+  for (const match of source.matchAll(jwtCandidatePattern)) {
+    const payloadSegment = match[0].split(".")[1];
+    try {
+      const payload = JSON.parse(Buffer.from(payloadSegment, "base64url").toString("utf8"));
+      if (payload && typeof payload === "object" && payload.role === "service_role") return true;
+    } catch {
+      // Malformed JWT-like strings are not credentials and must not break artifact scanning.
+    }
+  }
+  return false;
+}
 
 async function collectTextFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -21,7 +37,7 @@ async function collectTextFiles(directory) {
     const path = resolve(directory, entry.name);
     if (entry.isDirectory()) {
       files.push(...await collectTextFiles(path));
-    } else if (entry.isFile() && textExtensions.has(extname(entry.name).toLowerCase())) {
+    } else if (entry.isFile() && !binaryExtensions.has(extname(entry.name).toLowerCase())) {
       files.push(path);
     } else if (entry.isSymbolicLink()) {
       throw new Error(`symbolic link is not allowed: ${relative(artifactDirectory, path)}`);
@@ -43,6 +59,9 @@ try {
     const source = await readFile(file, "utf8");
     for (const [label, pattern] of forbiddenMarkers) {
       if (pattern.test(source)) findings.push(`${relative(artifactDirectory, file)}: ${label}`);
+    }
+    if (hasPrivilegedSupabaseJwt(source)) {
+      findings.push(`${relative(artifactDirectory, file)}: privileged Supabase JWT`);
     }
   }
 
