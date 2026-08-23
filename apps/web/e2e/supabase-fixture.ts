@@ -3,16 +3,19 @@ import { expect, type Page } from "@playwright/test";
 export const supabaseOrigin = "http://127.0.0.1:54321";
 const userId = "00000000-0000-4000-8000-000000000001";
 
+type RemoteMeetingStatus = "draft" | "recording" | "recoverable" | "uploading" | "processing" | "ready" | "failed" | "trashed";
+
 export type RemoteMeeting = {
   id: string;
   title: string;
   folder_id: string | null;
-  status: "draft" | "recording" | "recoverable" | "uploading" | "processing" | "ready" | "failed" | "trashed";
+  status: RemoteMeetingStatus;
   started_at: string | null;
   ended_at: string | null;
   created_at: string;
   updated_at: string;
   trashed_at: string | null;
+  status_before_trash: Exclude<RemoteMeetingStatus, "trashed"> | null;
   sync_version: number;
   note: string;
 };
@@ -26,9 +29,14 @@ type MeetingNoteMutation = {
   p_expected_user_id: string;
 };
 
+type NoteTerminalResponse =
+  | { status: 200; meeting: RemoteMeeting & { user_id: string } }
+  | { status: 404; code: "MEETING_NOT_FOUND" }
+  | { status: 409; code: "CONFLICT" };
+
 type NoteReplay = {
   fingerprint: string;
-  response: { status: 200; meeting: RemoteMeeting & { user_id: string } };
+  response: NoteTerminalResponse;
 };
 
 const defaultMeeting: RemoteMeeting = {
@@ -41,6 +49,7 @@ const defaultMeeting: RemoteMeeting = {
   created_at: "2026-08-22T01:00:00.000Z",
   updated_at: "2026-08-22T02:00:00.000Z",
   trashed_at: null,
+  status_before_trash: null,
   sync_version: 1,
   note: "",
 };
@@ -121,8 +130,14 @@ export async function installSupabaseRoutes(page: Page, meetings: RemoteMeeting[
         return;
       }
 
-      const fingerprint = JSON.stringify(mutation);
-      const replay = noteReplays.get(mutation.p_operation_id);
+      const fingerprint = JSON.stringify({
+        entityId: mutation.p_entity_id,
+        note: mutation.p_note,
+        updatedAt: new Date(mutation.p_updated_at).toISOString(),
+        expectedSyncVersion: mutation.p_expected_sync_version,
+      });
+      const replayKey = `${userId}:${mutation.p_operation_id}`;
+      const replay = noteReplays.get(replayKey);
       if (replay) {
         const response = replay.fingerprint === fingerprint
           ? replay.response
@@ -133,11 +148,15 @@ export async function installSupabaseRoutes(page: Page, meetings: RemoteMeeting[
 
       const meeting = meetings.find((candidate) => candidate.id === mutation.p_entity_id);
       if (!meeting) {
-        await route.fulfill({ contentType: "application/json", body: JSON.stringify({ status: 404, code: "MEETING_NOT_FOUND" }) });
+        const response = { status: 404 as const, code: "MEETING_NOT_FOUND" as const };
+        noteReplays.set(replayKey, { fingerprint, response });
+        await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) });
         return;
       }
       if (meeting.sync_version !== mutation.p_expected_sync_version) {
-        await route.fulfill({ contentType: "application/json", body: JSON.stringify({ status: 409, code: "CONFLICT" }) });
+        const response = { status: 409 as const, code: "CONFLICT" as const };
+        noteReplays.set(replayKey, { fingerprint, response });
+        await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) });
         return;
       }
 
@@ -145,7 +164,7 @@ export async function installSupabaseRoutes(page: Page, meetings: RemoteMeeting[
       meeting.updated_at = new Date(mutation.p_updated_at).toISOString();
       meeting.sync_version += 1;
       const response = { status: 200 as const, meeting: ownedMeeting(meeting) };
-      noteReplays.set(mutation.p_operation_id, { fingerprint, response });
+      noteReplays.set(replayKey, { fingerprint, response });
       await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) });
       return;
     }
