@@ -1,5 +1,5 @@
 begin;
-select plan(42);
+select plan(45);
 
 select has_table('public', 'folders', 'folders table exists');
 select has_table('public', 'meetings', 'meetings table exists');
@@ -62,6 +62,9 @@ select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000215'
 select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000212', 'meeting.rename', '00000000-0000-4000-8000-000000000304', '{"title":"Bad","expectedSyncVersion":"oops"}'::jsonb)->>'code'), 'INVALID_REQUEST', 'invalid version returns typed failure');
 select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000217', 'meeting.rename', '00000000-0000-4000-8000-000000000304', '{"title":"Null bypass","expectedSyncVersion":null}'::jsonb)->>'code'), 'INVALID_REQUEST', 'null expected version cannot become unconditional');
 select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000217', 'meeting.rename', '00000000-0000-4000-8000-000000000304', '{"title":"Null bypass","expectedSyncVersion":null}'::jsonb)->>'code'), 'INVALID_REQUEST', 'invalid null version response is replayed');
+select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000218', 'meeting.trash', '00000000-0000-4000-8000-000000000304', '["unexpected"]'::jsonb)->>'code'), 'INVALID_REQUEST', 'array payload is rejected');
+select is((select status from public.meetings where id = '00000000-0000-4000-8000-000000000304'), 'draft', 'array payload does not mutate its entity');
+select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000218', 'meeting.trash', '00000000-0000-4000-8000-000000000304', '["unexpected"]'::jsonb)->>'code'), 'INVALID_REQUEST', 'array payload failure is replayed');
 
 select * from finish();
 rollback;

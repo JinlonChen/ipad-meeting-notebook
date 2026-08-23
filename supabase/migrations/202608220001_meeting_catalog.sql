@@ -73,8 +73,8 @@ set search_path = pg_catalog, public
 as $function$
 declare
   v_user_id uuid := auth.uid();
-  v_payload jsonb := coalesce(p_payload, '{}'::jsonb);
-  v_fingerprint text := md5(coalesce(p_kind, '') || ':' || coalesce(p_entity_id::text, '') || ':' || v_payload::text);
+  v_payload jsonb := p_payload;
+  v_fingerprint text := md5(coalesce(p_kind, '') || ':' || coalesce(p_entity_id::text, '') || ':' || coalesce(p_payload::text, 'null'));
   v_replay public.catalog_mutation_replays%rowtype;
   v_response jsonb;
   v_now timestamptz := clock_timestamp();
@@ -109,10 +109,13 @@ begin
     return jsonb_build_object('status', 409, 'code', 'IDEMPOTENCY_KEY_REUSED');
   end if;
 
-  -- Different operation ids targeting the same entity must still observe a single version order.
-  perform pg_advisory_xact_lock(hashtextextended(v_user_id::text || ':entity:' || p_entity_id::text, 0));
+  if p_payload is null or jsonb_typeof(p_payload) <> 'object' then
+    v_response := jsonb_build_object('status', 400, 'code', 'INVALID_REQUEST');
+  else
+    -- Different operation ids targeting the same entity must still observe a single version order.
+    perform pg_advisory_xact_lock(hashtextextended(v_user_id::text || ':entity:' || p_entity_id::text, 0));
 
-  begin
+    begin
   v_updated_at := coalesce(nullif(v_payload->>'updatedAt', '')::timestamptz, v_now);
   if v_payload ? 'expectedSyncVersion' then
     if jsonb_typeof(v_payload->'expectedSyncVersion') <> 'number'
@@ -262,7 +265,8 @@ begin
   exception
     when invalid_text_representation or invalid_datetime_format or datetime_field_overflow or numeric_value_out_of_range then
       v_response := jsonb_build_object('status', 400, 'code', 'INVALID_REQUEST');
-  end;
+    end;
+  end if;
 
   insert into public.catalog_mutation_replays (user_id, operation_id, operation_kind, request_fingerprint, response)
   values (v_user_id, p_operation_id, p_kind, v_fingerprint, v_response);
@@ -272,34 +276,28 @@ $function$;
 
 create or replace function public.get_catalog_snapshot(p_expected_user_id uuid)
 returns jsonb
-language plpgsql
+language sql
+stable
 security definer
 set search_path = pg_catalog, public
 as $function$
-declare
-  v_user_id uuid := auth.uid();
-  v_folders jsonb;
-  v_meetings jsonb;
-begin
-  if v_user_id is null then
-    return jsonb_build_object('status', 401, 'code', 'AUTH_REQUIRED');
-  end if;
-  if v_user_id is distinct from p_expected_user_id then
-    return jsonb_build_object('status', 401, 'code', 'AUTH_CONTEXT_CHANGED');
-  end if;
-
-  select coalesce(jsonb_agg(to_jsonb(f.*) order by lower(f.name), f.id), '[]'::jsonb)
-  into v_folders
-  from public.folders f
-  where f.user_id = v_user_id;
-
-  select coalesce(jsonb_agg(to_jsonb(m.*) order by m.updated_at desc, m.id), '[]'::jsonb)
-  into v_meetings
-  from public.meetings m
-  where m.user_id = v_user_id;
-
-  return jsonb_build_object('status', 200, 'folders', v_folders, 'meetings', v_meetings);
-end;
+select case
+  when auth.uid() is null then jsonb_build_object('status', 401, 'code', 'AUTH_REQUIRED')
+  when auth.uid() is distinct from p_expected_user_id then jsonb_build_object('status', 401, 'code', 'AUTH_CONTEXT_CHANGED')
+  else jsonb_build_object(
+    'status', 200,
+    'folders', (
+      select coalesce(jsonb_agg(to_jsonb(f.*) order by lower(f.name), f.id), '[]'::jsonb)
+      from public.folders f
+      where f.user_id = auth.uid()
+    ),
+    'meetings', (
+      select coalesce(jsonb_agg(to_jsonb(m.*) order by m.updated_at desc, m.id), '[]'::jsonb)
+      from public.meetings m
+      where m.user_id = auth.uid()
+    )
+  )
+end
 $function$;
 
 create or replace function public.apply_catalog_mutation(

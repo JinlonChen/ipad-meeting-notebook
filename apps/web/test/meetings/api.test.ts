@@ -439,6 +439,15 @@ describe("MeetingCatalogSupabaseApi", () => {
     expect(rpc).not.toHaveBeenCalled();
   });
 
+  test.each([null, [], ["unexpected"], "payload", 1, true])("rejects non-object mutation payload %j before RPC", async (payload) => {
+    const { client, rpc } = supabaseClient();
+    const operation = { ...operations[2]!, payload };
+
+    await expect(new MeetingCatalogSupabaseApi(client).send(operation, folderRow.user_id))
+      .rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
   test.each([null, "0", 1.5, -1])("rejects corrupt expectedSyncVersion %s before RPC", async (expectedSyncVersion) => {
     const { client, rpc } = supabaseClient();
     const operation = { ...operations[1]!, payload: { title: "Renamed", expectedSyncVersion } };

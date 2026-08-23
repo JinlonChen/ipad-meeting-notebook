@@ -151,6 +151,7 @@ const SnapshotResultSchema = z.object({
 }).strict();
 const OffsetIsoDateTimeSchema = z.iso.datetime({ offset: true });
 const JsonSchema = z.json();
+const MutationPayloadSchema = z.record(z.string(), JsonSchema);
 
 function record(input: unknown): Record<string, unknown> {
   return z.record(z.string(), z.unknown()).parse(input);
@@ -224,8 +225,8 @@ export class MeetingCatalogSupabaseApi implements MeetingCatalogApi {
 
   async send(operation: OutboxOperation, expectedUserId: string): Promise<{ meeting?: Meeting; folder?: Folder }> {
     try {
-      const payload = JsonSchema.parse(operation.payload);
-      if (typeof payload === "object" && payload !== null && !Array.isArray(payload) && Object.prototype.hasOwnProperty.call(payload, "expectedSyncVersion")) {
+      const payload = MutationPayloadSchema.parse(operation.payload);
+      if (Object.prototype.hasOwnProperty.call(payload, "expectedSyncVersion")) {
         z.number().int().nonnegative().parse(payload.expectedSyncVersion);
       }
       const { data, error, status } = await this.client.rpc("apply_catalog_mutation", {
