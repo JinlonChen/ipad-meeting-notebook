@@ -86,7 +86,7 @@ npx supabase test db
    - `VITE_SUPABASE_ANON_KEY`：Supabase 公开 anon key。
 
 3. 打开 Settings > Pages，将 Build and deployment 的 Source 设为 `GitHub Actions`。
-4. 打开 Actions，等待 `CI` 与 `Deploy GitHub Pages` 均成功。部署工作流会自动把 `VITE_BASE_PATH` 设置为仓库名对应的子路径。
+4. 打开 Actions，等待 `CI` 与 `Deploy GitHub Pages` 均成功。Pages 工作流会先独立完成类型检查、全部测试、数据库合同、生产构建、产物扫描和完整浏览器验收；只有这些门禁全部成功，部署 job 才会使用公开配置重新构建、扫描并上传。工作流会自动把 `VITE_BASE_PATH` 设置为仓库名对应的子路径。
 5. 在 Supabase Authentication 的 URL Configuration 中，将 GitHub Pages 的 HTTPS 地址加入允许的 Site URL/Redirect URLs。
 
 静态构建只允许使用上面两个公开浏览器变量。数据库管理凭据、用户密码以及未来的 AI 服务凭据都不能进入 GitHub、前端环境变量或浏览器包。

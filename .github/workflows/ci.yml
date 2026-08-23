@@ -42,10 +42,7 @@ jobs:
         run: npm run build
 
       - name: Check browser bundle for private configuration
-        run: |
-          if rg -n "SERVICE[_]ROLE|ADMIN[_]PASSWORD|API[_](KEY|SECRET)|eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+" apps/web/dist; then
-            exit 1
-          fi
+        run: npm run scan:web-dist
 
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium

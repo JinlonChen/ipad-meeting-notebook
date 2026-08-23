@@ -13,7 +13,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present && npm run typecheck:test -w @meeting/api",
     "test": "npm run test:contracts && npm run test --workspaces --if-present",
     "test:contracts": "node --test test/*.test.mjs",
-    "test:e2e": "npm run test:e2e -w @meeting/web"
+    "test:e2e": "npm run test:e2e -w @meeting/web",
+    "scan:web-dist": "node test/scan-web-dist.mjs apps/web/dist"
   },
   "engines": {
     "node": ">=22.12.0"

@@ -10,6 +10,14 @@ async function read(relativePath) {
   return readFile(resolve(root, relativePath), "utf8");
 }
 
+function jobSource(workflow, jobName, nextJobName) {
+  const start = workflow.indexOf(`  ${jobName}:\n`);
+  assert.notEqual(start, -1, `missing ${jobName} job`);
+  const end = nextJobName ? workflow.indexOf(`  ${nextJobName}:\n`, start + 1) : workflow.length;
+  assert.notEqual(end, -1, `missing ${nextJobName} job boundary`);
+  return workflow.slice(start, end);
+}
+
 test("CI checks every production and database boundary on Node 22", async () => {
   const workflow = await read(".github/workflows/ci.yml");
 
@@ -21,22 +29,46 @@ test("CI checks every production and database boundary on Node 22", async () => 
   assert.match(workflow, /npm test(?:\s|$)/m);
   assert.match(workflow, /node --test test\/supabase-schema\.test\.mjs/);
   assert.match(workflow, /npm run build/);
+  assert.match(workflow, /npm run scan:web-dist/);
   assert.match(workflow, /playwright install --with-deps chromium/);
   assert.match(workflow, /npm run test:e2e/);
 });
 
-test("Pages deployment is main-only, least-privileged, and uploads the web dist", async () => {
+test("Pages deployment is main-only, least-privileged, and gated by a complete verify job", async () => {
   const workflow = await read(".github/workflows/deploy-pages.yml");
+  const workflowHeader = workflow.slice(0, workflow.indexOf("jobs:\n"));
+  const verify = jobSource(workflow, "verify", "deploy");
+  const deploy = jobSource(workflow, "deploy");
 
   assert.match(workflow, /push:\s*\n\s*branches:\s*\[main\]/);
   assert.match(workflow, /workflow_dispatch:/);
-  assert.match(workflow, /contents:\s*read/);
-  assert.match(workflow, /pages:\s*write/);
-  assert.match(workflow, /id-token:\s*write/);
-  assert.match(workflow, /actions\/configure-pages@v\d+/);
-  assert.match(workflow, /actions\/upload-pages-artifact@v\d+/);
-  assert.match(workflow, /path:\s*apps\/web\/dist/);
-  assert.match(workflow, /actions\/deploy-pages@v\d+/);
+  assert.match(workflowHeader, /contents:\s*read/);
+  assert.doesNotMatch(workflowHeader, /pages:\s*write/);
+  assert.doesNotMatch(workflowHeader, /id-token:\s*write/);
+  assert.match(deploy, /permissions:[\s\S]*contents:\s*read/);
+  assert.match(deploy, /permissions:[\s\S]*pages:\s*write/);
+  assert.match(deploy, /permissions:[\s\S]*id-token:\s*write/);
+  for (const command of [
+    "npm ci",
+    "npm run typecheck",
+    "npm test",
+    "node --test test/supabase-schema.test.mjs",
+    "npm run build",
+    "npx playwright install --with-deps chromium",
+    "npm run test:e2e",
+  ]) {
+    assert.match(verify, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(deploy, /needs:\s*verify/);
+  assert.match(deploy, /actions\/configure-pages@v\d+/);
+  assert.match(deploy, /actions\/upload-pages-artifact@v\d+/);
+  assert.match(deploy, /path:\s*apps\/web\/dist/);
+  assert.match(deploy, /actions\/deploy-pages@v\d+/);
+
+  const build = deploy.indexOf("npm run build -w @meeting/web");
+  const scan = deploy.indexOf("npm run scan:web-dist");
+  const upload = deploy.indexOf("actions/upload-pages-artifact@");
+  assert.ok(build !== -1 && scan > build && upload > scan, "configured build must be scanned before upload");
 });
 
 test("Pages build receives only public Supabase web configuration and its repository base path", async () => {
