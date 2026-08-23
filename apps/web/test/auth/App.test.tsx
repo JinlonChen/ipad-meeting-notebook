@@ -301,8 +301,44 @@ describe("App session gate", () => {
     await screen.findByRole("heading", { name: "登录会议本" });
 
     expect(me).toHaveBeenCalledTimes(2);
-    expect(sync.pauseForUserChange).toHaveBeenCalledTimes(3);
+    expect(sync.pauseForUserChange).toHaveBeenCalledTimes(5);
     expect(sync.resumeAfterLogin).toHaveBeenCalledOnce();
+  });
+
+  test("invalidates an older login when session events change from A to B", async () => {
+    const user = userEvent.setup();
+    const catalog = repository();
+    const loginRequest = deferred<void>();
+    const staleUserA = deferred<{ id: string; sessionExpiresAt: string }>();
+    let authListener!: (change: AuthSessionChange) => void;
+    const me = vi.fn()
+      .mockRejectedValueOnce(new AuthApiError(401, "AUTH_REQUIRED"))
+      .mockImplementationOnce(() => staleUserA.promise)
+      .mockResolvedValueOnce({ id: userB, sessionExpiresAt: expiry });
+    const auth = api({
+      me,
+      login: vi.fn().mockImplementation(() => loginRequest.promise),
+      onSessionChange: vi.fn().mockImplementation((listener) => {
+        authListener = listener;
+        return () => undefined;
+      }),
+    });
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
+    await screen.findByRole("heading", { name: "登录会议本" });
+
+    await user.type(screen.getByLabelText("邮箱"), "person@example.com");
+    await user.type(screen.getByLabelText("密码"), "private-secret");
+    void user.click(screen.getByRole("button", { name: "登录" }));
+    await waitFor(() => expect(auth.login).toHaveBeenCalledOnce());
+    act(() => authListener({ event: "session", userId: userA }));
+    await waitFor(() => expect(me).toHaveBeenCalledTimes(2));
+    act(() => authListener({ event: "session", userId: userB }));
+
+    await screen.findByRole("heading", { name: "会议本" });
+    staleUserA.resolve({ id: userA, sessionExpiresAt: expiry });
+    loginRequest.resolve();
+    await waitFor(async () => expect(await catalog.validDeviceAccess(now)).toMatchObject({ userId: userB }));
+    expect(me).toHaveBeenCalledTimes(3);
   });
 
   test("switches local catalogs with the authenticated Supabase user", async () => {
@@ -444,6 +480,26 @@ describe("App session gate", () => {
     render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
 
     await screen.findByText("离线，0 项待同步");
+    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(true);
+  });
+
+  test.each([
+    ["different user", userB],
+    ["signed out", null],
+  ])("rejects offline marker A when the initial session is %s", async (_label, initialUserId) => {
+    const catalog = repository();
+    await catalog.authorizeDevice(userA, expiry, now);
+    const auth = api({
+      me: vi.fn().mockRejectedValue(new AuthNetworkError()),
+      onSessionChange: vi.fn().mockImplementation((listener) => {
+        listener({ event: "initial", userId: initialUserId } as AuthSessionChange);
+        return () => undefined;
+      }),
+    });
+
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
+
+    await screen.findByRole("heading", { name: "离线解锁需要登录" });
     await expect(catalog.hasDeviceAccess(now)).resolves.toBe(true);
   });
 
@@ -726,5 +782,26 @@ describe("App session gate", () => {
     expect(auth.me).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("heading", { name: "登录会议本" })).toBeVisible();
     await expect(catalog.hasDeviceAccess(now)).resolves.toBe(false);
+  });
+
+  test("keeps an explicit logout closed when another tab reports a new session", async () => {
+    const user = userEvent.setup();
+    const catalog = repository();
+    let authListener!: (change: AuthSessionChange) => void;
+    const auth = api({ onSessionChange: vi.fn().mockImplementation((listener) => {
+      authListener = listener;
+      return () => undefined;
+    }) });
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
+    await screen.findByRole("heading", { name: "会议本" });
+    await user.click(screen.getByRole("button", { name: "退出" }));
+    await screen.findByRole("heading", { name: "登录会议本" });
+    vi.mocked(auth.me).mockClear();
+
+    act(() => authListener({ event: "session", userId: userB }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(screen.getByRole("heading", { name: "登录会议本" })).toBeVisible();
+    expect(auth.me).not.toHaveBeenCalled();
   });
 });

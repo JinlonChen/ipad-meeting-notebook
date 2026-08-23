@@ -73,12 +73,31 @@ describe("supabaseAuthApi", () => {
     });
     const getSession = vi.fn().mockImplementation(async () => {
       calls.push("getSession");
-      return { data: { session: { expires_at: expirySeconds } }, error: null };
+      return { data: { session: { user: { id: userId }, expires_at: expirySeconds } }, error: null };
     });
     const api = supabaseAuthApi(client({ getUser, getSession }));
 
     await expect(api.me()).resolves.toEqual({ id: userId, sessionExpiresAt: expiry });
     expect(calls).toEqual(["getUser", "getSession"]);
+  });
+
+  test("rejects a session whose validated user differs from getUser without exposing either identity", async () => {
+    const otherUserId = "00000000-0000-4000-8000-00000000000b";
+    const api = supabaseAuthApi(client({
+      getUser: vi.fn().mockResolvedValue({ data: { user: { id: userId } }, error: null }),
+      getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: otherUserId }, expires_at: expirySeconds } }, error: null }),
+    }));
+
+    await expect(api.me()).rejects.toEqual(new AuthApiError(401, "AUTH_REQUIRED"));
+  });
+
+  test("rejects malformed current-session user UUIDs without exposing returned data", async () => {
+    const api = supabaseAuthApi(client({
+      getUser: vi.fn().mockResolvedValue({ data: { user: { id: userId } }, error: null }),
+      getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: "private@example.com" }, expires_at: expirySeconds } }, error: null }),
+    }));
+
+    await expect(api.me()).rejects.toEqual(new AuthApiError(500, "REQUEST_FAILED"));
   });
 
   test.each([
@@ -96,8 +115,8 @@ describe("supabaseAuthApi", () => {
     const getUser = vi.fn().mockResolvedValue({ data: { user: { id: userId } }, error: null });
     const getSession = vi.fn()
       .mockResolvedValueOnce({ data: { session: null }, error: null })
-      .mockResolvedValueOnce({ data: { session: { expires_at: 1_700_000_000 } }, error: null })
-      .mockResolvedValueOnce({ data: { session: { expires_at: "secret-refresh-token" } }, error: null });
+      .mockResolvedValueOnce({ data: { session: { user: { id: userId }, expires_at: 1_700_000_000 } }, error: null })
+      .mockResolvedValueOnce({ data: { session: { user: { id: userId }, expires_at: "secret-refresh-token" } }, error: null });
     const api = supabaseAuthApi(client({ getUser, getSession }));
 
     await expect(api.me()).rejects.toEqual(new AuthApiError(401, "AUTH_REQUIRED"));
@@ -119,7 +138,7 @@ describe("supabaseAuthApi", () => {
   });
 
   test.each([
-    ["user", null, { session: { expires_at: expirySeconds } }],
+    ["user", null, { session: { user: { id: userId }, expires_at: expirySeconds } }],
     ["session", { user: { id: userId } }, null],
   ])("maps malformed successful %s data to a safe request failure", async (_label, userData, sessionData) => {
     const api = supabaseAuthApi(client({

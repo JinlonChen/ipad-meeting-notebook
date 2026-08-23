@@ -138,6 +138,15 @@ export function supabaseAuthApi(client: SupabaseAuthClient): AuthApi {
       const sessionResult = await supabaseResult(() => client.auth.getSession());
       const currentSession = requiredProperty(sessionResult.data, "session");
       if (!currentSession) throw new AuthApiError(401, "AUTH_REQUIRED");
+      const sessionUser = requiredProperty(currentSession, "user");
+      const sessionUserId = requiredProperty(sessionUser, "id");
+      if (typeof sessionUserId !== "string" || !uuidPattern.test(sessionUserId)) {
+        throw new AuthApiError(500, "REQUEST_FAILED");
+      }
+      const normalizedId = id.toLowerCase();
+      if (sessionUserId.toLowerCase() !== normalizedId) {
+        throw new AuthApiError(401, "AUTH_REQUIRED");
+      }
       const expiresAt = requiredProperty(currentSession, "expires_at");
       if (typeof expiresAt !== "number" || !Number.isSafeInteger(expiresAt) || expiresAt <= 0) {
         throw new AuthApiError(500, "REQUEST_FAILED");
@@ -146,7 +155,7 @@ export function supabaseAuthApi(client: SupabaseAuthClient): AuthApi {
       if (!Number.isSafeInteger(expiryMilliseconds)) throw new AuthApiError(500, "REQUEST_FAILED");
       if (expiryMilliseconds <= Date.now()) throw new AuthApiError(401, "AUTH_REQUIRED");
       try {
-        return { id, sessionExpiresAt: new Date(expiryMilliseconds).toISOString() };
+        return { id: normalizedId, sessionExpiresAt: new Date(expiryMilliseconds).toISOString() };
       } catch {
         throw new AuthApiError(500, "REQUEST_FAILED");
       }

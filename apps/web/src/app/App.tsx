@@ -75,7 +75,9 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
   const generation = useRef(0);
   const explicitLogout = useRef(false);
   const activeUserId = useRef<string | null>(null);
-  const authTransition = useRef<symbol | null>(null);
+  const observedInitialUserId = useRef<string | null | undefined>(undefined);
+  const acceptInitialSession = useRef(true);
+  const authTransition = useRef<{ kind: "login" | "logout"; token: symbol } | null>(null);
   const nextGeneration = useCallback(() => ++generation.current, []);
   const owns = useCallback((value: number) => mounted.current && generation.current === value, []);
 
@@ -108,6 +110,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
     try {
       const session = await auth.me();
       if (!owns(currentGeneration) || explicitLogout.current) return;
+      acceptInitialSession.current = false;
       if (activeUserId.current !== session.id) {
         await repository.activateUser(session.id);
         activeUserId.current = session.id;
@@ -136,6 +139,12 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
         }
         const access = await repository.validDeviceAccess(now());
         if (!owns(currentGeneration)) return;
+        const observed = observedInitialUserId.current;
+        if (acceptInitialSession.current && observed !== undefined && access && observed !== access.userId) {
+          setDeviceExpiresAt(null);
+          setGate("offline-lock");
+          return;
+        }
         if (access) {
           try {
             if (activeUserId.current !== access.userId) {
@@ -148,6 +157,11 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
           }
         }
         if (!owns(currentGeneration)) return;
+        if (acceptInitialSession.current && observedInitialUserId.current !== undefined && access && observedInitialUserId.current !== access.userId) {
+          setDeviceExpiresAt(null);
+          setGate("offline-lock");
+          return;
+        }
         setDeviceExpiresAt(access?.expiresAt ?? null);
         setGate(access ? "catalog" : "offline-lock");
         return;
@@ -158,13 +172,28 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
 
   useEffect(() => { void authorize(); }, [authorize]);
   useEffect(() => auth.onSessionChange((change) => {
-    if (!mounted.current || authTransition.current) return;
-    if (change.event === "initial") return;
-    if (change.event === "session" && activeUserId.current === change.userId) return;
+    if (!mounted.current) return;
+    if (change.event === "initial") {
+      if (!acceptInitialSession.current) return;
+      observedInitialUserId.current = change.userId;
+      if (activeUserId.current !== null && activeUserId.current !== change.userId) {
+        synchronizer.pauseForUserChange();
+        nextGeneration();
+        setDeviceExpiresAt(null);
+        setGate("offline-lock");
+      }
+      return;
+    }
+    const transition = authTransition.current;
+    if (explicitLogout.current || transition?.kind === "logout") return;
+    if (!transition && change.event === "session" && activeUserId.current === change.userId) return;
     synchronizer.pauseForUserChange();
     if (change.event === "session") {
+      nextGeneration();
       setGate("loading");
-      void authorize(false);
+      queueMicrotask(() => {
+        if (mounted.current && !explicitLogout.current) void authorize(false);
+      });
       return;
     }
     const currentGeneration = nextGeneration();
@@ -209,7 +238,9 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
   }, [deviceExpiresAt, gate, nextGeneration, now, online]);
 
   const login = useCallback(async (email: string, password: string) => {
-    const transition = Symbol("login");
+    const transition = { kind: "login" as const, token: Symbol("login") };
+    explicitLogout.current = false;
+    acceptInitialSession.current = false;
     authTransition.current = transition;
     const currentGeneration = nextGeneration();
     synchronizer.pauseForUserChange();
@@ -242,7 +273,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
       synchronizer.resumeAfterLogin();
       setGate("catalog");
     } finally {
-      if (authTransition.current === transition) authTransition.current = null;
+      if (authTransition.current?.token === transition.token) authTransition.current = null;
     }
   }, [auth, clearAuthorization, nextGeneration, now, owns, repository, synchronizer]);
   const guardSync = useCallback(async (request: () => Promise<SyncResult>) => {
@@ -259,7 +290,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
     [guardSync, synchronizer],
   );
   const logout = useCallback(async () => {
-    const transition = Symbol("logout");
+    const transition = { kind: "logout" as const, token: Symbol("logout") };
     authTransition.current = transition;
     explicitLogout.current = true;
     synchronizer.pauseForUserChange();
@@ -278,7 +309,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
       await remoteLogout;
       if (owns(currentGeneration)) setGate("login");
     } finally {
-      if (authTransition.current === transition) authTransition.current = null;
+      if (authTransition.current?.token === transition.token) authTransition.current = null;
     }
   }, [auth, nextGeneration, owns, repository, synchronizer]);
 
