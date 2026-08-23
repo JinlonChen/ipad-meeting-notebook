@@ -508,7 +508,7 @@ describe("MeetingCatalogRepository", () => {
     const remoteFolder = { id: crypto.randomUUID(), name: "服务端分类", createdAt: now, updatedAt: now, syncVersion: 2 };
     const remoteMeeting = {
       id: crypto.randomUUID(), title: "服务端会议", folderId: remoteFolder.id, status: "draft" as const,
-      startedAt: null, endedAt: null, createdAt: now, updatedAt: now, trashedAt: null, syncVersion: 2,
+      startedAt: null, endedAt: null, createdAt: now, updatedAt: now, trashedAt: null, syncVersion: 2, note: "",
     };
     const other = await catalog.createFolder("其他分类", "2026-08-21T00:01:00.000Z");
     await catalog.syncRefresh([remoteFolder], [remoteMeeting]);

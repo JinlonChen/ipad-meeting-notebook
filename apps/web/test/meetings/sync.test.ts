@@ -702,7 +702,7 @@ describe("CatalogSync", () => {
     };
     const remoteMeeting = {
       id: crypto.randomUUID(), title: "Server note", folderId: remoteFolder.id, status: "ready" as const,
-      startedAt: null, endedAt: null, createdAt: now, updatedAt: now, trashedAt: null, syncVersion: 3,
+      startedAt: null, endedAt: null, createdAt: now, updatedAt: now, trashedAt: null, syncVersion: 3, note: "",
     };
     const client: MeetingCatalogApi = {
       send: vi.fn(), listFolders: vi.fn().mockResolvedValue([remoteFolder]), listMeetings: vi.fn().mockResolvedValue([remoteMeeting]),

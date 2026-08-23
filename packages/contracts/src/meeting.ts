@@ -16,7 +16,9 @@ const MeetingTitleSchema = z.string().trim().min(1).max(120);
 const FolderNameSchema = z.string().trim().min(1).max(80);
 const IsoDateTimeSchema = z.iso.datetime();
 const SyncVersionSchema = z.int().nonnegative();
-export const MeetingNoteSchema = z.string().max(200_000);
+export const MeetingNoteSchema = z.string()
+  .max(400_000)
+  .refine((value) => Array.from(value).length <= 200_000, "Meeting note must contain at most 200,000 characters");
 export const ExpectedSyncVersionSchema = SyncVersionSchema;
 export const IdempotencyKeySchema = z.uuid();
 
@@ -38,10 +40,8 @@ export const MeetingNoteBodySchema = z.object({
   note: MeetingNoteSchema,
   expectedSyncVersion: ExpectedSyncVersionSchema,
 }).strict();
-export const MeetingNoteOperationSchema = z.object({
-  note: MeetingNoteSchema,
+export const MeetingNoteOperationSchema = MeetingNoteBodySchema.extend({
   updatedAt: IsoDateTimeSchema,
-  expectedSyncVersion: ExpectedSyncVersionSchema,
 }).strict();
 export const FolderMutationBodySchema = MeetingMutationBodySchema;
 export const MeetingPatchBodySchema = z.object({

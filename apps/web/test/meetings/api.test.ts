@@ -8,7 +8,7 @@ import type { Database } from "../../src/supabase/types.js";
 const id = "00000000-0000-4000-8000-000000000001";
 const folderId = "00000000-0000-4000-8000-000000000002";
 const timestamp = "2026-08-21T00:00:00.000Z";
-const meeting = { id, title: "Planning", folderId: null, status: "draft", startedAt: null, endedAt: null, createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 0 };
+const meeting = { id, title: "Planning", folderId: null, status: "draft", startedAt: null, endedAt: null, createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 0, note: "" };
 const folder = { id: folderId, name: "Work", createdAt: timestamp, updatedAt: timestamp, syncVersion: 0 };
 
 function response(body: unknown, status = 200): Response {
@@ -197,6 +197,7 @@ const meetingRow = {
   updated_at: timestamp,
   trashed_at: null,
   sync_version: 2,
+  note: "",
 };
 
 const folderRow = {
@@ -228,7 +229,7 @@ describe("MeetingCatalogSupabaseApi", () => {
       folders: [{ id: folderId, name: "Work", createdAt: timestamp, updatedAt: timestamp, syncVersion: 1 }],
       meetings: [{
         id, title: "Planning", folderId, status: "draft", startedAt: null, endedAt: null,
-        createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2,
+        createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2, note: "",
       }],
     });
     expect(rpc).toHaveBeenCalledWith("get_catalog_snapshot", { p_expected_user_id: folderRow.user_id });
@@ -286,7 +287,7 @@ describe("MeetingCatalogSupabaseApi", () => {
 
     await expect(api.send(operations[0]!, folderRow.user_id)).resolves.toEqual({ meeting: {
       id, title: "Planning", folderId, status: "draft", startedAt: null, endedAt: null,
-      createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2,
+      createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2, note: "",
     } });
     await expect(api.send(operations[0]!, folderRow.user_id)).resolves.toEqual({ meeting: expect.objectContaining({ id, syncVersion: 2 }) });
     await expect(api.send(operations[4]!, folderRow.user_id)).resolves.toEqual({ folder: {
@@ -315,6 +316,7 @@ describe("MeetingCatalogSupabaseApi", () => {
       updatedAt: "2026-08-21T00:30:00.000Z",
       trashedAt: null,
       syncVersion: 2,
+      note: "",
     } });
   });
 
@@ -330,7 +332,7 @@ describe("MeetingCatalogSupabaseApi", () => {
     }]);
     await expect(api.listMeetings()).resolves.toEqual([{
       id, title: "Planning", folderId, status: "draft", startedAt: null, endedAt: null,
-      createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2,
+      createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2, note: "",
     }]);
     expect(queries.folders?.select).toHaveBeenCalledWith("user_id,id,name,created_at,updated_at,sync_version");
     expect(queries.folders?.order.mock.calls).toEqual([

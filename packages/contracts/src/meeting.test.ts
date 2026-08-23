@@ -103,8 +103,16 @@ describe("meeting contracts", () => {
     expect(MeetingNoteSchema.parse(note)).toBe(note);
   });
 
-  test("rejects meeting notes longer than 200,000 characters", () => {
+  test("accepts exactly 200,000 ASCII code points and rejects 200,001", () => {
+    expect(MeetingNoteSchema.parse("a".repeat(200_000))).toHaveLength(200_000);
     expect(() => MeetingNoteSchema.parse("a".repeat(200_001))).toThrow();
+  });
+
+  test("accepts exactly 200,000 supplementary code points and rejects 200,001", () => {
+    const emoji = "\u{1F600}";
+
+    expect(MeetingNoteSchema.parse(emoji.repeat(200_000))).toBe(emoji.repeat(200_000));
+    expect(() => MeetingNoteSchema.parse(emoji.repeat(200_001))).toThrow();
   });
 
   test("strictly parses meeting note mutation bodies", () => {
