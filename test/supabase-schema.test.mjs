@@ -6,14 +6,28 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const migrationPath = resolve(root, "supabase/migrations/202608220001_meeting_catalog.sql");
+const noteMigrationPath = resolve(root, "supabase/migrations/202608230002_meeting_notes.sql");
+const catalogTestPath = resolve(root, "supabase/tests/meeting_catalog.sql");
 
 let sql;
+let noteSql;
+let catalogTestSql;
 test.before(async () => {
   sql = await readFile(migrationPath, "utf8");
+  noteSql = await readFile(noteMigrationPath, "utf8");
+  catalogTestSql = await readFile(catalogTestPath, "utf8");
 });
 
 function normalizedSql() {
   return sql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizedNoteSql() {
+  return noteSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizedCatalogTestSql() {
+  return catalogTestSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
 }
 
 test("catalog tables enable row level security", () => {
@@ -82,4 +96,33 @@ test("snapshot and conditional payloads authenticate their exact shape", () => {
   assert.match(source, /jsonb_typeof\(v_payload->'expectedsyncversion'\) <> 'number'/);
   assert.match(source, /v_payload->>'expectedsyncversion' !~ '\^\[0-9\]\+\$'/);
   assert.match(source, /if p_payload is null or jsonb_typeof\(p_payload\) <> 'object' then v_response := jsonb_build_object\('status', 400, 'code', 'invalid_request'\)/);
+});
+
+test("meeting note migration adds a bounded column and dedicated conditional RPC", () => {
+  const source = normalizedNoteSql();
+  assert.match(source, /alter table public\.meetings add column note text not null default '' check \(char_length\(note\) <= 200000\)/);
+  assert.match(source, /create or replace function public\.apply_meeting_note_mutation\( p_operation_id uuid, p_entity_id uuid, p_note text, p_updated_at timestamptz, p_expected_sync_version bigint, p_expected_user_id uuid \) returns jsonb language plpgsql security definer set search_path = pg_catalog, public/);
+  assert.match(source, /if v_user_id is null then return jsonb_build_object\('status', 401, 'code', 'auth_required'\)/);
+  assert.match(source, /if v_user_id is distinct from p_expected_user_id then return jsonb_build_object\('status', 401, 'code', 'auth_context_changed'\)/);
+  assert.match(source, /char_length\(p_note\) > 200000/);
+  assert.match(source, /pg_advisory_xact_lock\(hashtextextended\(v_user_id::text \|\| ':' \|\| p_operation_id::text, 0\)\)/);
+  assert.match(source, /pg_advisory_xact_lock\(hashtextextended\(v_user_id::text \|\| ':entity:' \|\| p_entity_id::text, 0\)\)/);
+  assert.match(source, /operation_kind = 'meeting\.note'/);
+  assert.match(source, /set note = p_note, updated_at = p_updated_at, sync_version = sync_version \+ 1/);
+  assert.match(source, /where user_id = v_user_id and id = p_entity_id and sync_version = p_expected_sync_version/);
+  assert.match(source, /revoke all on function public\.apply_meeting_note_mutation\([^;]+\) from public, anon/);
+  assert.match(source, /grant execute on function public\.apply_meeting_note_mutation\([^;]+\) to authenticated/);
+});
+
+test("database note contracts exercise anon permissions and the column check directly", () => {
+  const source = normalizedCatalogTestSql();
+  assert.match(source, /set local role anon[^;]*; select is\(has_function_privilege\('anon', 'public\.apply_meeting_note_mutation\([^']+\)', 'execute'\), false/);
+  const anonRole = source.indexOf("set local role anon");
+  const deniedCall = source.indexOf("select throws_ok( $$select public.apply_meeting_note_mutation", anonRole);
+  const resetRole = source.indexOf("reset role", anonRole);
+  assert.ok(anonRole >= 0 && deniedCall > anonRole && resetRole > deniedCall, "anon RPC denial must run before resetting the role");
+  assert.match(source.slice(deniedCall, resetRole), /42501[^;]+permission denied for function apply_meeting_note_mutation/);
+  assert.match(source, /reset role[^;]*; select lives_ok\([^;]+update public\.meetings set note = repeat\('[^']+', 200000\)/);
+  assert.match(source, /select throws_ok\([^;]+update public\.meetings set note = repeat\('[^']+', 200001\)[^;]+23514/);
+  assert.match(source, /set local role authenticated/);
 });

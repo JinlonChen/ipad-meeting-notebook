@@ -39,4 +39,39 @@ describe("Supabase catalog synchronization", () => {
     expect(JSON.stringify(await repository.pendingOperations())).not.toContain("service-role-key");
     expect(JSON.stringify(await repository.pendingOperations())).not.toContain("private database details");
   });
+
+  test("classifies a typed missing meeting note mutation as a resolvable conflict", async () => {
+    const repository = new MeetingCatalogRepository(`supabase-note-conflict-${crypto.randomUUID()}`);
+    repositories.push(repository);
+    await repository.activateUser(userId);
+    const meeting = await repository.create("Offline meeting", null, timestamp);
+    await repository.saveNote(meeting.id, "local note", "2026-08-21T00:01:00.000Z");
+    const client = {
+      rpc: vi.fn()
+        .mockResolvedValueOnce({ data: { status: 200, meeting: {
+          user_id: userId,
+          id: meeting.id,
+          title: meeting.title,
+          folder_id: null,
+          status: "draft",
+          started_at: null,
+          ended_at: null,
+          created_at: timestamp,
+          updated_at: timestamp,
+          trashed_at: null,
+          status_before_trash: null,
+          sync_version: 0,
+          note: "",
+        } }, error: null })
+        .mockResolvedValueOnce({ data: { status: 404, code: "MEETING_NOT_FOUND" }, error: null }),
+      from: vi.fn(),
+    } as unknown as SupabaseCatalogClient;
+
+    const sync = new CatalogSync(repository, new MeetingCatalogSupabaseApi(client));
+    await expect(sync.flush()).resolves.toEqual({ state: "conflict" });
+    await expect(repository.pendingStatus()).resolves.toEqual({
+      count: 1,
+      conflict: expect.objectContaining({ kind: "meeting.note" }),
+    });
+  });
 });

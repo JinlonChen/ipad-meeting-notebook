@@ -40,11 +40,24 @@ function deferred<T>() {
 }
 afterEach(async () => {
   vi.useRealTimers();
+  window.history.replaceState({}, "", "/");
   await new Promise((resolve) => setTimeout(resolve, 0));
   await Promise.all(repositories.splice(0).map((item) => item.deleteDatabase()));
 });
 
 describe("App session gate", () => {
+  test("opens an authenticated meeting route in the real notes workspace", async () => {
+    const catalog = repository();
+    const meeting = await catalog.create("路由会议", null, now);
+    window.history.replaceState({}, "", `/meetings/${meeting.id}`);
+
+    render(<App repository={catalog} auth={api()} synchronizer={synchronizer()} now={() => now} />);
+
+    expect(await screen.findByRole("heading", { name: "路由会议" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "会议笔记" })).toBeVisible();
+    expect(screen.queryByText("会议工作区将在录音阶段启用")).not.toBeInTheDocument();
+  });
+
   test("renders with injected dependencies without reading runtime configuration", async () => {
     const catalog = repository();
     render(<App repository={catalog} auth={api()} synchronizer={synchronizer()} now={() => now} />);

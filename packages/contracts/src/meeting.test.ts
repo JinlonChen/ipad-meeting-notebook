@@ -10,6 +10,9 @@ import {
   IdempotencyKeySchema,
   LegacyFolderRenameBodySchema,
   LegacyMeetingPatchBodySchema,
+  MeetingNoteBodySchema,
+  MeetingNoteOperationSchema,
+  MeetingNoteSchema,
   MeetingMutationBodySchema,
   MeetingPatchBodySchema,
   MeetingPatchWireBodySchema,
@@ -75,6 +78,66 @@ describe("meeting contracts", () => {
       trashedAt: null,
       syncVersion: 1,
     })).toMatchObject({ id: meetingId, status: "ready", syncVersion: 1 });
+  });
+
+  test("defaults a legacy meeting row note to an empty string", () => {
+    const meeting = MeetingSchema.parse({
+      id: meetingId,
+      title: "Ready meeting",
+      folderId: null,
+      status: "ready",
+      startedAt: timestamp,
+      endedAt: timestamp,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      trashedAt: null,
+      syncVersion: 1,
+    });
+
+    expect(meeting.note).toBe("");
+  });
+
+  test("preserves multiline Chinese and English meeting notes", () => {
+    const note = "\u4f1a\u8bae\u7ed3\u8bba\uff1a\n- \u8d1f\u8d23\u4eba\uff1a\u674e\u96f7\n\nNext steps:\n- Share the draft";
+
+    expect(MeetingNoteSchema.parse(note)).toBe(note);
+  });
+
+  test("accepts exactly 200,000 ASCII code points and rejects 200,001", () => {
+    expect(MeetingNoteSchema.parse("a".repeat(200_000))).toHaveLength(200_000);
+    expect(() => MeetingNoteSchema.parse("a".repeat(200_001))).toThrow();
+  });
+
+  test("accepts exactly 200,000 supplementary code points and rejects 200,001", () => {
+    const emoji = "\u{1F600}";
+
+    expect(MeetingNoteSchema.parse(emoji.repeat(200_000))).toBe(emoji.repeat(200_000));
+    expect(() => MeetingNoteSchema.parse(emoji.repeat(200_001))).toThrow();
+  });
+
+  test.each([
+    ["NUL", "before\u0000after"],
+    ["a lone high surrogate", "before\uD800after"],
+    ["a lone low surrogate", "before\uDC00after"],
+    ["an incorrectly paired high surrogate", "before\uD800xafter"],
+  ])("rejects %s because PostgreSQL cannot represent it", (_case, note) => {
+    expect(() => MeetingNoteSchema.parse(note)).toThrow();
+  });
+
+  test("preserves a valid supplementary Unicode scalar pair", () => {
+    const note = "before\uD83D\uDE00after";
+
+    expect(MeetingNoteSchema.parse(note)).toBe(note);
+  });
+
+  test("strictly parses meeting note mutation bodies", () => {
+    const note = "\u7b2c\u4e00\u884c\nSecond line";
+
+    expect(MeetingNoteBodySchema.parse({ note, expectedSyncVersion: 2 })).toEqual({ note, expectedSyncVersion: 2 });
+    expect(MeetingNoteOperationSchema.parse({ note, updatedAt: timestamp, expectedSyncVersion: 3 })).toEqual({ note, updatedAt: timestamp, expectedSyncVersion: 3 });
+    expect(() => MeetingNoteBodySchema.parse({ note, expectedSyncVersion: 2, extra: true })).toThrow();
+    expect(() => MeetingNoteOperationSchema.parse({ note, updatedAt: timestamp, expectedSyncVersion: 3, extra: true })).toThrow();
+    expect(() => MeetingNoteOperationSchema.parse({ note, updatedAt: "not-a-date", expectedSyncVersion: 3 })).toThrow();
   });
 
   test("rejects invalid meeting timestamps, statuses, and sync versions", () => {

@@ -8,7 +8,7 @@ import type { Database } from "../../src/supabase/types.js";
 const id = "00000000-0000-4000-8000-000000000001";
 const folderId = "00000000-0000-4000-8000-000000000002";
 const timestamp = "2026-08-21T00:00:00.000Z";
-const meeting = { id, title: "Planning", folderId: null, status: "draft", startedAt: null, endedAt: null, createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 0 };
+const meeting = { id, title: "Planning", folderId: null, status: "draft", startedAt: null, endedAt: null, createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 0, note: "" };
 const folder = { id: folderId, name: "Work", createdAt: timestamp, updatedAt: timestamp, syncVersion: 0 };
 
 function response(body: unknown, status = 200): Response {
@@ -44,6 +44,64 @@ describe("MeetingCatalogHttpApi", () => {
       [`/api/folders/${folderId}`, expect.objectContaining({ method: "PATCH", credentials: "include", headers: expect.objectContaining({ "idempotency-key": "00000000-0000-4000-8000-000000000016" }), body: JSON.stringify({ name: "Renamed", expectedSyncVersion: 0 }) })],
       [`/api/folders/${folderId}`, expect.objectContaining({ method: "DELETE", credentials: "include", headers: expect.objectContaining({ "idempotency-key": "00000000-0000-4000-8000-000000000017" }), body: JSON.stringify({ expectedSyncVersion: 1 }) })],
     ]);
+  });
+
+  test("sends a meeting note as a strict conditional PATCH without updatedAt", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ ...meeting, note: "结论\nNext step", syncVersion: 1 }));
+    const api = new MeetingCatalogHttpApi(fetcher);
+
+    await expect(api.send({
+      id: "00000000-0000-4000-8000-000000000018",
+      entityId: id,
+      kind: "meeting.note",
+      payload: { note: "结论\nNext step", updatedAt: timestamp, expectedSyncVersion: 0 },
+      createdAt: timestamp,
+      attempts: 0,
+      lastError: null,
+    })).resolves.toEqual({ meeting: { ...meeting, note: "结论\nNext step", syncVersion: 1 } });
+
+    expect(fetcher).toHaveBeenCalledWith(`/api/meetings/${id}`, expect.objectContaining({
+      method: "PATCH",
+      credentials: "include",
+      headers: expect.objectContaining({ "idempotency-key": "00000000-0000-4000-8000-000000000018" }),
+      body: JSON.stringify({ note: "结论\nNext step", expectedSyncVersion: 0 }),
+    }));
+  });
+
+  test.each([
+    ["NUL", "before\u0000after"],
+    ["lone high surrogate", "before\uD800after"],
+    ["lone low surrogate", "before\uDC00after"],
+    ["incorrect surrogate pair", "before\uD800xafter"],
+  ])("rejects a note containing %s before HTTP fetch", async (_case, invalidNote) => {
+    const fetcher = vi.fn();
+    const operation = {
+      id: "00000000-0000-4000-8000-000000000018",
+      entityId: id,
+      kind: "meeting.note" as const,
+      payload: { note: invalidNote, updatedAt: timestamp, expectedSyncVersion: 0 },
+      createdAt: timestamp,
+      attempts: 0,
+      lastError: null,
+    };
+
+    await expect(new MeetingCatalogHttpApi(fetcher).send(operation)).rejects.toEqual(new CatalogApiError(0, "REQUEST_FAILED"));
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  test("preserves a typed missing meeting response for a note mutation", async () => {
+    const operation = {
+      id: "00000000-0000-4000-8000-000000000019",
+      entityId: id,
+      kind: "meeting.note" as const,
+      payload: { note: "local note", updatedAt: timestamp, expectedSyncVersion: 2 },
+      createdAt: timestamp,
+      attempts: 0,
+      lastError: null,
+    };
+
+    await expect(new MeetingCatalogHttpApi(vi.fn().mockResolvedValue(response({ code: "MEETING_NOT_FOUND" }, 404))).send(operation))
+      .rejects.toEqual(new CatalogApiError(404, "MEETING_NOT_FOUND"));
   });
 
   test("replays legacy conditional outbox payloads without a sync version", async () => {
@@ -197,7 +255,14 @@ const meetingRow = {
   updated_at: timestamp,
   trashed_at: null,
   sync_version: 2,
+  note: "",
 };
+
+function meetingRowWithoutNote(): Record<string, unknown> {
+  const row: Record<string, unknown> = { ...meetingRow };
+  delete row.note;
+  return row;
+}
 
 const folderRow = {
   user_id: "550e8400-e29b-41d4-a716-446655440000",
@@ -228,7 +293,7 @@ describe("MeetingCatalogSupabaseApi", () => {
       folders: [{ id: folderId, name: "Work", createdAt: timestamp, updatedAt: timestamp, syncVersion: 1 }],
       meetings: [{
         id, title: "Planning", folderId, status: "draft", startedAt: null, endedAt: null,
-        createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2,
+        createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2, note: "",
       }],
     });
     expect(rpc).toHaveBeenCalledWith("get_catalog_snapshot", { p_expected_user_id: folderRow.user_id });
@@ -276,6 +341,94 @@ describe("MeetingCatalogSupabaseApi", () => {
     }]));
   });
 
+  test("sends meeting notes only through the dedicated actor-bound RPC", async () => {
+    const noteOperation = {
+      id: "00000000-0000-4000-8000-000000000018",
+      entityId: id,
+      kind: "meeting.note" as const,
+      payload: { note: "结论\nNext step", updatedAt: timestamp, expectedSyncVersion: 2 },
+      createdAt: timestamp,
+      attempts: 0,
+      lastError: null,
+    };
+    const { client, rpc } = supabaseClient({ rpcResults: [{
+      data: { status: 200, meeting: { ...meetingRow, note: noteOperation.payload.note, sync_version: 3 } },
+      error: null,
+    }] });
+
+    await expect(new MeetingCatalogSupabaseApi(client).send(noteOperation, folderRow.user_id)).resolves.toEqual({
+      meeting: expect.objectContaining({ note: noteOperation.payload.note, syncVersion: 3 }),
+    });
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith("apply_meeting_note_mutation", {
+      p_operation_id: noteOperation.id,
+      p_entity_id: id,
+      p_note: noteOperation.payload.note,
+      p_updated_at: timestamp,
+      p_expected_sync_version: 2,
+      p_expected_user_id: folderRow.user_id,
+    });
+  });
+
+  test.each([
+    ["NUL", "before\u0000after"],
+    ["lone high surrogate", "before\uD800after"],
+    ["lone low surrogate", "before\uDC00after"],
+    ["incorrect surrogate pair", "before\uD800xafter"],
+  ])("rejects a note containing %s before Supabase RPC", async (_case, invalidNote) => {
+    const operation = {
+      id: "00000000-0000-4000-8000-000000000018",
+      entityId: id,
+      kind: "meeting.note" as const,
+      payload: { note: invalidNote, updatedAt: timestamp, expectedSyncVersion: 0 },
+      createdAt: timestamp,
+      attempts: 0,
+      lastError: null,
+    };
+    const { client, rpc } = supabaseClient();
+
+    await expect(new MeetingCatalogSupabaseApi(client).send(operation, folderRow.user_id))
+      .rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["missing meeting", { status: 200 }],
+    ["unexpected folder", { status: 200, meeting: meetingRow, folder: folderRow }],
+    ["unknown response field", { status: 200, meeting: meetingRow, extra: true }],
+    ["success meeting without note", { status: 200, meeting: meetingRowWithoutNote() }],
+    ["entity on failure", { status: 404, code: "MEETING_NOT_FOUND", meeting: meetingRow }],
+    ["unrelated failure code", { status: 404, code: "FOLDER_NOT_FOUND" }],
+    ["unexpected success status", { status: 299, meeting: meetingRow }],
+  ])("rejects a malformed meeting note RPC response with %s", async (_label, data) => {
+    const noteOperation = {
+      id: "00000000-0000-4000-8000-000000000018",
+      entityId: id,
+      kind: "meeting.note" as const,
+      payload: { note: "note", updatedAt: timestamp, expectedSyncVersion: 2 },
+      createdAt: timestamp,
+      attempts: 0,
+      lastError: null,
+    };
+    const { client } = supabaseClient({ rpcResults: [{ data, error: null }] });
+
+    await expect(new MeetingCatalogSupabaseApi(client).send(noteOperation, folderRow.user_id))
+      .rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
+  });
+
+  test("normalizes only a missing legacy note and preserves a stored note", async () => {
+    const legacyRow = { ...meetingRow } as Partial<typeof meetingRow>;
+    delete legacyRow.note;
+    const { client } = supabaseClient({ tableResults: {
+      meetings: { data: [legacyRow, { ...meetingRow, id: "00000000-0000-4000-8000-000000000003", note: "stored note" }], error: null },
+    } });
+
+    await expect(new MeetingCatalogSupabaseApi(client).listMeetings()).resolves.toEqual([
+      expect.objectContaining({ id, note: "" }),
+      expect.objectContaining({ id: "00000000-0000-4000-8000-000000000003", note: "stored note" }),
+    ]);
+  });
+
   test("maps snake-case mutation rows and deterministic replay responses to contracts", async () => {
     const { client } = supabaseClient({ rpcResults: [
       { data: { status: 200, meeting: meetingRow }, error: null },
@@ -286,7 +439,7 @@ describe("MeetingCatalogSupabaseApi", () => {
 
     await expect(api.send(operations[0]!, folderRow.user_id)).resolves.toEqual({ meeting: {
       id, title: "Planning", folderId, status: "draft", startedAt: null, endedAt: null,
-      createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2,
+      createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2, note: "",
     } });
     await expect(api.send(operations[0]!, folderRow.user_id)).resolves.toEqual({ meeting: expect.objectContaining({ id, syncVersion: 2 }) });
     await expect(api.send(operations[4]!, folderRow.user_id)).resolves.toEqual({ folder: {
@@ -315,6 +468,7 @@ describe("MeetingCatalogSupabaseApi", () => {
       updatedAt: "2026-08-21T00:30:00.000Z",
       trashedAt: null,
       syncVersion: 2,
+      note: "",
     } });
   });
 
@@ -330,14 +484,14 @@ describe("MeetingCatalogSupabaseApi", () => {
     }]);
     await expect(api.listMeetings()).resolves.toEqual([{
       id, title: "Planning", folderId, status: "draft", startedAt: null, endedAt: null,
-      createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2,
+      createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2, note: "",
     }]);
     expect(queries.folders?.select).toHaveBeenCalledWith("user_id,id,name,created_at,updated_at,sync_version");
     expect(queries.folders?.order.mock.calls).toEqual([
       ["name", { ascending: true }],
       ["id", { ascending: true }],
     ]);
-    expect(queries.meetings?.select).toHaveBeenCalledWith("user_id,id,title,folder_id,status,started_at,ended_at,created_at,updated_at,trashed_at,sync_version");
+    expect(queries.meetings?.select).toHaveBeenCalledWith("user_id,id,title,folder_id,status,started_at,ended_at,created_at,updated_at,trashed_at,sync_version,note");
     expect(queries.meetings?.order.mock.calls).toEqual([
       ["updated_at", { ascending: false }],
       ["id", { ascending: true }],

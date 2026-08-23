@@ -39,7 +39,7 @@ function isTypedNotFoundConflict(operation: OutboxOperation, error: unknown): bo
   }
   if (!hasExpectedSyncVersion(operation)) return false;
   if (operation.kind === "folder.rename") return error.code === "FOLDER_NOT_FOUND";
-  if (operation.kind === "meeting.rename" || operation.kind === "meeting.trash" || operation.kind === "meeting.restore") {
+  if (operation.kind === "meeting.rename" || operation.kind === "meeting.note" || operation.kind === "meeting.trash" || operation.kind === "meeting.restore") {
     return error.code === "MEETING_NOT_FOUND";
   }
   return false;

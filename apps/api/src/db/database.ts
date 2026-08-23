@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { CreateMeetingInputSchema } from "@meeting/contracts";
 import Database from "better-sqlite3";
 
-export const CURRENT_DATABASE_VERSION = 5;
+export const CURRENT_DATABASE_VERSION = 7;
 
 const IsoDateTimeSchema = CreateMeetingInputSchema.shape.clientCreatedAt;
 const ActiveStatuses = "'draft', 'recording', 'recoverable', 'uploading', 'processing', 'ready', 'failed'";
@@ -15,6 +15,8 @@ const migrations = [
   { version: 3, migrate: migrateVersionThree },
   { version: 4, migrate: migrateVersionFour },
   { version: 5, migrate: migrateVersionFive },
+  { version: 6, migrate: migrateVersionSix },
+  { version: 7, migrate: migrateVersionSeven },
 ];
 
 export function canonicalizeTimestamp(value: string): string {
@@ -181,6 +183,39 @@ function migrateVersionFive(db: Database.Database): void {
   })();
 }
 
+function migrateVersionSix(db: Database.Database): void {
+  db.transaction(() => {
+    if (!legacyColumns(db, "meetings").has("note")) {
+      db.exec("ALTER TABLE meetings ADD COLUMN note TEXT NOT NULL DEFAULT '' CHECK (length(note) <= 200000)");
+    }
+    db.pragma("user_version = 6");
+  })();
+}
+
+function migrateVersionSeven(db: Database.Database): void {
+  db.transaction(() => {
+    const invalidNotes = db.prepare("SELECT id, note FROM meetings WHERE instr(note, char(0)) > 0").all() as { id: string; note: string }[];
+    const repairNote = db.prepare("UPDATE meetings SET note = ? WHERE id = ?");
+    for (const row of invalidNotes) {
+      // Version six used length(note), which stops at NUL. Normalize before copying into the stricter table.
+      repairNote.run(truncateCodePoints(row.note.replaceAll("\0", "\uFFFD"), 200_000), row.id);
+    }
+
+    db.exec(`
+      DROP INDEX IF EXISTS meetings_updated_at_idx;
+      DROP INDEX IF EXISTS meetings_trashed_at_idx;
+      ALTER TABLE meetings RENAME TO meetings_legacy_v0;
+    `);
+    createMeetingsSchema(db);
+    copyLegacyMeetings(db);
+    db.exec("DROP TABLE meetings_legacy_v0");
+    if (db.prepare("PRAGMA foreign_key_check").get()) {
+      throw new Error("Foreign key check failed during database migration");
+    }
+    db.pragma("user_version = 7");
+  })();
+}
+
 function createCurrentSchema(db: Database.Database): void {
   db.exec(`
     CREATE TABLE folders (
@@ -194,7 +229,12 @@ function createCurrentSchema(db: Database.Database): void {
     );
 
     CREATE UNIQUE INDEX folders_name_idx ON folders (name COLLATE NOCASE);
+  `);
+  createMeetingsSchema(db);
+}
 
+function createMeetingsSchema(db: Database.Database): void {
+  db.exec(`
     CREATE TABLE meetings (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
@@ -209,6 +249,9 @@ function createCurrentSchema(db: Database.Database): void {
       sync_version INTEGER NOT NULL DEFAULT 0 CHECK (
         sync_version >= 0 AND typeof(sync_version) = 'integer'
       ),
+      note TEXT NOT NULL DEFAULT '' CHECK (
+        length(note) <= 200000 AND instr(note, char(0)) = 0
+      ),
       CHECK (
         (status = 'trashed' AND trashed_at IS NOT NULL AND status_before_trash IS NOT NULL)
         OR
@@ -219,6 +262,18 @@ function createCurrentSchema(db: Database.Database): void {
     CREATE INDEX meetings_updated_at_idx ON meetings (updated_at DESC);
     CREATE INDEX meetings_trashed_at_idx ON meetings (trashed_at);
   `);
+}
+
+function truncateCodePoints(value: string, maximum: number): string {
+  let codePoints = 0;
+  let index = 0;
+  while (index < value.length && codePoints < maximum) {
+    const leading = value.charCodeAt(index);
+    const trailing = value.charCodeAt(index + 1);
+    index += leading >= 0xD800 && leading <= 0xDBFF && trailing >= 0xDC00 && trailing <= 0xDFFF ? 2 : 1;
+    codePoints += 1;
+  }
+  return index === value.length ? value : value.slice(0, index);
 }
 
 function tableExists(db: Database.Database, name: string): boolean {
@@ -264,6 +319,9 @@ function copyLegacyMeetings(db: Database.Database): void {
   const status = `CASE WHEN ${rawStatus} IN (${AllStatuses}) THEN ${rawStatus} ELSE 'draft' END`;
   const rawPriorStatus = column(columns, "status_before_trash", "NULL");
   const rawFolderId = column(columns, "folder_id", "NULL");
+  const folderId = tableExists(db, "folders")
+    ? `CASE WHEN ${rawFolderId} IS NOT NULL AND EXISTS (SELECT 1 FROM folders WHERE id = ${rawFolderId}) THEN ${rawFolderId} ELSE NULL END`
+    : "NULL";
   const rawSyncVersion = column(columns, "sync_version", "0");
   const createdAt = canonicalColumn(columns, "created_at", "'1970-01-01T00:00:00.000Z'");
   const updatedAt = canonicalColumn(columns, "updated_at", "'1970-01-01T00:00:00.000Z'");
@@ -279,13 +337,11 @@ function copyLegacyMeetings(db: Database.Database): void {
   db.exec(`
     INSERT INTO meetings (
       id, title, folder_id, status, status_before_trash, started_at, ended_at,
-      created_at, updated_at, trashed_at, sync_version
+      created_at, updated_at, trashed_at, sync_version, note
     ) SELECT
       ${column(columns, "id", "NULL")},
       ${column(columns, "title", "''")},
-      CASE WHEN ${rawFolderId} IS NOT NULL AND EXISTS (
-        SELECT 1 FROM folders WHERE id = ${rawFolderId}
-      ) THEN ${rawFolderId} ELSE NULL END,
+      ${folderId},
       ${status},
       ${priorStatus},
       ${canonicalColumn(columns, "started_at", "NULL")},
@@ -293,7 +349,8 @@ function copyLegacyMeetings(db: Database.Database): void {
       ${createdAt},
       ${updatedAt},
       ${trashedAt},
-      CASE WHEN typeof(${rawSyncVersion}) = 'integer' AND ${rawSyncVersion} >= 0 THEN ${rawSyncVersion} ELSE 0 END
+      CASE WHEN typeof(${rawSyncVersion}) = 'integer' AND ${rawSyncVersion} >= 0 THEN ${rawSyncVersion} ELSE 0 END,
+      ${column(columns, "note", "''")}
     FROM meetings_legacy_v0;
   `);
 }

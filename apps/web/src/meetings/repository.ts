@@ -2,6 +2,8 @@ import {
   CreateFolderInputSchema,
   CreateMeetingInputSchema,
   FolderSchema,
+  MeetingNoteOperationSchema,
+  MeetingNoteSchema,
   MeetingSchema,
   type Folder,
   type Meeting,
@@ -18,6 +20,7 @@ const IsoTimestampSchema = z.iso.datetime();
 const UserIdSchema = z.uuid().transform((value) => value.toLowerCase());
 const DeviceAccessSchema = z.object({ userId: UserIdSchema, authorizedAt: IsoTimestampSchema, expiresAt: IsoTimestampSchema }).strict();
 const RestoreStatusSchema = z.enum(["draft", "recording", "recoverable", "uploading", "processing", "ready", "failed"]);
+const ConditionalOperationPayloadSchema = z.object({ expectedSyncVersion: z.int().nonnegative() }).passthrough();
 const outboxSource = Symbol("outboxSource");
 
 type SourcedOutboxOperation = OutboxOperation & {
@@ -32,6 +35,13 @@ export class MeetingNotFoundError extends Error {
   constructor(id: string) {
     super(`Meeting not found: ${id}`);
     this.name = "MeetingNotFoundError";
+  }
+}
+
+export class MeetingConflictPendingError extends Error {
+  constructor(id: string) {
+    super(`Meeting conflict pending: ${id}`);
+    this.name = "MeetingConflictPendingError";
   }
 }
 
@@ -75,6 +85,8 @@ export type PendingStatus = {
   count: number;
   conflict: PendingConflict | null;
 };
+
+export type MeetingNoteSyncState = "idle" | "pending" | "conflict";
 
 export class MeetingCatalogRepository {
   private readonly baseName: string;
@@ -194,6 +206,7 @@ export class MeetingCatalogRepository {
         updatedAt: createdAt,
         trashedAt: null,
         syncVersion: 0,
+        note: "",
       });
       await db.meetings.add(meeting);
       await this.enqueueOutbox(db, operation("meeting.create", meeting.id, value, createdAt));
@@ -225,6 +238,14 @@ export class MeetingCatalogRepository {
       Object.defineProperty(item, outboxSource, { value: db, enumerable: false });
     }
     return operations;
+  }
+
+  async meetingNoteSyncState(id: string): Promise<MeetingNoteSyncState> {
+    const meetingId = MeetingIdSchema.parse(id);
+    const operations = await this.db.outbox.where("entityId").equals(meetingId).toArray();
+    const noteOperations = operations.filter((operation) => operation.kind === "meeting.note");
+    if (noteOperations.some((operation) => operation.lastError === "CONFLICT")) return "conflict";
+    return noteOperations.length > 0 ? "pending" : "idle";
   }
 
   async pendingStatus(): Promise<PendingStatus> {
@@ -312,6 +333,35 @@ export class MeetingCatalogRepository {
       await db.meetings.put(meeting);
       await this.enqueueOutbox(db, operation("meeting.rename", meetingId, { title: normalizedTitle, updatedAt, expectedSyncVersion: current.syncVersion }, updatedAt));
       return meeting;
+    });
+  }
+
+  async saveNote(id: string, note: string, now: string): Promise<Meeting> {
+    const db = this.db;
+    const normalizedNote = MeetingNoteSchema.parse(note);
+    const meetingId = MeetingIdSchema.parse(id);
+    const updatedAt = timestamp(now);
+    return db.transaction("rw", db.meetings, db.outbox, async () => {
+      const current = await db.meetings.get(meetingId);
+      if (!current) throw new MeetingNotFoundError(meetingId);
+      const entityOperations = await db.outbox.where("entityId").equals(meetingId).sortBy("sequence");
+      if (entityOperations.some((item) => item.lastError === "CONFLICT")) throw new MeetingConflictPendingError(meetingId);
+      const tail = entityOperations.at(-1);
+      const replacingTail = tail?.kind === "meeting.note" && tail.sequence !== undefined;
+      const expectedSyncVersion = replacingTail
+        ? MeetingNoteOperationSchema.parse(tail.payload).expectedSyncVersion
+        : current.syncVersion;
+      const next = MeetingSchema.parse({
+        ...current,
+        note: normalizedNote,
+        updatedAt,
+        syncVersion: replacingTail ? current.syncVersion : current.syncVersion + 1,
+      });
+      const payload = MeetingNoteOperationSchema.parse({ note: normalizedNote, updatedAt, expectedSyncVersion });
+      if (replacingTail) await db.outbox.delete(tail.sequence!);
+      await db.meetings.put(next);
+      await this.enqueueOutbox(db, operation("meeting.note", meetingId, payload, updatedAt));
+      return next;
     });
   }
 
@@ -438,10 +488,33 @@ export class MeetingCatalogRepository {
 
     await db.transaction("rw", db.meetings, db.folders, db.outbox, async () => {
       const pending = await db.outbox.toArray();
-      const hasLaterEntityMutation = pending.some((item) => item.entityId === operationToApply.entityId && item.sequence !== undefined && item.sequence > sequence);
+      const laterEntityMutations = pending
+        .filter((item) => item.entityId === operationToApply.entityId && item.sequence !== undefined && item.sequence > sequence)
+        .sort((left, right) => left.sequence! - right.sequence!);
+      const hasLaterEntityMutation = laterEntityMutations.length > 0;
       const pendingFolderRemovals = new Set(pending
         .filter((item) => item.kind === "folder.remove" && item.sequence !== sequence)
         .map((item) => item.entityId));
+
+      const operationStillPending = pending.some((item) => item.sequence === sequence && item.id === operationToApply.id);
+      const laterMeetingMutations = laterEntityMutations.filter((item) => item.kind.startsWith("meeting."));
+      if (operationToApply.kind === "meeting.note" && receivedMeeting && !operationStillPending && laterMeetingMutations[0]?.kind === "meeting.note") {
+        MeetingNoteOperationSchema.parse(operationToApply.payload);
+        const replacementPayload = MeetingNoteOperationSchema.parse(laterMeetingMutations[0].payload);
+        const versionShift = receivedMeeting.syncVersion - replacementPayload.expectedSyncVersion;
+        if (versionShift > 0) {
+          for (const item of laterMeetingMutations) {
+            const payload = ConditionalOperationPayloadSchema.parse(item.payload);
+            await db.outbox.update(item.sequence!, {
+              payload: { ...payload, expectedSyncVersion: payload.expectedSyncVersion + versionShift },
+            });
+          }
+          const current = await db.meetings.get(operationToApply.entityId);
+          if (current) {
+            await db.meetings.put(MeetingSchema.parse({ ...current, syncVersion: current.syncVersion + versionShift }));
+          }
+        }
+      }
 
       if (operationToApply.kind === "folder.remove") {
         const meetings = await db.meetings.where("folderId").equals(operationToApply.entityId).toArray();

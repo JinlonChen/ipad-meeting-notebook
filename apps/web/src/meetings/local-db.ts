@@ -6,6 +6,7 @@ export type OutboxKind =
   | "folder.rename"
   | "folder.remove"
   | "meeting.create"
+  | "meeting.note"
   | "meeting.rename"
   | "meeting.trash"
   | "meeting.restore";
@@ -51,5 +52,15 @@ export class MeetingCatalogDatabase extends Dexie {
     }).upgrade((transaction) => transaction.table<OutboxOperation>("outbox").toCollection().modify((item) => {
       if (!item.id) item.id = globalThis.crypto.randomUUID();
     }));
+    this.version(3).stores({
+      meetings: "id,updatedAt,status,folderId,title",
+      folders: "id,name,updatedAt",
+      outbox: "++sequence,id,entityId,kind,createdAt",
+      settings: "key",
+    }).upgrade(async (transaction) => {
+      await transaction.table<Meeting>("meetings").toCollection().modify((meeting) => {
+        if (typeof meeting.note !== "string") meeting.note = "";
+      });
+    });
   }
 }

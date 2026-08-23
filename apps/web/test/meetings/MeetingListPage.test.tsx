@@ -4,7 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { MeetingCatalogRepository } from "../../src/meetings/repository.js";
-import { MeetingListPage, WorkspacePlaceholder } from "../../src/meetings/MeetingListPage.js";
+import { MeetingListPage } from "../../src/meetings/MeetingListPage.js";
+import { MeetingWorkspacePage } from "../../src/meetings/MeetingWorkspacePage.js";
 import "../../src/app/styles.css";
 
 const now = "2026-08-21T00:00:00.000Z";
@@ -27,7 +28,7 @@ function renderPage(repository = catalog(), initialEntries = ["/meetings"]) {
   const refresh = async () => ({ state: "idle" as const });
   render(<MemoryRouter initialEntries={initialEntries}><Routes>
     <Route path="/meetings" element={<MeetingListPage repository={repository} refresh={refresh} now={() => now} online />} />
-    <Route path="/meetings/:id" element={<WorkspacePlaceholder />} />
+    <Route path="/meetings/:id" element={<MeetingWorkspacePage repository={repository} refresh={refresh} now={() => now} online />} />
   </Routes></MemoryRouter>);
   return repository;
 }
@@ -159,7 +160,7 @@ describe("MeetingListPage", () => {
     expect(await screen.findByRole("main")).toHaveAttribute("data-layout", "landscape");
   });
 
-  test("creates locally, validates dialog input, searches, and opens the workspace placeholder", async () => {
+  test("creates locally, validates dialog input, searches, and opens the real workspace", async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByRole("heading", { name: "会议本" });
@@ -170,10 +171,12 @@ describe("MeetingListPage", () => {
     await user.type(screen.getByLabelText("会议名称"), "Sprint planning");
     await user.click(screen.getByRole("button", { name: "创建" }));
 
-    await screen.findByText("会议工作区将在录音阶段启用");
+    expect(await screen.findByRole("heading", { name: "Sprint planning" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "会议笔记" })).toBeVisible();
+    expect(screen.queryByText("会议工作区将在录音阶段启用")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "返回会议" }));
     await screen.findByRole("heading", { name: "会议本" });
-    expect(screen.getByText("Sprint planning")).toBeVisible();
+    expect(await screen.findByText("Sprint planning")).toBeVisible();
     await user.type(screen.getByRole("searchbox", { name: "搜索会议" }), "nomatch");
     await waitFor(() => expect(screen.getByText("没有匹配的会议")).toBeVisible());
   });
@@ -240,7 +243,7 @@ describe("MeetingListPage", () => {
     const scheduleRefresh = vi.fn(() => automatic.promise);
     render(<MemoryRouter initialEntries={["/meetings"]}><Routes>
       <Route path="/meetings" element={<MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={() => now} online />} />
-      <Route path="/meetings/:id" element={<WorkspacePlaceholder />} />
+      <Route path="/meetings/:id" element={<MeetingWorkspacePage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={() => now} online />} />
     </Routes></MemoryRouter>);
     await screen.findByText("还没有会议");
     const delayedList = deferred<Awaited<ReturnType<MeetingCatalogRepository["list"]>>>();
@@ -250,8 +253,8 @@ describe("MeetingListPage", () => {
     await user.type(screen.getByLabelText("会议名称"), "导航前同步");
     await user.click(screen.getByRole("button", { name: "创建" }));
 
-    await screen.findByText("会议工作区将在录音阶段启用");
-    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("textbox", { name: "会议笔记" })).toBeVisible();
+    expect(refresh).toHaveBeenCalledTimes(2);
     expect(scheduleRefresh).toHaveBeenCalledTimes(1);
     delayedList.resolve([]);
     automatic.resolve({ state: "idle" });
@@ -1051,7 +1054,7 @@ describe("MeetingListPage", () => {
     await user.click(screen.getByRole("button", { name: "创建" }));
 
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(trigger).toHaveFocus();
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 
   test("moves focus to a stable category control after deleting its trigger", async () => {
