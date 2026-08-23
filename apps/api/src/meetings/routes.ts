@@ -2,6 +2,7 @@ import {
   CreateMeetingInputSchema,
   IdempotencyKeySchema,
   MeetingMutationBodySchema,
+  MeetingNoteBodySchema,
   MeetingPatchWireBodySchema,
   MeetingSchema,
 } from "@meeting/contracts";
@@ -26,6 +27,7 @@ const QuerySchema = z.object({
 }).strict();
 const EmptyQuerySchema = z.object({}).strict();
 const NoBodySchema = z.undefined();
+const MeetingPatchRouteBodySchema = z.union([MeetingPatchWireBodySchema, MeetingNoteBodySchema]);
 
 function operationId(request: FastifyRequest) {
   return IdempotencyKeySchema.optional().safeParse(request.headers["idempotency-key"]);
@@ -69,14 +71,15 @@ export function registerMeetingRoutes(app: FastifyInstance, options: {
 
   app.patch("/api/meetings/:id", { onRequest: options.onRequest }, async (request, reply) => {
     const params = IdParamsSchema.safeParse(request.params);
-    const patch = MeetingPatchWireBodySchema.safeParse(request.body);
+    const patch = MeetingPatchRouteBodySchema.safeParse(request.body);
     const operation = operationId(request);
     if (!params.success || !patch.success || !operation.success || !EmptyQuerySchema.safeParse(request.query).success) return invalid(reply);
     try {
       const expectedSyncVersion = "expectedSyncVersion" in patch.data ? patch.data.expectedSyncVersion : undefined;
       const changes = {
-        title: patch.data.title,
+        ...("title" in patch.data ? { title: patch.data.title } : {}),
         ...("folderId" in patch.data ? { folderId: patch.data.folderId } : {}),
+        ...("note" in patch.data ? { note: patch.data.note } : {}),
       };
       return reply.send(MeetingSchema.parse(options.meetings.update(params.data.id, changes, now().toISOString(), expectedSyncVersion, operation.data)));
     } catch (error) {

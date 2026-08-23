@@ -134,6 +134,67 @@ describe("meeting routes", () => {
     }
   });
 
+  test("conditionally patches a strict meeting note and returns typed failures", async () => {
+    const server = await createTestApp();
+    try {
+      const cookie = await login(server);
+      await server.inject({ method: "POST", url: "/api/meetings", headers: { cookie }, payload: { id: MEETING_ONE, title: "Notes", folderId: null, clientCreatedAt: CREATED_AT } });
+      const key = "00000000-0000-4000-8000-000000000185";
+      const saved = await server.inject({
+        method: "PATCH",
+        url: `/api/meetings/${MEETING_ONE}`,
+        headers: { cookie, "idempotency-key": key },
+        payload: { note: "结论\nNext step", expectedSyncVersion: 0 },
+      });
+      expect(saved).toMatchObject({ statusCode: 200 });
+      expect(saved.json()).toMatchObject({ note: "结论\nNext step", syncVersion: 1 });
+      expect((await server.inject({
+        method: "PATCH",
+        url: `/api/meetings/${MEETING_ONE}`,
+        headers: { cookie, "idempotency-key": key },
+        payload: { note: "结论\nNext step", expectedSyncVersion: 0 },
+      })).json()).toEqual(saved.json());
+      expect(await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_ONE}`, headers: { cookie }, payload: { note: "stale", expectedSyncVersion: 0 } }))
+        .toMatchObject({ statusCode: 409, body: '{"code":"SYNC_VERSION_CONFLICT"}' });
+      expect(await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_TWO}`, headers: { cookie }, payload: { note: "missing", expectedSyncVersion: 0 } }))
+        .toMatchObject({ statusCode: 404, body: '{"code":"MEETING_NOT_FOUND"}' });
+      for (const payload of [
+        { note: "invalid", expectedSyncVersion: 1, updatedAt: CREATED_AT },
+        { note: "invalid", title: "mixed", expectedSyncVersion: 1 },
+        { note: "invalid" },
+      ]) {
+        expect(await server.inject({ method: "PATCH", url: `/api/meetings/${MEETING_ONE}`, headers: { cookie }, payload }))
+          .toMatchObject({ statusCode: 400, body: '{"code":"INVALID_REQUEST"}' });
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("accepts 200000 emoji note code points and rejects one more", async () => {
+    const server = await createTestApp();
+    try {
+      const cookie = await login(server);
+      await server.inject({ method: "POST", url: "/api/meetings", headers: { cookie }, payload: { id: MEETING_ONE, title: "Notes", folderId: null, clientCreatedAt: CREATED_AT } });
+      const accepted = await server.inject({
+        method: "PATCH",
+        url: `/api/meetings/${MEETING_ONE}`,
+        headers: { cookie },
+        payload: { note: "😀".repeat(200_000), expectedSyncVersion: 0 },
+      });
+      expect(accepted).toMatchObject({ statusCode: 200 });
+      expect(Array.from(accepted.json().note)).toHaveLength(200_000);
+      expect(await server.inject({
+        method: "PATCH",
+        url: `/api/meetings/${MEETING_ONE}`,
+        headers: { cookie },
+        payload: { note: "😀".repeat(200_001), expectedSyncVersion: 1 },
+      })).toMatchObject({ statusCode: 400, body: '{"code":"INVALID_REQUEST"}' });
+    } finally {
+      await server.close();
+    }
+  });
+
   test("trashes, restores, filters literal search, and sanitizes invalid requests", async () => {
     const server = await createTestApp();
     try {

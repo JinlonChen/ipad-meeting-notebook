@@ -24,6 +24,7 @@ export type MeetingRow = {
   trashed_at: Meeting["trashedAt"];
   status_before_trash: Exclude<Meeting["status"], "trashed"> | null;
   sync_version: Meeting["syncVersion"];
+  note: Meeting["note"];
 };
 
 export type CatalogMutationReplayRow = {
@@ -48,6 +49,15 @@ export type ApplyCatalogMutationResult = {
   code?: string;
   meeting?: MeetingRow;
   folder?: FolderRow;
+};
+
+export type ApplyMeetingNoteMutationArgs = {
+  p_operation_id: string;
+  p_entity_id: string;
+  p_note: string;
+  p_updated_at: string;
+  p_expected_sync_version: number;
+  p_expected_user_id: string;
 };
 
 export type CatalogSnapshotResult = {
@@ -91,6 +101,10 @@ export type Database = {
     Functions: {
       apply_catalog_mutation: {
         Args: ApplyCatalogMutationArgs;
+        Returns: ApplyCatalogMutationResult;
+      };
+      apply_meeting_note_mutation: {
+        Args: ApplyMeetingNoteMutationArgs;
         Returns: ApplyCatalogMutationResult;
       };
       get_catalog_snapshot: {

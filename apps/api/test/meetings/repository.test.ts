@@ -6,6 +6,7 @@ import { ZodError } from "zod";
 import { openDatabase } from "../../src/db/database.js";
 import {
   MeetingNotFoundError,
+  MeetingSyncVersionConflictError,
   SqliteMeetingRepository,
 } from "../../src/meetings/repository.js";
 
@@ -37,6 +38,7 @@ describe("SqliteMeetingRepository", () => {
 
     expect(created).toEqual(repeated);
     expect(created.title).toBe("项目复盘会议");
+    expect(created.note).toBe("");
     expect(meetings.list({ search: "复盘", includeTrashed: false })).toEqual([created]);
     expect(MeetingSchema.parse(created)).toEqual(created);
   });
@@ -80,6 +82,42 @@ describe("SqliteMeetingRepository", () => {
     expect(meetings.rename(ID_ONE, "  After  ", LATER)).toMatchObject({ title: "After", updatedAt: LATER, syncVersion: 1 });
     expect(() => meetings.rename(ID_ONE, "   ", LATER)).toThrow();
     expect(() => meetings.rename(ID_THREE, "Missing", LATER)).toThrow(MeetingNotFoundError);
+  });
+
+  test("updates a note conditionally and increments syncVersion exactly once", () => {
+    const { meetings } = repository();
+    meetings.create({ id: ID_ONE, title: "Notes", folderId: null, clientCreatedAt: CREATED_AT });
+
+    expect(meetings.update(ID_ONE, { note: "结论\nNext step" }, LATER, 0)).toMatchObject({
+      note: "结论\nNext step",
+      updatedAt: LATER,
+      syncVersion: 1,
+    });
+    expect(() => meetings.update(ID_ONE, { note: "stale" }, "2026-08-20T12:00:00.000Z", 0))
+      .toThrow(MeetingSyncVersionConflictError);
+    expect(meetings.get(ID_ONE)).toMatchObject({ note: "结论\nNext step", syncVersion: 1 });
+  });
+
+  test("validates ASCII and emoji note limits by Unicode code points", () => {
+    const { meetings } = repository();
+    meetings.create({ id: ID_ONE, title: "ASCII", folderId: null, clientCreatedAt: CREATED_AT });
+    meetings.create({ id: ID_TWO, title: "Emoji", folderId: null, clientCreatedAt: CREATED_AT });
+
+    expect(meetings.update(ID_ONE, { note: "a".repeat(200_000) }, LATER, 0).note).toHaveLength(200_000);
+    expect(meetings.update(ID_TWO, { note: "😀".repeat(200_000) }, LATER, 0).note).toBe("😀".repeat(200_000));
+    expect(() => meetings.update(ID_ONE, { note: "a".repeat(200_001) }, LATER, 1)).toThrow(ZodError);
+    expect(() => meetings.update(ID_TWO, { note: "😀".repeat(200_001) }, LATER, 1)).toThrow(ZodError);
+  });
+
+  test("replays the same note mutation and rejects idempotency key reuse", () => {
+    const { meetings } = repository();
+    meetings.create({ id: ID_ONE, title: "Notes", folderId: null, clientCreatedAt: CREATED_AT });
+    const operationId = "00000000-0000-4000-8000-000000000181";
+
+    const first = meetings.update(ID_ONE, { note: "saved once" }, LATER, 0, operationId);
+    expect(meetings.update(ID_ONE, { note: "saved once" }, LATER, 0, operationId)).toEqual(first);
+    expect(first.syncVersion).toBe(1);
+    expect(() => meetings.update(ID_ONE, { note: "different" }, LATER, 0, operationId)).toThrow("Idempotency key conflicts");
   });
 
   test("hides trashed meetings, makes repeated trash and restore idempotent, and restores prior status", () => {

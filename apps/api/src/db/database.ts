@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { CreateMeetingInputSchema } from "@meeting/contracts";
 import Database from "better-sqlite3";
 
-export const CURRENT_DATABASE_VERSION = 5;
+export const CURRENT_DATABASE_VERSION = 6;
 
 const IsoDateTimeSchema = CreateMeetingInputSchema.shape.clientCreatedAt;
 const ActiveStatuses = "'draft', 'recording', 'recoverable', 'uploading', 'processing', 'ready', 'failed'";
@@ -15,6 +15,7 @@ const migrations = [
   { version: 3, migrate: migrateVersionThree },
   { version: 4, migrate: migrateVersionFour },
   { version: 5, migrate: migrateVersionFive },
+  { version: 6, migrate: migrateVersionSix },
 ];
 
 export function canonicalizeTimestamp(value: string): string {
@@ -181,6 +182,15 @@ function migrateVersionFive(db: Database.Database): void {
   })();
 }
 
+function migrateVersionSix(db: Database.Database): void {
+  db.transaction(() => {
+    if (!legacyColumns(db, "meetings").has("note")) {
+      db.exec("ALTER TABLE meetings ADD COLUMN note TEXT NOT NULL DEFAULT '' CHECK (length(note) <= 200000)");
+    }
+    db.pragma("user_version = 6");
+  })();
+}
+
 function createCurrentSchema(db: Database.Database): void {
   db.exec(`
     CREATE TABLE folders (
@@ -209,6 +219,7 @@ function createCurrentSchema(db: Database.Database): void {
       sync_version INTEGER NOT NULL DEFAULT 0 CHECK (
         sync_version >= 0 AND typeof(sync_version) = 'integer'
       ),
+      note TEXT NOT NULL DEFAULT '' CHECK (length(note) <= 200000),
       CHECK (
         (status = 'trashed' AND trashed_at IS NOT NULL AND status_before_trash IS NOT NULL)
         OR
@@ -279,7 +290,7 @@ function copyLegacyMeetings(db: Database.Database): void {
   db.exec(`
     INSERT INTO meetings (
       id, title, folder_id, status, status_before_trash, started_at, ended_at,
-      created_at, updated_at, trashed_at, sync_version
+      created_at, updated_at, trashed_at, sync_version, note
     ) SELECT
       ${column(columns, "id", "NULL")},
       ${column(columns, "title", "''")},
@@ -293,7 +304,8 @@ function copyLegacyMeetings(db: Database.Database): void {
       ${createdAt},
       ${updatedAt},
       ${trashedAt},
-      CASE WHEN typeof(${rawSyncVersion}) = 'integer' AND ${rawSyncVersion} >= 0 THEN ${rawSyncVersion} ELSE 0 END
+      CASE WHEN typeof(${rawSyncVersion}) = 'integer' AND ${rawSyncVersion} >= 0 THEN ${rawSyncVersion} ELSE 0 END,
+      ${column(columns, "note", "''")}
     FROM meetings_legacy_v0;
   `);
 }

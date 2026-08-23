@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import {
   CreateMeetingInputSchema,
   MeetingListQuerySchema,
+  MeetingNoteSchema,
   MeetingSchema,
   type CreateMeetingInput,
   type Meeting,
@@ -25,6 +26,7 @@ type MeetingRow = {
   updated_at: string;
   trashed_at: string | null;
   sync_version: number;
+  note: string;
 };
 
 export interface MeetingRepository {
@@ -33,7 +35,7 @@ export interface MeetingRepository {
   get(id: string): Meeting | null;
   list(query: { search: string; includeTrashed: boolean }): Meeting[];
   rename(id: string, title: string, now: string, expectedSyncVersion?: number, operationId?: string): Meeting;
-  update(id: string, patch: { title?: string | undefined; folderId?: string | null | undefined }, now: string, expectedSyncVersion?: number, operationId?: string): Meeting;
+  update(id: string, patch: { title?: string | undefined; folderId?: string | null | undefined; note?: string | undefined }, now: string, expectedSyncVersion?: number, operationId?: string): Meeting;
   trash(id: string, now: string, expectedSyncVersion?: number, operationId?: string): Meeting;
   restore(id: string, now: string, expectedSyncVersion?: number, operationId?: string): Meeting;
   purgeTrashedBefore(cutoff: string): number;
@@ -79,6 +81,7 @@ function mapMeeting(row: MeetingRow): Meeting {
     updatedAt: row.updated_at,
     trashedAt: row.trashed_at,
     syncVersion: row.sync_version,
+    note: row.note,
   });
 }
 
@@ -158,12 +161,13 @@ export class SqliteMeetingRepository implements MeetingRepository {
     return this.update(id, { title }, now, expectedSyncVersion, operationId);
   }
 
-  update(id: string, patch: { title?: string | undefined; folderId?: string | null | undefined }, now: string, expectedSyncVersion?: number, operationId?: string): Meeting {
+  update(id: string, patch: { title?: string | undefined; folderId?: string | null | undefined; note?: string | undefined }, now: string, expectedSyncVersion?: number, operationId?: string): Meeting {
     const meetingId = MeetingIdSchema.parse(id);
     const value = z.object({
       title: MeetingTitleSchema.optional(),
       folderId: MeetingIdSchema.nullable().optional(),
-    }).strict().refine((candidate) => candidate.title !== undefined || candidate.folderId !== undefined).parse(patch);
+      note: MeetingNoteSchema.optional(),
+    }).strict().refine((candidate) => candidate.title !== undefined || candidate.folderId !== undefined || candidate.note !== undefined).parse(patch);
     const timestamp = canonicalizeTimestamp(now);
     return replayableMutation(this.db, operationId, "meeting.update", meetingId, { ...value, expectedSyncVersion }, (response) => MeetingSchema.parse(response), () => this.db.transaction(() => {
       if (!this.get(meetingId)) throw new MeetingNotFoundError(meetingId);
@@ -179,6 +183,10 @@ export class SqliteMeetingRepository implements MeetingRepository {
       if (value.folderId !== undefined) {
         fields.push("folder_id = ?");
         parameters.push(value.folderId);
+      }
+      if (value.note !== undefined) {
+        fields.push("note = ?");
+        parameters.push(value.note);
       }
       const versionClause = expectedSyncVersion === undefined ? "" : " AND sync_version = ?";
       const row = this.db.prepare(`

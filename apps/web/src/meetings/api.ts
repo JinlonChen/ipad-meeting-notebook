@@ -1,4 +1,4 @@
-import { CreateFolderInputSchema, CreateMeetingInputSchema, FolderMutationBodySchema, FolderRenameBodySchema, FolderSchema, LegacyFolderRenameBodySchema, LegacyMeetingPatchBodySchema, MeetingMutationBodySchema, MeetingPatchBodySchema, MeetingSchema, type Folder, type Meeting } from "@meeting/contracts";
+import { CreateFolderInputSchema, CreateMeetingInputSchema, FolderMutationBodySchema, FolderRenameBodySchema, FolderSchema, LegacyFolderRenameBodySchema, LegacyMeetingPatchBodySchema, MeetingMutationBodySchema, MeetingNoteBodySchema, MeetingNoteOperationSchema, MeetingPatchBodySchema, MeetingSchema, type Folder, type Meeting } from "@meeting/contracts";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
@@ -68,6 +68,11 @@ export class MeetingCatalogHttpApi implements MeetingCatalogApi {
           ? MeetingPatchBodySchema.parse({ title: payload.title, expectedSyncVersion: payload.expectedSyncVersion })
           : LegacyMeetingPatchBodySchema.parse({ title: payload.title });
         return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}`, init("PATCH", body)), MeetingSchema, hasExpectedSyncVersion(payload) ? ["MEETING_NOT_FOUND"] : []) };
+      }
+      case "meeting.note": {
+        const payload = MeetingNoteOperationSchema.parse(operation.payload);
+        const body = MeetingNoteBodySchema.parse({ note: payload.note, expectedSyncVersion: payload.expectedSyncVersion });
+        return { meeting: await parsed(this.fetcher(`/api/meetings/${operation.entityId}`, init("PATCH", body)), MeetingSchema, ["MEETING_NOT_FOUND"]) };
       }
       case "meeting.trash": {
         const payload = z.object({}).passthrough().parse(operation.payload);
@@ -143,6 +148,13 @@ const RpcResultSchema = z.object({
   meeting: z.unknown().optional(),
   folder: z.unknown().optional(),
 }).strict();
+const MeetingNoteRpcResultSchema = RpcResultSchema.pipe(z.discriminatedUnion("status", [
+  z.object({ status: z.literal(200), meeting: z.unknown() }).strict(),
+  z.object({ status: z.literal(400), code: z.literal("INVALID_REQUEST") }).strict(),
+  z.object({ status: z.literal(401), code: z.enum(["AUTH_REQUIRED", "AUTH_CONTEXT_CHANGED"]) }).strict(),
+  z.object({ status: z.literal(404), code: z.literal("MEETING_NOT_FOUND") }).strict(),
+  z.object({ status: z.literal(409), code: z.enum(["CONFLICT", "IDEMPOTENCY_KEY_REUSED"]) }).strict(),
+]));
 const SnapshotResultSchema = z.object({
   status: z.number().int().min(100).max(599),
   code: z.string().optional(),
@@ -189,6 +201,7 @@ function contractMeeting(row: unknown): Meeting {
     updatedAt: canonicalTimestamp(value.updated_at),
     trashedAt: nullableCanonicalTimestamp(value.trashed_at),
     syncVersion: value.sync_version,
+    note: value.note,
   });
 }
 
@@ -225,6 +238,21 @@ export class MeetingCatalogSupabaseApi implements MeetingCatalogApi {
 
   async send(operation: OutboxOperation, expectedUserId: string): Promise<{ meeting?: Meeting; folder?: Folder }> {
     try {
+      if (operation.kind === "meeting.note") {
+        const payload = MeetingNoteOperationSchema.parse(operation.payload);
+        const { data, error, status } = await this.client.rpc("apply_meeting_note_mutation", {
+          p_operation_id: operation.id,
+          p_entity_id: operation.entityId,
+          p_note: payload.note,
+          p_updated_at: payload.updatedAt,
+          p_expected_sync_version: payload.expectedSyncVersion,
+          p_expected_user_id: z.uuid().parse(expectedUserId),
+        });
+        if (error) throw supabaseFailure(error, status);
+        const result = MeetingNoteRpcResultSchema.parse(data);
+        if (result.status !== 200) throw rpcFailure(result.status, result.code);
+        return { meeting: contractMeeting(result.meeting) };
+      }
       const payload = MutationPayloadSchema.parse(operation.payload);
       if (Object.prototype.hasOwnProperty.call(payload, "expectedSyncVersion")) {
         z.number().int().nonnegative().parse(payload.expectedSyncVersion);
@@ -280,7 +308,7 @@ export class MeetingCatalogSupabaseApi implements MeetingCatalogApi {
     try {
       const { data, error, status } = await this.client
         .from("meetings")
-        .select("user_id,id,title,folder_id,status,started_at,ended_at,created_at,updated_at,trashed_at,sync_version")
+        .select("user_id,id,title,folder_id,status,started_at,ended_at,created_at,updated_at,trashed_at,sync_version,note")
         .order("updated_at", { ascending: false })
         .order("id", { ascending: true });
       if (error) throw supabaseFailure(error, status);

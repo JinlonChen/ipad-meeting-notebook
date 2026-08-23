@@ -46,6 +46,43 @@ describe("MeetingCatalogHttpApi", () => {
     ]);
   });
 
+  test("sends a meeting note as a strict conditional PATCH without updatedAt", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ ...meeting, note: "结论\nNext step", syncVersion: 1 }));
+    const api = new MeetingCatalogHttpApi(fetcher);
+
+    await expect(api.send({
+      id: "00000000-0000-4000-8000-000000000018",
+      entityId: id,
+      kind: "meeting.note",
+      payload: { note: "结论\nNext step", updatedAt: timestamp, expectedSyncVersion: 0 },
+      createdAt: timestamp,
+      attempts: 0,
+      lastError: null,
+    })).resolves.toEqual({ meeting: { ...meeting, note: "结论\nNext step", syncVersion: 1 } });
+
+    expect(fetcher).toHaveBeenCalledWith(`/api/meetings/${id}`, expect.objectContaining({
+      method: "PATCH",
+      credentials: "include",
+      headers: expect.objectContaining({ "idempotency-key": "00000000-0000-4000-8000-000000000018" }),
+      body: JSON.stringify({ note: "结论\nNext step", expectedSyncVersion: 0 }),
+    }));
+  });
+
+  test("preserves a typed missing meeting response for a note mutation", async () => {
+    const operation = {
+      id: "00000000-0000-4000-8000-000000000019",
+      entityId: id,
+      kind: "meeting.note" as const,
+      payload: { note: "local note", updatedAt: timestamp, expectedSyncVersion: 2 },
+      createdAt: timestamp,
+      attempts: 0,
+      lastError: null,
+    };
+
+    await expect(new MeetingCatalogHttpApi(vi.fn().mockResolvedValue(response({ code: "MEETING_NOT_FOUND" }, 404))).send(operation))
+      .rejects.toEqual(new CatalogApiError(404, "MEETING_NOT_FOUND"));
+  });
+
   test("replays legacy conditional outbox payloads without a sync version", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(response(meeting))
@@ -277,6 +314,71 @@ describe("MeetingCatalogSupabaseApi", () => {
     }]));
   });
 
+  test("sends meeting notes only through the dedicated actor-bound RPC", async () => {
+    const noteOperation = {
+      id: "00000000-0000-4000-8000-000000000018",
+      entityId: id,
+      kind: "meeting.note" as const,
+      payload: { note: "结论\nNext step", updatedAt: timestamp, expectedSyncVersion: 2 },
+      createdAt: timestamp,
+      attempts: 0,
+      lastError: null,
+    };
+    const { client, rpc } = supabaseClient({ rpcResults: [{
+      data: { status: 200, meeting: { ...meetingRow, note: noteOperation.payload.note, sync_version: 3 } },
+      error: null,
+    }] });
+
+    await expect(new MeetingCatalogSupabaseApi(client).send(noteOperation, folderRow.user_id)).resolves.toEqual({
+      meeting: expect.objectContaining({ note: noteOperation.payload.note, syncVersion: 3 }),
+    });
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith("apply_meeting_note_mutation", {
+      p_operation_id: noteOperation.id,
+      p_entity_id: id,
+      p_note: noteOperation.payload.note,
+      p_updated_at: timestamp,
+      p_expected_sync_version: 2,
+      p_expected_user_id: folderRow.user_id,
+    });
+  });
+
+  test.each([
+    ["missing meeting", { status: 200 }],
+    ["unexpected folder", { status: 200, meeting: meetingRow, folder: folderRow }],
+    ["unknown response field", { status: 200, meeting: meetingRow, extra: true }],
+    ["entity on failure", { status: 404, code: "MEETING_NOT_FOUND", meeting: meetingRow }],
+    ["unrelated failure code", { status: 404, code: "FOLDER_NOT_FOUND" }],
+    ["unexpected success status", { status: 299, meeting: meetingRow }],
+  ])("rejects a malformed meeting note RPC response with %s", async (_label, data) => {
+    const noteOperation = {
+      id: "00000000-0000-4000-8000-000000000018",
+      entityId: id,
+      kind: "meeting.note" as const,
+      payload: { note: "note", updatedAt: timestamp, expectedSyncVersion: 2 },
+      createdAt: timestamp,
+      attempts: 0,
+      lastError: null,
+    };
+    const { client } = supabaseClient({ rpcResults: [{ data, error: null }] });
+
+    await expect(new MeetingCatalogSupabaseApi(client).send(noteOperation, folderRow.user_id))
+      .rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
+  });
+
+  test("normalizes only a missing legacy note and preserves a stored note", async () => {
+    const legacyRow = { ...meetingRow } as Partial<typeof meetingRow>;
+    delete legacyRow.note;
+    const { client } = supabaseClient({ tableResults: {
+      meetings: { data: [legacyRow, { ...meetingRow, id: "00000000-0000-4000-8000-000000000003", note: "stored note" }], error: null },
+    } });
+
+    await expect(new MeetingCatalogSupabaseApi(client).listMeetings()).resolves.toEqual([
+      expect.objectContaining({ id, note: "" }),
+      expect.objectContaining({ id: "00000000-0000-4000-8000-000000000003", note: "stored note" }),
+    ]);
+  });
+
   test("maps snake-case mutation rows and deterministic replay responses to contracts", async () => {
     const { client } = supabaseClient({ rpcResults: [
       { data: { status: 200, meeting: meetingRow }, error: null },
@@ -339,7 +441,7 @@ describe("MeetingCatalogSupabaseApi", () => {
       ["name", { ascending: true }],
       ["id", { ascending: true }],
     ]);
-    expect(queries.meetings?.select).toHaveBeenCalledWith("user_id,id,title,folder_id,status,started_at,ended_at,created_at,updated_at,trashed_at,sync_version");
+    expect(queries.meetings?.select).toHaveBeenCalledWith("user_id,id,title,folder_id,status,started_at,ended_at,created_at,updated_at,trashed_at,sync_version,note");
     expect(queries.meetings?.order.mock.calls).toEqual([
       ["updated_at", { ascending: false }],
       ["id", { ascending: true }],
