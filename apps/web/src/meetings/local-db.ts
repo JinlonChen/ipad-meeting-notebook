@@ -22,6 +22,7 @@ export type OutboxOperation = {
 };
 
 export type DeviceAccess = {
+  userId: string;
   authorizedAt: string;
   expiresAt: string;
 };

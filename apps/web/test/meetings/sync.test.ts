@@ -5,6 +5,8 @@ import { MeetingCatalogHttpApi } from "../../src/meetings/api.js";
 import { CatalogApiError, CatalogSync, type MeetingCatalogApi } from "../../src/meetings/sync.js";
 
 const now = "2026-08-21T00:00:00.000Z";
+const userA = "00000000-0000-4000-8000-00000000000a";
+const userB = "00000000-0000-4000-8000-00000000000b";
 let databaseNumber = 0;
 
 function catalog(): MeetingCatalogRepository {
@@ -77,6 +79,47 @@ describe("CatalogSync", () => {
     await expect(new CatalogSync(store, client).flush()).resolves.toEqual({ state: "idle" });
 
     expect(sent).toEqual(["folder.create", "meeting.create"]);
+    await expect(store.pendingOperations()).resolves.toEqual([]);
+  });
+
+  test("flushes only the active user's outbox and preserves another user's pending work", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    await store.activateUser(userA);
+    const meetingA = await store.create("A pending", null, now);
+    await store.activateUser(userB);
+    const meetingB = await store.create("B pending", null, "2026-08-21T00:01:00.000Z");
+    const send = vi.fn().mockResolvedValue({ meeting: meetingB });
+
+    await expect(new CatalogSync(store, api(send)).flush()).resolves.toEqual({ state: "idle" });
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ entityId: meetingB.id }));
+    await expect(store.pendingOperations()).resolves.toEqual([]);
+    await store.activateUser(userA);
+    await expect(store.pendingOperations()).resolves.toEqual([expect.objectContaining({ entityId: meetingA.id })]);
+  });
+
+  test("applies an in-flight acknowledgement to its source user database after a switch", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    await store.activateUser(userA);
+    const meetingA = await store.create("A pending", null, now);
+    let release!: (value: { meeting: typeof meetingA }) => void;
+    const response = new Promise<{ meeting: typeof meetingA }>((resolve) => { release = resolve; });
+    const send = vi.fn(() => response);
+    const sync = new CatalogSync(store, api(send));
+    const flushing = sync.flush();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+
+    await store.activateUser(userB);
+    const meetingB = await store.create("B local", null, "2026-08-21T00:01:00.000Z");
+    release({ meeting: meetingA });
+    await expect(flushing).resolves.toEqual({ state: "idle" });
+
+    await expect(store.list({ includeTrashed: true })).resolves.toEqual([meetingB]);
+    await expect(store.pendingOperations()).resolves.toEqual([expect.objectContaining({ entityId: meetingB.id })]);
+    await store.activateUser(userA);
     await expect(store.pendingOperations()).resolves.toEqual([]);
   });
 

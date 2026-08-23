@@ -4,6 +4,8 @@ import Dexie from "dexie";
 import { MeetingCatalogRepository } from "../../src/meetings/repository.js";
 
 const now = "2026-08-21T00:00:00.000Z";
+const userA = "00000000-0000-4000-8000-00000000000a";
+const userB = "00000000-0000-4000-8000-00000000000b";
 
 describe("MeetingCatalogRepository", () => {
   const repositories: MeetingCatalogRepository[] = [];
@@ -129,8 +131,9 @@ describe("MeetingCatalogRepository", () => {
 
   test("keeps catalog data on logout while dropping an expired or cleared device marker", async () => {
     const catalog = repository();
+    await catalog.activateUser(userA);
     const meeting = await catalog.create("Offline", null, now);
-    const access = await catalog.authorizeDevice("2026-09-20T00:00:00.000Z", now);
+    const access = await catalog.authorizeDevice(userA, "2026-09-20T00:00:00.000Z", now);
     await expect(catalog.validDeviceAccess("2026-08-22T00:00:00.000Z")).resolves.toEqual(access);
     await expect(catalog.hasDeviceAccess("2026-08-22T00:00:00.000Z")).resolves.toBe(true);
     await expect(catalog.validDeviceAccess("2026-09-20T00:00:00.000Z")).resolves.toBeNull();
@@ -141,6 +144,69 @@ describe("MeetingCatalogRepository", () => {
     await expect(catalog.hasDeviceAccess("2026-08-22T00:00:00.000Z")).resolves.toBe(false);
     await expect(catalog.get(meeting.id)).resolves.toEqual(meeting);
     await expect(catalog.pendingOperations()).resolves.toHaveLength(1);
+  });
+
+  test("isolates meetings and outbox operations by verified Supabase user", async () => {
+    const catalog = repository();
+    await catalog.activateUser(userA);
+    const meetingA = await catalog.create("A 的会议", null, now);
+    await catalog.authorizeDevice(userA, "2026-09-20T00:00:00.000Z", now);
+    await catalog.clearDeviceAccess();
+
+    await catalog.activateUser(userB);
+    await expect(catalog.list({ includeTrashed: true })).resolves.toEqual([]);
+    await expect(catalog.pendingOperations()).resolves.toEqual([]);
+    const meetingB = await catalog.create("B 的会议", null, "2026-08-21T00:01:00.000Z");
+
+    await catalog.activateUser(userA);
+    await expect(catalog.list({ includeTrashed: true })).resolves.toEqual([meetingA]);
+    await expect(catalog.pendingOperations()).resolves.toEqual([expect.objectContaining({ entityId: meetingA.id })]);
+    await catalog.activateUser(userB);
+    await expect(catalog.list({ includeTrashed: true })).resolves.toEqual([meetingB]);
+  });
+
+  test("claims legacy catalog once and never exposes it to a different user", async () => {
+    const catalog = repository();
+    const legacy = await catalog.create("旧版会议", null, now);
+    await catalog.authorizeDevice(userA, "2026-09-20T00:00:00.000Z", now);
+
+    await catalog.activateUser(userA);
+    await expect(catalog.list({ includeTrashed: true })).resolves.toEqual([legacy]);
+    await catalog.activateUser(userB);
+    await expect(catalog.list({ includeTrashed: true })).resolves.toEqual([]);
+    await catalog.activateUser(userA);
+    await expect(catalog.pendingOperations()).resolves.toEqual([expect.objectContaining({ entityId: legacy.id })]);
+  });
+
+  test("rejects unverified user ids and legacy device markers", async () => {
+    const name = `meeting-catalog-test-${databaseNumber++}`;
+    const legacy = new Dexie(name);
+    legacy.version(2).stores({ meetings: "id,updatedAt,status,folderId,title", folders: "id,name,updatedAt", outbox: "++sequence,id,entityId,kind,createdAt", settings: "key" });
+    await legacy.table("settings").put({ key: "deviceAccess", value: { authorizedAt: now, expiresAt: "2026-09-20T00:00:00.000Z" } });
+    legacy.close();
+    const catalog = new MeetingCatalogRepository(name);
+    repositories.push(catalog);
+
+    await expect(catalog.activateUser("../../other-user")).rejects.toBeInstanceOf(Error);
+    await expect(catalog.validDeviceAccess("2026-08-22T00:00:00.000Z")).resolves.toBeNull();
+  });
+
+  test("deletes bootstrap and every activated user database", async () => {
+    const name = `meeting-catalog-delete-${databaseNumber++}`;
+    const catalog = new MeetingCatalogRepository(name);
+    await catalog.activateUser(userA);
+    await catalog.create("A", null, now);
+    await catalog.activateUser(userB);
+    await catalog.create("B", null, now);
+    await expect(Dexie.exists(name)).resolves.toBe(true);
+    await expect(Dexie.exists(`${name}--user--${userA}`)).resolves.toBe(true);
+    await expect(Dexie.exists(`${name}--user--${userB}`)).resolves.toBe(true);
+
+    await catalog.deleteDatabase();
+
+    await expect(Dexie.exists(name)).resolves.toBe(false);
+    await expect(Dexie.exists(`${name}--user--${userA}`)).resolves.toBe(false);
+    await expect(Dexie.exists(`${name}--user--${userB}`)).resolves.toBe(false);
   });
 
   test("uses shared schemas to reject invalid titles and identifiers", async () => {

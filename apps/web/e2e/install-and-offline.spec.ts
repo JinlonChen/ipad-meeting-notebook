@@ -11,7 +11,7 @@ async function expireDeviceMarker(page: Parameters<typeof openCatalog>[0]): Prom
         const transaction = open.result.transaction("settings", "readwrite");
         transaction.objectStore("settings").put({
           key: "deviceAccess",
-          value: { authorizedAt: "2026-08-22T00:00:00.000Z", expiresAt: "2026-08-22T00:01:00.000Z" },
+          value: { userId: "00000000-0000-4000-8000-000000000001", authorizedAt: "2026-08-22T00:00:00.000Z", expiresAt: "2026-08-22T00:01:00.000Z" },
         });
         transaction.oncomplete = () => { open.result.close(); resolve(); };
         transaction.onerror = () => reject(transaction.error);
