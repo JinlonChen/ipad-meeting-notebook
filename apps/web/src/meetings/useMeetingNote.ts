@@ -93,7 +93,7 @@ export function useMeetingNote({ meetingId, initialNote, repository, online, sch
   }, []);
 
   const runSaveQueue = useCallback(async (): Promise<boolean> => {
-    while (mountedRef.current) {
+    while (true) {
       const value = draftRef.current;
       const revision = draftRevisionRef.current;
       if (value === persistedRef.current && revision === persistedRevisionRef.current) return true;
@@ -103,8 +103,10 @@ export function useMeetingNote({ meetingId, initialNote, repository, online, sch
         return false;
       }
 
-      setState("saving");
-      setError("");
+      if (mountedRef.current) {
+        setState("saving");
+        setError("");
+      }
       try {
         await repository.saveNote(meetingId, parsed.data, nowRef.current());
       } catch (saveError) {
@@ -119,13 +121,12 @@ export function useMeetingNote({ meetingId, initialNote, repository, online, sch
       persistedRef.current = value;
       persistedRevisionRef.current = revision;
       pendingSyncRevisionRef.current = revision;
-      if (!mountedRef.current) return true;
       if (draftRevisionRef.current !== revision) continue;
+      if (!mountedRef.current) return true;
       setState("saved-local");
       void synchronize(revision);
       return true;
     }
-    return false;
   }, [meetingId, repository, synchronize, updateFailure]);
 
   const flush = useCallback((): Promise<boolean> => {
@@ -189,6 +190,7 @@ export function useMeetingNote({ meetingId, initialNote, repository, online, sch
     return () => {
       mountedRef.current = false;
       clearTimer();
+      void flushRef.current();
     };
   }, [clearTimer]);
 

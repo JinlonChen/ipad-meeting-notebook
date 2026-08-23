@@ -1,6 +1,6 @@
 import type { Folder, Meeting } from "@meeting/contracts";
 import { ChevronLeft } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { MeetingCatalogRepository } from "./repository.js";
@@ -58,18 +58,35 @@ export function MeetingWorkspacePage({ repository, refresh, scheduleRefresh = re
   const { id = "" } = useParams();
   const navigate = useNavigate();
   const [loadState, setLoadState] = useState<LoadState>({ kind: "loading" });
+  const refreshRef = useRef(refresh);
+  const onlineRef = useRef(online);
+  refreshRef.current = refresh;
+  onlineRef.current = online;
 
   useEffect(() => {
     let active = true;
     setLoadState({ kind: "loading" });
-    void Promise.all([repository.get(id), repository.listFolders()]).then(([meeting, folders]) => {
+    void (async () => {
+      let refreshFailed = false;
+      if (onlineRef.current) {
+        try {
+          const result = await refreshRef.current();
+          refreshFailed = result.state !== "idle";
+        } catch {
+          refreshFailed = true;
+        }
+      }
       if (!active) return;
-      if (!meeting) setLoadState({ kind: "missing" });
-      else if (meeting.status === "trashed") setLoadState({ kind: "trashed" });
-      else setLoadState({ kind: "ready", meeting, folders });
-    }).catch(() => {
-      if (active) setLoadState({ kind: "error" });
-    });
+      try {
+        const [meeting, folders] = await Promise.all([repository.get(id), repository.listFolders()]);
+        if (!active) return;
+        if (!meeting) setLoadState({ kind: refreshFailed ? "error" : "missing" });
+        else if (meeting.status === "trashed") setLoadState({ kind: "trashed" });
+        else setLoadState({ kind: "ready", meeting, folders });
+      } catch {
+        if (active) setLoadState({ kind: "error" });
+      }
+    })();
     return () => { active = false; };
   }, [id, repository]);
 

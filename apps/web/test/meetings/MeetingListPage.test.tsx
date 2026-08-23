@@ -254,7 +254,7 @@ describe("MeetingListPage", () => {
     await user.click(screen.getByRole("button", { name: "创建" }));
 
     expect(await screen.findByRole("textbox", { name: "会议笔记" })).toBeVisible();
-    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(2);
     expect(scheduleRefresh).toHaveBeenCalledTimes(1);
     delayedList.resolve([]);
     automatic.resolve({ state: "idle" });
