@@ -1,5 +1,5 @@
 begin;
-select plan(30);
+select plan(34);
 
 select has_table('public', 'folders', 'folders table exists');
 select has_table('public', 'meetings', 'meetings table exists');
@@ -26,6 +26,7 @@ select is((public.apply_catalog_mutation('00000000-0000-4000-8000-000000000202',
 select is((public.apply_catalog_mutation('00000000-0000-4000-8000-000000000202', 'meeting.rename', '00000000-0000-4000-8000-000000000302', '{"title":"Reused","expectedSyncVersion":0}'::jsonb)->>'code'), 'IDEMPOTENCY_KEY_REUSED', 'reused operation with different fingerprint is rejected');
 select is((public.apply_catalog_mutation('00000000-0000-4000-8000-000000000203', 'meeting.rename', '00000000-0000-4000-8000-000000000302', '{"title":"Renamed","updatedAt":"2026-08-22T00:02:00Z","expectedSyncVersion":0}'::jsonb)->>'status')::int, 200, 'conditional rename increments version');
 select is((public.apply_catalog_mutation('00000000-0000-4000-8000-000000000204', 'meeting.rename', '00000000-0000-4000-8000-000000000302', '{"title":"Stale","expectedSyncVersion":0}'::jsonb)->>'code'), 'CONFLICT', 'stale version is rejected');
+select is((select sync_version from public.meetings where id = '00000000-0000-4000-8000-000000000302'), 1::bigint, 'two operation ids sharing expected version increment only once');
 
 select set_config('request.jwt.claim.sub', '00000000-0000-4000-8000-000000000102', true);
 select is((select count(*) from public.folders), 0::bigint, 'second user cannot read first user folders');
@@ -43,8 +44,11 @@ select is((public.apply_catalog_mutation('00000000-0000-4000-8000-000000000207',
 select is((public.apply_catalog_mutation('00000000-0000-4000-8000-000000000209', 'meeting.create', '00000000-0000-4000-8000-000000000304', '{"id":"00000000-0000-4000-8000-000000000304","title":"Recording","folderId":null,"clientCreatedAt":"2026-08-22T00:04:00Z"}'::jsonb)->>'status')::int, 200, 'second meeting is created');
 select is((public.apply_catalog_mutation('00000000-0000-4000-8000-000000000210', 'meeting.trash', '00000000-0000-4000-8000-000000000304', '{"updatedAt":"2026-08-22T00:05:00Z","expectedSyncVersion":0}'::jsonb)->>'status')::int, 200, 'trash succeeds');
 select is((select status_before_trash from public.meetings where user_id = '00000000-0000-4000-8000-000000000101' and id = '00000000-0000-4000-8000-000000000304'), 'draft', 'trash retains prior status');
+select is((public.apply_catalog_mutation('00000000-0000-4000-8000-000000000213', 'meeting.trash', '00000000-0000-4000-8000-000000000304', '{"expectedSyncVersion":0}'::jsonb)->>'code'), 'CONFLICT', 'trash in target state rejects a stale expected version');
+select is((public.apply_catalog_mutation('00000000-0000-4000-8000-000000000214', 'meeting.trash', '00000000-0000-4000-8000-000000000304', '{"expectedSyncVersion":1}'::jsonb)->>'status')::int, 200, 'trash in target state accepts the exact current version');
 select is((public.apply_catalog_mutation('00000000-0000-4000-8000-000000000211', 'meeting.restore', '00000000-0000-4000-8000-000000000304', '{"updatedAt":"2026-08-22T00:06:00Z","expectedSyncVersion":1}'::jsonb)->>'status')::int, 200, 'restore succeeds');
 select is((select status from public.meetings where user_id = '00000000-0000-4000-8000-000000000101' and id = '00000000-0000-4000-8000-000000000304'), 'draft', 'restore uses retained status');
+select is((public.apply_catalog_mutation('00000000-0000-4000-8000-000000000215', 'meeting.restore', '00000000-0000-4000-8000-000000000304', '{}'::jsonb)->>'status')::int, 200, 'restore without expected version is idempotent in target state');
 select is((public.apply_catalog_mutation('00000000-0000-4000-8000-000000000212', 'meeting.rename', '00000000-0000-4000-8000-000000000304', '{"title":"Bad","expectedSyncVersion":"oops"}'::jsonb)->>'code'), 'INVALID_REQUEST', 'invalid version returns typed failure');
 
 select * from finish();

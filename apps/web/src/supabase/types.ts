@@ -22,6 +22,7 @@ export type MeetingRow = {
   created_at: Meeting["createdAt"];
   updated_at: Meeting["updatedAt"];
   trashed_at: Meeting["trashedAt"];
+  status_before_trash: Exclude<Meeting["status"], "trashed"> | null;
   sync_version: Meeting["syncVersion"];
 };
 

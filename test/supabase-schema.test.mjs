@@ -59,3 +59,13 @@ test("meetings retain the pre-trash status and wrapper can call a private implem
   assert.match(source, /create or replace function public\.apply_catalog_mutation\([\s\S]+security definer/);
   assert.match(source, /revoke all on function public\._apply_catalog_mutation_impl\([^;]+\) from public, anon, authenticated/);
 });
+
+test("conditional mutations compare sync_version in their atomic DML", () => {
+  const source = normalizedSql();
+  assert.match(source, /update public\.meetings set title[^;]+where user_id = v_user_id and id = p_entity_id and \(v_expected is null or sync_version = v_expected\)/);
+  assert.match(source, /update public\.meetings set status = 'trashed'[^;]+where user_id = v_user_id and id = p_entity_id and status <> 'trashed' and \(v_expected is null or sync_version = v_expected\)/);
+  assert.match(source, /update public\.meetings set status = coalesce\(status_before_trash, 'draft'\)[^;]+where user_id = v_user_id and id = p_entity_id and status = 'trashed' and \(v_expected is null or sync_version = v_expected\)/);
+  assert.match(source, /delete from public\.folders where user_id = v_user_id and id = p_entity_id and \(v_expected is null or sync_version = v_expected\)/);
+  assert.match(source, /when unique_violation/);
+  assert.match(source, /when foreign_key_violation/);
+});

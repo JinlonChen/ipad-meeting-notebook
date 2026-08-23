@@ -105,6 +105,9 @@ begin
     return jsonb_build_object('status', 409, 'code', 'IDEMPOTENCY_KEY_REUSED');
   end if;
 
+  -- Different operation ids targeting the same entity must still observe a single version order.
+  perform pg_advisory_xact_lock(hashtextextended(v_user_id::text || ':entity:' || p_entity_id::text, 0));
+
   begin
   v_updated_at := coalesce(nullif(v_payload->>'updatedAt', '')::timestamptz, v_now);
   if v_payload ? 'expectedSyncVersion' then
@@ -123,10 +126,21 @@ begin
       elsif exists (select 1 from public.meetings where user_id = v_user_id and id = p_entity_id) then
         v_response := jsonb_build_object('status', 409, 'code', 'CONFLICT');
       else
-        insert into public.meetings (user_id, id, title, folder_id, status, started_at, ended_at, created_at, updated_at, trashed_at, status_before_trash, sync_version)
-        values (v_user_id, p_entity_id, v_title, v_folder_id, 'draft', null, null, v_client_created_at, v_client_created_at, null, null, 0)
-        returning to_jsonb(public.meetings.*) into v_row;
-        v_response := jsonb_build_object('status', 200, 'meeting', v_row);
+        begin
+          insert into public.meetings (user_id, id, title, folder_id, status, started_at, ended_at, created_at, updated_at, trashed_at, status_before_trash, sync_version)
+          values (v_user_id, p_entity_id, v_title, v_folder_id, 'draft', null, null, v_client_created_at, v_client_created_at, null, null, 0)
+          returning to_jsonb(public.meetings.*) into v_row;
+          v_response := jsonb_build_object('status', 200, 'meeting', v_row);
+        exception
+          when unique_violation then
+            v_response := jsonb_build_object('status', 409, 'code', 'CONFLICT');
+          when foreign_key_violation then
+            if v_folder_id is not null and not exists (select 1 from public.folders where user_id = v_user_id and id = v_folder_id) then
+              v_response := jsonb_build_object('status', 404, 'code', 'FOLDER_NOT_FOUND');
+            else
+              v_response := jsonb_build_object('status', 409, 'code', 'CONFLICT');
+            end if;
+        end;
       end if;
     end if;
   elsif p_kind = 'meeting.rename' then
@@ -159,9 +173,10 @@ begin
       else
         update public.meetings
         set status = 'trashed', status_before_trash = status, trashed_at = v_updated_at, updated_at = v_updated_at, sync_version = sync_version + 1
-        where user_id = v_user_id and id = p_entity_id
+        where user_id = v_user_id and id = p_entity_id and status <> 'trashed' and (v_expected is null or sync_version = v_expected)
         returning to_jsonb(public.meetings.*) into v_row;
-        v_response := jsonb_build_object('status', 200, 'meeting', v_row);
+        if v_row is null then v_response := jsonb_build_object('status', 409, 'code', 'CONFLICT');
+        else v_response := jsonb_build_object('status', 200, 'meeting', v_row); end if;
       end if;
     end if;
   elsif p_kind = 'meeting.restore' then
@@ -177,9 +192,10 @@ begin
       else
         update public.meetings
         set status = coalesce(status_before_trash, 'draft'), status_before_trash = null, trashed_at = null, updated_at = v_updated_at, sync_version = sync_version + 1
-        where user_id = v_user_id and id = p_entity_id
+        where user_id = v_user_id and id = p_entity_id and status = 'trashed' and (v_expected is null or sync_version = v_expected)
         returning to_jsonb(public.meetings.*) into v_row;
-        v_response := jsonb_build_object('status', 200, 'meeting', v_row);
+        if v_row is null then v_response := jsonb_build_object('status', 409, 'code', 'CONFLICT');
+        else v_response := jsonb_build_object('status', 200, 'meeting', v_row); end if;
       end if;
     end if;
   elsif p_kind = 'folder.create' then
@@ -190,10 +206,15 @@ begin
     elsif exists (select 1 from public.folders where user_id = v_user_id and id = p_entity_id) then
       v_response := jsonb_build_object('status', 409, 'code', 'CONFLICT');
     else
-      insert into public.folders (user_id, id, name, created_at, updated_at, sync_version)
-      values (v_user_id, p_entity_id, v_name, v_client_created_at, v_client_created_at, 0)
-      returning to_jsonb(public.folders.*) into v_row;
-      v_response := jsonb_build_object('status', 200, 'folder', v_row);
+      begin
+        insert into public.folders (user_id, id, name, created_at, updated_at, sync_version)
+        values (v_user_id, p_entity_id, v_name, v_client_created_at, v_client_created_at, 0)
+        returning to_jsonb(public.folders.*) into v_row;
+        v_response := jsonb_build_object('status', 200, 'folder', v_row);
+      exception
+        when unique_violation then
+          v_response := jsonb_build_object('status', 409, 'code', 'CONFLICT');
+      end;
     end if;
   elsif p_kind = 'folder.rename' then
     v_name := btrim(v_payload->>'name');
@@ -213,13 +234,18 @@ begin
     if not exists (select 1 from public.folders where user_id = v_user_id and id = p_entity_id) then
       v_response := jsonb_build_object('status', 200);
     else
+      perform 1 from public.folders
+      where user_id = v_user_id and id = p_entity_id
+      for update;
       if v_expected is not null and exists (select 1 from public.folders where user_id = v_user_id and id = p_entity_id and sync_version <> v_expected) then
         v_response := jsonb_build_object('status', 409, 'code', 'CONFLICT');
       else
         update public.meetings set folder_id = null, updated_at = v_updated_at, sync_version = sync_version + 1
         where user_id = v_user_id and folder_id = p_entity_id;
-        delete from public.folders where user_id = v_user_id and id = p_entity_id;
-        v_response := jsonb_build_object('status', 200);
+        delete from public.folders
+        where user_id = v_user_id and id = p_entity_id and (v_expected is null or sync_version = v_expected);
+        if found then v_response := jsonb_build_object('status', 200);
+        else v_response := jsonb_build_object('status', 409, 'code', 'CONFLICT'); end if;
       end if;
     end if;
   else
