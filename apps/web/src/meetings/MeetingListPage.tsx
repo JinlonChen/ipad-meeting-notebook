@@ -1,5 +1,5 @@
 import type { Folder, Meeting } from "@meeting/contracts";
-import { ChevronLeft, Folder as FolderIcon, FolderPlus, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { Folder as FolderIcon, FolderPlus, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -56,6 +56,7 @@ function statusLabel(status: Meeting["status"]): string {
 function conflictActionLabel(kind: NonNullable<PendingStatus["conflict"]>["kind"]): string {
   return ({
     "meeting.create": "新建会议",
+    "meeting.note": "保存会议笔记",
     "meeting.rename": "重命名会议",
     "meeting.trash": "将会议移至废纸篓",
     "meeting.restore": "恢复会议",
@@ -486,9 +487,4 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
     {confirmation && <div className="dialog-backdrop"><section ref={setModal} className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="remove-folder-title"><h2 id="remove-folder-title">删除分类？</h2><p>分类内的会议将保留为未分类。</p><p className="field-error" role={confirmationError ? "alert" : undefined} aria-live="polite">{confirmationError}</p><div className="dialog-actions"><button disabled={pendingOperation === "removeFolder"} onClick={closeModal}>取消</button><button className="danger-button" disabled={pendingOperation === "removeFolder"} onClick={() => void removeFolder()}>删除</button></div></section></div>}
     {conflictOpen && pendingStatus?.conflict && <div className="dialog-backdrop"><section ref={setModal} className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="resolve-conflict-title"><h2 id="resolve-conflict-title">处理同步冲突</h2><p className="conflict-detail"><strong>{pendingStatus.conflict.entityName}</strong><span>{conflictActionLabel(pendingStatus.conflict.kind)}与服务端内容冲突。</span></p><p>放弃本地修改后，将恢复服务端内容并继续同步其他项目。</p><p className="field-error" role={conflictError ? "alert" : undefined} aria-live="polite">{conflictError}</p><div className="dialog-actions"><button disabled={pendingOperation === "resolveConflict"} onClick={closeModal}>取消</button><button className="danger-button" disabled={!online || pendingOperation === "resolveConflict"} onClick={() => void resolveCurrentConflict()}>{resolvedConflictSequence === pendingStatus.conflict.sequence ? "重试同步" : "放弃本地修改"}</button></div></section></div>}
   </>;
-}
-
-export function WorkspacePlaceholder() {
-  const navigate = useNavigate();
-  return <main className="workspace-placeholder"><button className="text-button" onClick={() => navigate("/meetings")}><ChevronLeft size={17} />返回会议</button><p>会议工作区将在录音阶段启用</p></main>;
 }
