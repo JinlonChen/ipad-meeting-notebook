@@ -1,6 +1,14 @@
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
-import { installSupabaseRoutes, offlineMeeting, openCatalog, removeSupabaseRoutes, supabaseOrigin } from "./supabase-fixture.js";
+import {
+  createSupabaseFixtureState,
+  holdNextNoteMutation,
+  installSupabaseRoutes,
+  offlineMeeting,
+  openCatalog,
+  removeSupabaseRoutes,
+  supabaseOrigin,
+} from "./supabase-fixture.js";
 
 const noteText = "离线结论\n下一步";
 const userDatabaseName = "meeting-catalog--user--00000000-0000-4000-8000-000000000001";
@@ -95,6 +103,7 @@ async function expectWorkspaceLayout(page: Page, testInfo: TestInfo, width: numb
 test("meeting notes survive offline navigation and synchronize after reconnect", async ({ browser, context, page }, testInfo) => {
   await page.setViewportSize({ width: 744, height: 1133 });
   const meeting = offlineMeeting();
+  const fixture = createSupabaseFixtureState([meeting]);
   const noteRpcRequests: string[] = [];
   let snapshotRequests = 0;
   let authUserRequests = 0;
@@ -106,7 +115,7 @@ test("meeting notes survive offline navigation and synchronize after reconnect",
     if (request.url() === `${supabaseOrigin}/auth/v1/user`) authUserRequests += 1;
   });
 
-  await openCatalog(page, [meeting]);
+  await openCatalog(page, fixture);
   await page.evaluate(() => navigator.serviceWorker.ready);
   await openMeeting(page, meeting);
   const editor = page.getByRole("textbox", { name: "会议笔记" });
@@ -130,7 +139,7 @@ test("meeting notes survive offline navigation and synchronize after reconnect",
 
   const snapshotsBeforeReconnect = snapshotRequests;
   const authRequestsBeforeReconnect = authUserRequests;
-  await installSupabaseRoutes(page, [meeting]);
+  await installSupabaseRoutes(page, fixture);
   await page.evaluate(() => {
     document.documentElement.dataset.onlineEvent = "pending";
     window.addEventListener("online", () => { document.documentElement.dataset.onlineEvent = "fired"; }, { once: true });
@@ -157,7 +166,7 @@ test("meeting notes survive offline navigation and synchronize after reconnect",
   });
   try {
     expect(meeting).toMatchObject({ note: noteText, sync_version: 2 });
-    await openCatalog(freshPage, [meeting]);
+    await openCatalog(freshPage, fixture);
     await expect.poll(() => freshSnapshotRequests).toBeGreaterThanOrEqual(1);
     await expect.poll(async () => (await userDatabaseRows(freshPage, "meetings"))[0]?.note).toBe(noteText);
     await openMeeting(freshPage, meeting);
@@ -191,25 +200,42 @@ test("meeting notes save online automatically and remain authoritative after rel
 
 test("meeting notes keep the latest rapid edit without a version conflict", async ({ page }) => {
   const meeting = offlineMeeting();
-  let noteRpcRequests = 0;
-  page.on("request", (request) => {
-    if (request.url() === `${supabaseOrigin}/rest/v1/rpc/apply_meeting_note_mutation`) noteRpcRequests += 1;
-  });
+  const fixture = createSupabaseFixtureState([meeting]);
+  const firstMutationBarrier = holdNextNoteMutation(fixture);
 
-  await openCatalog(page, [meeting]);
+  await openCatalog(page, fixture);
   await openMeeting(page, meeting);
   const editor = page.getByRole("textbox", { name: "会议笔记" });
   await editor.fill("第一稿");
   await editor.blur();
+  await expect(firstMutationBarrier.received).resolves.toMatchObject({
+    p_note: "第一稿",
+    p_expected_sync_version: 1,
+  });
+  expect(meeting).toMatchObject({ note: "", sync_version: 1 });
+
   await editor.focus();
   await editor.fill("最终结论");
   await editor.blur();
+  await expect.poll(async () => (await outboxRows(page)).map((row) => row.payload)).toContainEqual(expect.objectContaining({
+    note: "最终结论",
+    expectedSyncVersion: 1,
+  }));
+  expect(fixture.noteMutations).toHaveLength(1);
+
+  firstMutationBarrier.release();
+  await expect.poll(() => fixture.noteMutations).toHaveLength(2);
 
   await expect(page.getByRole("status")).toHaveText("已同步");
   await expect(page.getByRole("alert")).toHaveCount(0);
+  expect(fixture.noteMutations.map(({ p_note, p_expected_sync_version: version }) => ({ note: p_note, version }))).toEqual([
+    { note: "第一稿", version: 1 },
+    { note: "最终结论", version: 2 },
+  ]);
+  expect(new Set(fixture.noteMutations.map(({ p_operation_id }) => p_operation_id)).size).toBe(2);
   await expect.poll(() => meeting.note).toBe("最终结论");
-  expect(noteRpcRequests).toBeGreaterThanOrEqual(1);
-  expect(meeting.sync_version).toBe(1 + noteRpcRequests);
+  expect(meeting.sync_version).toBe(3);
+  await expect.poll(() => outboxRows(page)).toEqual([]);
 });
 
 test("meeting notes fixture enforces actor version idempotency and authoritative reads", async ({ page }) => {
@@ -287,6 +313,91 @@ test("meeting notes fixture enforces actor version idempotency and authoritative
   expect(Object.keys(selected[0]).sort()).toEqual(completeMeetingRowKeys);
   await expect(post("/rest/v1/rpc/not_a_note_mutation", successMutation))
     .resolves.toMatchObject({ httpStatus: 404, body: { message: "E2E route not configured" } });
+});
+
+test("meeting notes fixture preserves successful replay state across route reinstall", async ({ page }) => {
+  const meeting = offlineMeeting();
+  const fixture = createSupabaseFixtureState([meeting]);
+  const mutation = {
+    p_operation_id: "00000000-0000-4000-8000-000000000030",
+    p_entity_id: meeting.id,
+    p_note: "跨 route replay",
+    p_updated_at: "2026-08-24T09:00:00.000Z",
+    p_expected_sync_version: 1,
+    p_expected_user_id: "00000000-0000-4000-8000-000000000001",
+  };
+  const post = (body: unknown) => page.evaluate(async ({ url, requestBody }) => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(requestBody),
+    });
+    return { httpStatus: response.status, body: await response.json() };
+  }, { url: `${supabaseOrigin}/rest/v1/rpc/apply_meeting_note_mutation`, requestBody: body });
+
+  await installSupabaseRoutes(page, fixture);
+  await page.goto("/");
+  const success = await post(mutation);
+  expect(success).toMatchObject({ body: { status: 200, meeting: { note: mutation.p_note, sync_version: 2 } } });
+
+  await removeSupabaseRoutes(page);
+  await installSupabaseRoutes(page, fixture);
+  await expect(post({ ...mutation, p_expected_user_id: "00000000-0000-4000-8000-000000000099" }))
+    .resolves.toMatchObject({ body: { status: 401, code: "AUTH_CONTEXT_CHANGED" } });
+  await expect(post(mutation)).resolves.toEqual(success);
+  expect(meeting.sync_version).toBe(2);
+  await expect(post({ ...mutation, p_note: "跨 route 复用不同内容" }))
+    .resolves.toMatchObject({ body: { status: 409, code: "IDEMPOTENCY_KEY_REUSED" } });
+});
+
+test("meeting notes fixture counts Unicode code points and replays typed invalid requests", async ({ page }) => {
+  const meeting = offlineMeeting();
+  const fixture = createSupabaseFixtureState([meeting]);
+  const baseMutation = {
+    p_entity_id: "00000000-0000-4000-8000-000000000099",
+    p_updated_at: "2026-08-24T09:00:00.000Z",
+    p_expected_sync_version: 1,
+    p_expected_user_id: "00000000-0000-4000-8000-000000000001",
+  };
+  const post = (body: unknown) => page.evaluate(async ({ url, requestBody }) => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(requestBody),
+    });
+    return { httpStatus: response.status, body: await response.json() };
+  }, { url: `${supabaseOrigin}/rest/v1/rpc/apply_meeting_note_mutation`, requestBody: body });
+
+  await installSupabaseRoutes(page, fixture);
+  await page.goto("/");
+  await expect(post({
+    ...baseMutation,
+    p_operation_id: "00000000-0000-4000-8000-000000000031",
+    p_note: "💡".repeat(200_000),
+  })).resolves.toMatchObject({ body: { status: 404, code: "MEETING_NOT_FOUND" } });
+
+  const tooLong = {
+    ...baseMutation,
+    p_operation_id: "00000000-0000-4000-8000-000000000032",
+    p_note: "💡".repeat(200_001),
+  };
+  const tooLongFailure = await post(tooLong);
+  expect(tooLongFailure).toMatchObject({ body: { status: 400, code: "INVALID_REQUEST" } });
+  await expect(post(tooLong)).resolves.toEqual(tooLongFailure);
+  await expect(post({ ...tooLong, p_note: `${tooLong.p_note}💡` }))
+    .resolves.toMatchObject({ body: { status: 409, code: "IDEMPOTENCY_KEY_REUSED" } });
+
+  const negativeVersion = {
+    ...baseMutation,
+    p_operation_id: "00000000-0000-4000-8000-000000000033",
+    p_note: "negative version",
+    p_expected_sync_version: -1,
+  };
+  const negativeFailure = await post(negativeVersion);
+  expect(negativeFailure).toMatchObject({ body: { status: 400, code: "INVALID_REQUEST" } });
+  await expect(post(negativeVersion)).resolves.toEqual(negativeFailure);
+  await expect(post({ ...negativeVersion, p_note: "negative version reused" }))
+    .resolves.toMatchObject({ body: { status: 409, code: "IDEMPOTENCY_KEY_REUSED" } });
 });
 
 for (const viewport of [

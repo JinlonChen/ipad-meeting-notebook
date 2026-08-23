@@ -20,7 +20,7 @@ export type RemoteMeeting = {
   note: string;
 };
 
-type MeetingNoteMutation = {
+export type MeetingNoteMutation = {
   p_operation_id: string;
   p_entity_id: string;
   p_note: string;
@@ -31,12 +31,30 @@ type MeetingNoteMutation = {
 
 type NoteTerminalResponse =
   | { status: 200; meeting: RemoteMeeting & { user_id: string } }
+  | { status: 400; code: "INVALID_REQUEST" }
   | { status: 404; code: "MEETING_NOT_FOUND" }
   | { status: 409; code: "CONFLICT" };
 
 type NoteReplay = {
   fingerprint: string;
   response: NoteTerminalResponse;
+};
+
+type PendingNoteMutationBarrier = {
+  received(mutation: MeetingNoteMutation): void;
+  released: Promise<void>;
+};
+
+export type SupabaseFixtureState = {
+  meetings: RemoteMeeting[];
+  noteMutations: MeetingNoteMutation[];
+  noteReplays: Map<string, NoteReplay>;
+  noteMutationBarrier: PendingNoteMutationBarrier | null;
+};
+
+export type NoteMutationBarrier = {
+  received: Promise<MeetingNoteMutation>;
+  release(): void;
 };
 
 const defaultMeeting: RemoteMeeting = {
@@ -69,20 +87,47 @@ function parseNoteMutation(value: unknown): MeetingNoteMutation | null {
   if (Object.keys(body).length !== keys.length || keys.some((key) => !Object.prototype.hasOwnProperty.call(body, key))) return null;
   if (!isUuid(body.p_operation_id) || !isUuid(body.p_entity_id) || typeof body.p_note !== "string") return null;
   if (typeof body.p_updated_at !== "string" || !Number.isFinite(Date.parse(body.p_updated_at))) return null;
-  if (!Number.isInteger(body.p_expected_sync_version) || (body.p_expected_sync_version as number) < 0) return null;
+  if (!Number.isInteger(body.p_expected_sync_version)) return null;
   if (!isUuid(body.p_expected_user_id)) return null;
   return body as MeetingNoteMutation;
+}
+
+function exceedsCodePointLimit(value: string, limit: number): boolean {
+  let count = 0;
+  for (const _character of value) {
+    count += 1;
+    if (count > limit) return true;
+  }
+  return false;
 }
 
 function ownedMeeting(meeting: RemoteMeeting): RemoteMeeting & { user_id: string } {
   return { ...meeting, user_id: userId };
 }
 
-export async function installSupabaseRoutes(page: Page, meetings: RemoteMeeting[] = []): Promise<void> {
+export function createSupabaseFixtureState(meetings: RemoteMeeting[] = []): SupabaseFixtureState {
+  return { meetings, noteMutations: [], noteReplays: new Map(), noteMutationBarrier: null };
+}
+
+export function holdNextNoteMutation(state: SupabaseFixtureState): NoteMutationBarrier {
+  if (state.noteMutationBarrier) throw new Error("A note mutation barrier is already active");
+  let markReceived!: (mutation: MeetingNoteMutation) => void;
+  let release!: () => void;
+  const received = new Promise<MeetingNoteMutation>((resolve) => { markReceived = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  state.noteMutationBarrier = { received: markReceived, released };
+  return { received, release };
+}
+
+function fixtureState(input: RemoteMeeting[] | SupabaseFixtureState): SupabaseFixtureState {
+  return Array.isArray(input) ? createSupabaseFixtureState(input) : input;
+}
+
+export async function installSupabaseRoutes(page: Page, input: RemoteMeeting[] | SupabaseFixtureState = []): Promise<void> {
+  const state = fixtureState(input);
   const expiresAt = Math.floor(Date.now() / 1_000) + 3_600;
   const user = { id: userId, aud: "authenticated", role: "authenticated", email: "owner@example.com" };
   const accessToken = `${base64Url({ alg: "none", typ: "JWT" })}.${base64Url({ sub: userId, role: "authenticated", exp: expiresAt })}.e2e`;
-  const noteReplays = new Map<string, NoteReplay>();
 
   await page.route(`${supabaseOrigin}/**`, async (route) => {
     const request = route.request();
@@ -108,7 +153,7 @@ export async function installSupabaseRoutes(page: Page, meetings: RemoteMeeting[
         body: JSON.stringify({
           status: 200,
           folders: [],
-          meetings: meetings.map(ownedMeeting),
+          meetings: state.meetings.map(ownedMeeting),
         }),
       });
       return;
@@ -130,6 +175,14 @@ export async function installSupabaseRoutes(page: Page, meetings: RemoteMeeting[
         return;
       }
 
+      state.noteMutations.push({ ...mutation });
+      const barrier = state.noteMutationBarrier;
+      if (barrier) {
+        state.noteMutationBarrier = null;
+        barrier.received({ ...mutation });
+        await barrier.released;
+      }
+
       const fingerprint = JSON.stringify({
         entityId: mutation.p_entity_id,
         note: mutation.p_note,
@@ -137,7 +190,7 @@ export async function installSupabaseRoutes(page: Page, meetings: RemoteMeeting[
         expectedSyncVersion: mutation.p_expected_sync_version,
       });
       const replayKey = `${userId}:${mutation.p_operation_id}`;
-      const replay = noteReplays.get(replayKey);
+      const replay = state.noteReplays.get(replayKey);
       if (replay) {
         const response = replay.fingerprint === fingerprint
           ? replay.response
@@ -146,16 +199,23 @@ export async function installSupabaseRoutes(page: Page, meetings: RemoteMeeting[
         return;
       }
 
-      const meeting = meetings.find((candidate) => candidate.id === mutation.p_entity_id);
+      if (mutation.p_expected_sync_version < 0 || exceedsCodePointLimit(mutation.p_note, 200_000)) {
+        const response = { status: 400 as const, code: "INVALID_REQUEST" as const };
+        state.noteReplays.set(replayKey, { fingerprint, response });
+        await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) });
+        return;
+      }
+
+      const meeting = state.meetings.find((candidate) => candidate.id === mutation.p_entity_id);
       if (!meeting) {
         const response = { status: 404 as const, code: "MEETING_NOT_FOUND" as const };
-        noteReplays.set(replayKey, { fingerprint, response });
+        state.noteReplays.set(replayKey, { fingerprint, response });
         await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) });
         return;
       }
       if (meeting.sync_version !== mutation.p_expected_sync_version) {
         const response = { status: 409 as const, code: "CONFLICT" as const };
-        noteReplays.set(replayKey, { fingerprint, response });
+        state.noteReplays.set(replayKey, { fingerprint, response });
         await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) });
         return;
       }
@@ -164,7 +224,7 @@ export async function installSupabaseRoutes(page: Page, meetings: RemoteMeeting[
       meeting.updated_at = new Date(mutation.p_updated_at).toISOString();
       meeting.sync_version += 1;
       const response = { status: 200 as const, meeting: ownedMeeting(meeting) };
-      noteReplays.set(replayKey, { fingerprint, response });
+      state.noteReplays.set(replayKey, { fingerprint, response });
       await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) });
       return;
     }
@@ -173,7 +233,7 @@ export async function installSupabaseRoutes(page: Page, meetings: RemoteMeeting[
       return;
     }
     if (url.pathname === "/rest/v1/meetings") {
-      await route.fulfill({ contentType: "application/json", body: JSON.stringify(meetings.map(ownedMeeting)) });
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify(state.meetings.map(ownedMeeting)) });
       return;
     }
     await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ message: "E2E route not configured" }) });
@@ -184,8 +244,8 @@ export async function removeSupabaseRoutes(page: Page): Promise<void> {
   await page.unroute(`${supabaseOrigin}/**`);
 }
 
-export async function openCatalog(page: Page, meetings: RemoteMeeting[] = [], appPath = "/"): Promise<void> {
-  await installSupabaseRoutes(page, meetings);
+export async function openCatalog(page: Page, input: RemoteMeeting[] | SupabaseFixtureState = [], appPath = "/"): Promise<void> {
+  await installSupabaseRoutes(page, input);
   await page.goto(appPath);
   await page.getByLabel("邮箱").fill("owner@example.com");
   await page.getByLabel("密码").fill("e2e-password");
