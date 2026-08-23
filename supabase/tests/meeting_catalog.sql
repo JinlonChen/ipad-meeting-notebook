@@ -35,7 +35,7 @@ select is((select sync_version from public.meetings where id = '00000000-0000-40
 select set_config('request.jwt.claim.sub', '00000000-0000-4000-8000-000000000102', true);
 select is((select count(*) from public.folders), 0::bigint, 'second user cannot read first user folders');
 select is((select count(*) from public.meetings), 0::bigint, 'second user cannot read first user meetings');
-select throws_ok($$insert into public.folders (user_id, id, name, created_at, updated_at, sync_version) values ('00000000-0000-4000-8000-000000000102', '00000000-0000-4000-8000-000000000303', 'Nope', now(), now(), 0)$$, '42501', 'second user cannot directly insert folders');
+select throws_ok($$insert into public.folders (user_id, id, name, created_at, updated_at, sync_version) values ('00000000-0000-4000-8000-000000000102', '00000000-0000-4000-8000-000000000303', 'Nope', now(), now(), 0)$$, '42501', 'permission denied for table folders', 'second user cannot directly insert folders');
 select is((pg_temp.apply_catalog_mutation('00000000-0000-4000-8000-000000000205', 'meeting.rename', '00000000-0000-4000-8000-000000000302', '{"title":"Cross user","expectedSyncVersion":1}'::jsonb)->>'code'), 'MEETING_NOT_FOUND', 'cross-user mutation cannot find meeting');
 select is((public.get_catalog_snapshot('00000000-0000-4000-8000-000000000101')->>'code'), 'AUTH_CONTEXT_CHANGED', 'empty snapshot still rejects a changed actor');
 select is(jsonb_array_length(public.get_catalog_snapshot('00000000-0000-4000-8000-000000000102')->'folders'), 0, 'matching actor authenticates an empty snapshot');
