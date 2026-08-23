@@ -35,6 +35,8 @@ test("catalog rows are owned by auth.uid and direct authenticated mutations are 
 test("mutation rpc is locked to authenticated users and fixes search_path", () => {
   const source = normalizedSql();
   assert.match(source, /create or replace function public\.apply_catalog_mutation\(/);
+  assert.match(source, /p_expected_user_id uuid/);
+  assert.match(source, /if v_user_id is distinct from p_expected_user_id then return jsonb_build_object\('status', 401, 'code', 'auth_context_changed'\)/);
   assert.match(source, /security definer/);
   assert.match(source, /set search_path = pg_catalog, public/);
   assert.match(source, /revoke all on function public\.apply_catalog_mutation\(/);

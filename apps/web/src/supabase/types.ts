@@ -40,6 +40,7 @@ export type ApplyCatalogMutationArgs = {
   p_kind: string;
   p_entity_id: string;
   p_payload: Json;
+  p_expected_user_id: string;
 };
 
 export type ApplyCatalogMutationResult = {

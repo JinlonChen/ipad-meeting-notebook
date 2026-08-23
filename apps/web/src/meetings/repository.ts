@@ -163,6 +163,10 @@ export class MeetingCatalogRepository {
     await activation;
   }
 
+  currentUserId(): string | null {
+    return this.activeUserId;
+  }
+
   async deleteDatabase(): Promise<void> {
     await this.activationQueue;
     for (const database of [this.bootstrapDb, ...this.userDatabases.values()]) database.close();

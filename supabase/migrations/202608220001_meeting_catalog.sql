@@ -64,7 +64,8 @@ create or replace function public._apply_catalog_mutation_impl(
   p_operation_id uuid,
   p_kind text,
   p_entity_id uuid,
-  p_payload jsonb
+  p_payload jsonb,
+  p_expected_user_id uuid
 ) returns jsonb
 language plpgsql
 security definer
@@ -88,6 +89,9 @@ declare
 begin
   if v_user_id is null then
     return jsonb_build_object('status', 401, 'code', 'AUTH_REQUIRED');
+  end if;
+  if v_user_id is distinct from p_expected_user_id then
+    return jsonb_build_object('status', 401, 'code', 'AUTH_CONTEXT_CHANGED');
   end if;
   if p_operation_id is null or p_entity_id is null or p_kind is null then
     return jsonb_build_object('status', 400, 'code', 'INVALID_REQUEST');
@@ -266,7 +270,8 @@ create or replace function public.apply_catalog_mutation(
   p_operation_id uuid,
   p_kind text,
   p_entity_id uuid,
-  p_payload jsonb
+  p_payload jsonb,
+  p_expected_user_id uuid
 ) returns jsonb
 language plpgsql
 security definer
@@ -276,12 +281,12 @@ begin
   if auth.uid() is null then
     return jsonb_build_object('status', 401, 'code', 'AUTH_REQUIRED');
   end if;
-  return public._apply_catalog_mutation_impl(p_operation_id, p_kind, p_entity_id, p_payload);
+  return public._apply_catalog_mutation_impl(p_operation_id, p_kind, p_entity_id, p_payload, p_expected_user_id);
 end;
 $function$;
 
-revoke all on function public._apply_catalog_mutation_impl(uuid, text, uuid, jsonb) from public, anon, authenticated;
-revoke all on function public.apply_catalog_mutation(uuid, text, uuid, jsonb) from public, anon;
-revoke execute on function public.apply_catalog_mutation(uuid, text, uuid, jsonb) from anon;
-revoke execute on function public.apply_catalog_mutation(uuid, text, uuid, jsonb) from public;
-grant execute on function public.apply_catalog_mutation(uuid, text, uuid, jsonb) to authenticated;
+revoke all on function public._apply_catalog_mutation_impl(uuid, text, uuid, jsonb, uuid) from public, anon, authenticated;
+revoke all on function public.apply_catalog_mutation(uuid, text, uuid, jsonb, uuid) from public, anon;
+revoke execute on function public.apply_catalog_mutation(uuid, text, uuid, jsonb, uuid) from anon;
+revoke execute on function public.apply_catalog_mutation(uuid, text, uuid, jsonb, uuid) from public;
+grant execute on function public.apply_catalog_mutation(uuid, text, uuid, jsonb, uuid) to authenticated;

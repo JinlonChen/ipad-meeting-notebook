@@ -9,8 +9,10 @@ const userA = "00000000-0000-4000-8000-00000000000a";
 const userB = "00000000-0000-4000-8000-00000000000b";
 let databaseNumber = 0;
 
-function catalog(): MeetingCatalogRepository {
-  return new MeetingCatalogRepository(`meeting-catalog-sync-${databaseNumber++}`);
+async function catalog(): Promise<MeetingCatalogRepository> {
+  const repository = new MeetingCatalogRepository(`meeting-catalog-sync-${databaseNumber++}`);
+  await repository.activateUser(userA);
+  return repository;
 }
 
 function api(send: MeetingCatalogApi["send"]): MeetingCatalogApi {
@@ -25,8 +27,17 @@ describe("CatalogSync", () => {
     await Promise.all(catalogs.splice(0).map((item) => item.deleteDatabase()));
   });
 
+  test("does not call the remote catalog without an active user context", async () => {
+    const store = new MeetingCatalogRepository(`meeting-catalog-sync-${databaseNumber++}`);
+    catalogs.push(store);
+    const client = api(vi.fn());
+
+    await expect(new CatalogSync(store, client).flush()).resolves.toEqual({ state: "paused_auth" });
+    expect(client.send).not.toHaveBeenCalled();
+  });
+
   test("pauses pull synchronization on a 401 with an empty outbox until login resumes it", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const client: MeetingCatalogApi = {
       send: vi.fn(),
@@ -43,7 +54,7 @@ describe("CatalogSync", () => {
   });
 
   test("starts a new refresh epoch after login instead of coalescing with a stale unauthorized pull", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     let rejectOld!: (error: CatalogApiError) => void;
     const oldPull = new Promise<never>((_, reject) => { rejectOld = reject; });
@@ -66,7 +77,7 @@ describe("CatalogSync", () => {
   });
 
   test("flushes durable operations in sequence so folders arrive before referencing meetings", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const folder = await store.createFolder("Work", now);
     const meeting = await store.create("Agenda", folder.id, "2026-08-21T00:01:00.000Z");
@@ -83,7 +94,7 @@ describe("CatalogSync", () => {
   });
 
   test("flushes only the active user's outbox and preserves another user's pending work", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     await store.activateUser(userA);
     const meetingA = await store.create("A pending", null, now);
@@ -94,14 +105,14 @@ describe("CatalogSync", () => {
     await expect(new CatalogSync(store, api(send)).flush()).resolves.toEqual({ state: "idle" });
 
     expect(send).toHaveBeenCalledOnce();
-    expect(send).toHaveBeenCalledWith(expect.objectContaining({ entityId: meetingB.id }));
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ entityId: meetingB.id }), userB);
     await expect(store.pendingOperations()).resolves.toEqual([]);
     await store.activateUser(userA);
     await expect(store.pendingOperations()).resolves.toEqual([expect.objectContaining({ entityId: meetingA.id })]);
   });
 
   test("applies an in-flight acknowledgement to its source user database after a switch", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     await store.activateUser(userA);
     const meetingA = await store.create("A pending", null, now);
@@ -111,6 +122,7 @@ describe("CatalogSync", () => {
     const sync = new CatalogSync(store, api(send));
     const flushing = sync.flush();
     await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ entityId: meetingA.id }), userA);
 
     await store.activateUser(userB);
     const meetingB = await store.create("B local", null, "2026-08-21T00:01:00.000Z");
@@ -124,7 +136,7 @@ describe("CatalogSync", () => {
   });
 
   test("stops a stale multi-operation flush after acknowledging its in-flight operation", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     await store.activateUser(userA);
     const first = await store.create("A first", null, now);
@@ -148,7 +160,7 @@ describe("CatalogSync", () => {
   });
 
   test("discards a stale pull response after switching users", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     await store.activateUser(userA);
     const remoteA = {
@@ -179,7 +191,7 @@ describe("CatalogSync", () => {
   });
 
   test("retains a failed operation with one bounded retry attempt and succeeds on a later flush", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const meeting = await store.create("Agenda", null, now);
     const send = vi.fn()
@@ -197,7 +209,7 @@ describe("CatalogSync", () => {
   });
 
   test("serializes concurrent flush calls so an operation is sent once", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const meeting = await store.create("Agenda", null, now);
     let release: (() => void) | undefined;
@@ -216,6 +228,7 @@ describe("CatalogSync", () => {
   test("clears a rejected current task without creating an unhandled rejection", async () => {
     const failure = new Error("indexeddb unavailable");
     const repository = {
+      currentUserId: vi.fn().mockReturnValue(userA),
       pendingOperations: vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce([]),
     } as unknown as MeetingCatalogRepository;
     const sync = new CatalogSync(repository, api(vi.fn()));
@@ -234,7 +247,7 @@ describe("CatalogSync", () => {
   });
 
   test("flushes only its starting outbox snapshot and leaves in-flight additions for the next call", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const first = await store.create("First", null, now);
     const sent: string[] = [];
@@ -255,7 +268,7 @@ describe("CatalogSync", () => {
   });
 
   test("queues one trailing refresh for mutations added while the current refresh is pulling", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     let resolveFolders: ((value: []) => void) | undefined;
     let resolveMeetings: ((value: []) => void) | undefined;
@@ -290,7 +303,7 @@ describe("CatalogSync", () => {
   });
 
   test("serializes a stale refresh ahead of flush so pending local data and the later acknowledgement win", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const meeting = {
       id: crypto.randomUUID(), title: "Version one", folderId: null, status: "draft" as const,
@@ -320,7 +333,7 @@ describe("CatalogSync", () => {
   });
 
   test("queues refresh behind an active flush", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const meeting = await store.create("Pending", null, now);
     let release: (() => void) | undefined;
@@ -343,7 +356,7 @@ describe("CatalogSync", () => {
   });
 
   test("coalesces a refresh requested during a failed flush without retrying the retained operation", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     await store.create("Pending", null, now);
     let rejectSend: ((error: Error) => void) | undefined;
@@ -366,7 +379,7 @@ describe("CatalogSync", () => {
   });
 
   test("coalesces a flush requested during a refresh whose internal flush fails", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     await store.create("Pending", null, now);
     let rejectSend: ((error: Error) => void) | undefined;
@@ -392,7 +405,7 @@ describe("CatalogSync", () => {
     [new CatalogApiError(401, "AUTH_REQUIRED"), { state: "paused_auth" }],
     [new CatalogApiError(409, "MEETING_CONFLICT"), { state: "conflict" }],
   ] as const)("coalesces %s without immediately retrying", async (error, expected) => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     await store.create("Pending", null, now);
     let rejectSend: ((error: CatalogApiError) => void) | undefined;
@@ -414,7 +427,7 @@ describe("CatalogSync", () => {
   });
 
   test("pauses on unauthorized and exposes conflicts without losing operations", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     await store.create("Agenda", null, now);
     const authSync = new CatalogSync(store, api(async () => { throw new CatalogApiError(401, "AUTH_REQUIRED"); }));
@@ -430,7 +443,7 @@ describe("CatalogSync", () => {
   });
 
   test("does not resend after a 401 until login explicitly resumes synchronization", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const meeting = await store.create("Agenda", null, now);
     const client = api(vi.fn(async () => { throw new CatalogApiError(401, "AUTH_REQUIRED"); }));
@@ -448,7 +461,7 @@ describe("CatalogSync", () => {
   });
 
   test("does not discard an operation when an API response is invalid or for another entity", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const meeting = await store.create("Agenda", null, now);
     const bad = { ...meeting, id: crypto.randomUUID() };
@@ -461,7 +474,7 @@ describe("CatalogSync", () => {
   });
 
   test("accepts a returned Meeting for trash and restore operations", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const created = await store.create("Agenda", null, now);
     const client = api(async (operation) => {
@@ -477,7 +490,7 @@ describe("CatalogSync", () => {
   });
 
   test("does not let a create acknowledgement roll back a later local meeting rename", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const created = await store.create("Before", null, now);
     await store.rename(created.id, "After", "2026-08-21T00:01:00.000Z");
@@ -492,7 +505,7 @@ describe("CatalogSync", () => {
   });
 
   test("does not let a rename acknowledgement undo a later local trash", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const created = await store.create("Before", null, now);
     const client = api(async () => ({ meeting: created }));
@@ -514,7 +527,7 @@ describe("CatalogSync", () => {
   });
 
   test("keeps a removed folder absent after acknowledging earlier folder and meeting creates", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const folder = await store.createFolder("Work", now);
     const meeting = await store.create("Agenda", folder.id, "2026-08-21T00:01:00.000Z");
@@ -531,7 +544,7 @@ describe("CatalogSync", () => {
   });
 
   test("does not roll a meeting back when a create acknowledgement predates a pending folder removal", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const folder = await store.createFolder("Work", now);
     const meeting = await store.create("Agenda", folder.id, "2026-08-21T00:01:00.000Z");
@@ -545,7 +558,7 @@ describe("CatalogSync", () => {
   });
 
   test("clears a folder removal when the first 204 was lost and retry returns only FOLDER_NOT_FOUND", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const folder = await store.createFolder("Work", now);
     const send = vi.fn()
@@ -561,7 +574,7 @@ describe("CatalogSync", () => {
   });
 
   test("flushes a conditional rename through the HTTP adapter with its stable operation key", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const created = await store.create("Before", null, now);
     await store.syncApplySuccessfulOperation((await store.pendingOperations())[0]!, { meeting: created });
@@ -578,7 +591,7 @@ describe("CatalogSync", () => {
   });
 
   test("turns a typed missing-folder rename response into a resolvable conflict and resumes pulling", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const remoteFolder = { id: crypto.randomUUID(), name: "Server folder", createdAt: now, updatedAt: now, syncVersion: 2 };
     await store.syncRefresh([remoteFolder], []);
@@ -609,7 +622,7 @@ describe("CatalogSync", () => {
   });
 
   test.each(["meeting.rename", "meeting.trash", "meeting.restore"] as const)("turns a typed missing meeting during conditional %s into a resolvable conflict", async (kind) => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const remoteMeeting = {
       id: crypto.randomUUID(), title: "Server meeting", folderId: null,
@@ -634,7 +647,7 @@ describe("CatalogSync", () => {
   });
 
   test("turns a typed missing folder reference during meeting create into a resolvable conflict", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const remoteFolder = { id: crypto.randomUUID(), name: "Deleted folder", createdAt: now, updatedAt: now, syncVersion: 1 };
     await store.syncRefresh([remoteFolder], []);
@@ -652,7 +665,7 @@ describe("CatalogSync", () => {
   });
 
   test("keeps FOLDER_NOT_FOUND for a meeting create without a folder reference as a normal sync error", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     await store.create("Unfiled meeting", null, now);
 
@@ -664,7 +677,7 @@ describe("CatalogSync", () => {
     ["folder rename with a meeting code", "folder"],
     ["meeting rename with a folder code", "meeting"],
   ] as const)("keeps %s as a normal sync error", async (_name, entity) => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     if (entity === "folder") {
       const remoteFolder = { id: crypto.randomUUID(), name: "Remote", createdAt: now, updatedAt: now, syncVersion: 1 };
@@ -682,7 +695,7 @@ describe("CatalogSync", () => {
   });
 
   test("hydrates a clean device from the server catalog", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const remoteFolder = {
       id: crypto.randomUUID(), name: "Remote", createdAt: now, updatedAt: now, syncVersion: 3,
@@ -701,7 +714,7 @@ describe("CatalogSync", () => {
   });
 
   test("keeps pull-in-flight local changes and does not revive a pending folder removal", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const remoteFolder = { id: crypto.randomUUID(), name: "Remote", createdAt: now, updatedAt: now, syncVersion: 1 };
     const remoteMeeting = {
@@ -732,7 +745,7 @@ describe("CatalogSync", () => {
   });
 
   test("removes server-backed rows missing from a later authoritative refresh", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const remoteFolder = { id: crypto.randomUUID(), name: "Remote", createdAt: now, updatedAt: now, syncVersion: 1 };
     const remoteMeeting = {
@@ -754,7 +767,7 @@ describe("CatalogSync", () => {
   });
 
   test("refreshes through the API and rewrites a pending create payload when its folder is authoritatively deleted", async () => {
-    const store = catalog();
+    const store = await catalog();
     catalogs.push(store);
     const remoteFolder = { id: crypto.randomUUID(), name: "Remote", createdAt: now, updatedAt: now, syncVersion: 1 };
     let resolveFolders: ((value: typeof remoteFolder[]) => void) | undefined;

@@ -4,9 +4,9 @@ import type { OutboxOperation } from "./local-db.js";
 import { MeetingCatalogRepository } from "./repository.js";
 
 export interface MeetingCatalogApi {
-  send(operation: OutboxOperation): Promise<{ meeting?: Meeting; folder?: Folder }>;
-  listMeetings(): Promise<Meeting[]>;
-  listFolders(): Promise<Folder[]>;
+  send(operation: OutboxOperation, expectedUserId: string): Promise<{ meeting?: Meeting; folder?: Folder }>;
+  listMeetings(expectedUserId?: string): Promise<Meeting[]>;
+  listFolders(expectedUserId?: string): Promise<Folder[]>;
 }
 
 export type SyncResult = { state: "idle" | "paused_auth" | "conflict" | "error" };
@@ -71,13 +71,15 @@ export class CatalogSync {
 
   private startTask(kind: SyncRequestKind, epoch: number, predecessor?: SyncTask): SyncTask {
     let task!: SyncTask;
-    const promise = this.enqueue(async () => {
+    const promise = this.enqueue<SyncResult>(async () => {
       task.started = true;
       if (predecessor) {
         const result = await predecessor.promise;
         if (result.state !== "idle") return result;
       }
-      return kind === "flush" ? this.flushInternal(epoch) : this.refreshInternal(epoch);
+      const expectedUserId = this.repository.currentUserId();
+      if (!expectedUserId) return { state: "paused_auth" };
+      return kind === "flush" ? this.flushInternal(epoch, expectedUserId) : this.refreshInternal(epoch, expectedUserId);
     });
     task = { kind, epoch, started: false, promise };
     this.currentTask = task;
@@ -106,14 +108,14 @@ export class CatalogSync {
     return epoch !== this.authEpoch || this.authPaused;
   }
 
-  private async flushInternal(epoch: number): Promise<SyncResult> {
+  private async flushInternal(epoch: number, expectedUserId: string): Promise<SyncResult> {
     if (this.isStale(epoch)) return { state: "paused_auth" };
     const operations = await this.repository.pendingOperations();
     if (this.isStale(epoch)) return { state: "paused_auth" };
     for (const operation of operations) {
       if (this.isStale(epoch)) return { state: "paused_auth" };
       try {
-        const response = await this.api.send(operation);
+        const response = await this.api.send(operation, expectedUserId);
         await this.repository.syncApplySuccessfulOperation(operation, response);
         if (this.isStale(epoch)) return { state: "paused_auth" };
       } catch (error) {
@@ -158,12 +160,12 @@ export class CatalogSync {
     return this.request("refresh");
   }
 
-  private async refreshInternal(epoch: number): Promise<SyncResult> {
-    const flushed = await this.flushInternal(epoch);
+  private async refreshInternal(epoch: number, expectedUserId: string): Promise<SyncResult> {
+    const flushed = await this.flushInternal(epoch, expectedUserId);
     if (flushed.state !== "idle") return flushed;
     if (this.isStale(epoch)) return { state: "paused_auth" };
     try {
-      const [folders, meetings] = await Promise.all([this.api.listFolders(), this.api.listMeetings()]);
+      const [folders, meetings] = await Promise.all([this.api.listFolders(expectedUserId), this.api.listMeetings(expectedUserId)]);
       if (this.isStale(epoch)) return { state: "paused_auth" };
       await this.repository.syncRefresh(folders, meetings);
       if (this.isStale(epoch)) return { state: "paused_auth" };

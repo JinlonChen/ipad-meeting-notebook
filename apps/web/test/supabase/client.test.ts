@@ -124,6 +124,7 @@ describe("createMeetingSupabaseClient", () => {
         p_kind: "meeting.rename",
         p_entity_id: "00000000-0000-4000-8000-000000000002",
         p_payload: { title: "Planning", expectedSyncVersion: 0 },
+        p_expected_user_id: "00000000-0000-4000-8000-000000000003",
       });
 
       expectTypeOf<QueryData<typeof foldersQuery>>().toEqualTypeOf<FolderRow[]>();

@@ -46,7 +46,7 @@ async function parsed<T>(request: Promise<Response>, schema: z.ZodType<T>, prese
 export class MeetingCatalogHttpApi implements MeetingCatalogApi {
   constructor(private readonly fetcher: Fetcher = fetch) {}
 
-  async send(operation: OutboxOperation): Promise<{ meeting?: Meeting; folder?: Folder }> {
+  async send(operation: OutboxOperation, _expectedUserId?: string): Promise<{ meeting?: Meeting; folder?: Folder }> {
     const init = (method: string, body?: unknown): RequestInit => ({
       method,
       credentials: "include",
@@ -200,10 +200,18 @@ function rpcFailure(status: number, code: string | undefined): CatalogApiError {
   return new CatalogApiError(status, "REQUEST_FAILED");
 }
 
+function assertRowsOwnedBy(rows: unknown[], expectedUserId: string | undefined): void {
+  if (expectedUserId === undefined) return;
+  const actor = z.uuid().parse(expectedUserId);
+  for (const row of rows) {
+    if (record(row).user_id !== actor) throw new CatalogApiError(401, "AUTH_REQUIRED");
+  }
+}
+
 export class MeetingCatalogSupabaseApi implements MeetingCatalogApi {
   constructor(private readonly client: SupabaseCatalogClient) {}
 
-  async send(operation: OutboxOperation): Promise<{ meeting?: Meeting; folder?: Folder }> {
+  async send(operation: OutboxOperation, expectedUserId: string): Promise<{ meeting?: Meeting; folder?: Folder }> {
     try {
       const payload = JsonSchema.parse(operation.payload);
       const { data, error, status } = await this.client.rpc("apply_catalog_mutation", {
@@ -211,6 +219,7 @@ export class MeetingCatalogSupabaseApi implements MeetingCatalogApi {
         p_kind: operation.kind,
         p_entity_id: operation.entityId,
         p_payload: payload,
+        p_expected_user_id: z.uuid().parse(expectedUserId),
       });
       if (error) throw supabaseFailure(error, status);
 
@@ -233,15 +242,16 @@ export class MeetingCatalogSupabaseApi implements MeetingCatalogApi {
     }
   }
 
-  async listMeetings(): Promise<Meeting[]> {
+  async listMeetings(expectedUserId?: string): Promise<Meeting[]> {
     try {
       const { data, error, status } = await this.client
         .from("meetings")
-        .select("id,title,folder_id,status,started_at,ended_at,created_at,updated_at,trashed_at,sync_version")
+        .select("user_id,id,title,folder_id,status,started_at,ended_at,created_at,updated_at,trashed_at,sync_version")
         .order("updated_at", { ascending: false })
         .order("id", { ascending: true });
       if (error) throw supabaseFailure(error, status);
       if (!Array.isArray(data)) throw new CatalogApiError(500, "REQUEST_FAILED");
+      assertRowsOwnedBy(data, expectedUserId);
       return z.array(MeetingSchema).parse(data.map(contractMeeting));
     } catch (error) {
       if (error instanceof CatalogApiError) throw error;
@@ -249,15 +259,16 @@ export class MeetingCatalogSupabaseApi implements MeetingCatalogApi {
     }
   }
 
-  async listFolders(): Promise<Folder[]> {
+  async listFolders(expectedUserId?: string): Promise<Folder[]> {
     try {
       const { data, error, status } = await this.client
         .from("folders")
-        .select("id,name,created_at,updated_at,sync_version")
+        .select("user_id,id,name,created_at,updated_at,sync_version")
         .order("name", { ascending: true })
         .order("id", { ascending: true });
       if (error) throw supabaseFailure(error, status);
       if (!Array.isArray(data)) throw new CatalogApiError(500, "REQUEST_FAILED");
+      assertRowsOwnedBy(data, expectedUserId);
       return z.array(FolderSchema).parse(data.map(contractFolder));
     } catch (error) {
       if (error instanceof CatalogApiError) throw error;

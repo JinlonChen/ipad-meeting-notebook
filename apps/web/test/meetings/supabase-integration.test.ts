@@ -12,6 +12,7 @@ type SupabaseCatalogClient = Pick<SupabaseClient<Database>, "from" | "rpc">;
 
 const repositories: MeetingCatalogRepository[] = [];
 const timestamp = "2026-08-21T00:00:00.000Z";
+const userId = "00000000-0000-4000-8000-00000000000a";
 
 afterEach(async () => {
   await Promise.all(repositories.splice(0).map((repository) => repository.deleteDatabase()));
@@ -21,6 +22,7 @@ describe("Supabase catalog synchronization", () => {
   test("stores only a fixed sync failure when Supabase returns private error details", async () => {
     const repository = new MeetingCatalogRepository(`supabase-sync-${crypto.randomUUID()}`);
     repositories.push(repository);
+    await repository.activateUser(userId);
     const meeting = await repository.create("Offline meeting", null, timestamp);
     const client = {
       rpc: vi.fn().mockResolvedValue({

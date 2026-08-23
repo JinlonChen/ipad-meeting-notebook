@@ -230,13 +230,14 @@ describe("MeetingCatalogSupabaseApi", () => {
     })) });
     const api = new MeetingCatalogSupabaseApi(client);
 
-    for (const operation of operations) await api.send(operation);
+    for (const operation of operations) await api.send(operation, folderRow.user_id);
 
     expect(rpc.mock.calls).toEqual(operations.map((operation) => ["apply_catalog_mutation", {
       p_operation_id: operation.id,
       p_kind: operation.kind,
       p_entity_id: operation.entityId,
       p_payload: operation.payload,
+      p_expected_user_id: folderRow.user_id,
     }]));
   });
 
@@ -248,12 +249,12 @@ describe("MeetingCatalogSupabaseApi", () => {
     ] });
     const api = new MeetingCatalogSupabaseApi(client);
 
-    await expect(api.send(operations[0]!)).resolves.toEqual({ meeting: {
+    await expect(api.send(operations[0]!, folderRow.user_id)).resolves.toEqual({ meeting: {
       id, title: "Planning", folderId, status: "draft", startedAt: null, endedAt: null,
       createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2,
     } });
-    await expect(api.send(operations[0]!)).resolves.toEqual({ meeting: expect.objectContaining({ id, syncVersion: 2 }) });
-    await expect(api.send(operations[4]!)).resolves.toEqual({ folder: {
+    await expect(api.send(operations[0]!, folderRow.user_id)).resolves.toEqual({ meeting: expect.objectContaining({ id, syncVersion: 2 }) });
+    await expect(api.send(operations[4]!, folderRow.user_id)).resolves.toEqual({ folder: {
       id: folderId, name: "Work", createdAt: timestamp, updatedAt: timestamp, syncVersion: 1,
     } });
   });
@@ -268,7 +269,7 @@ describe("MeetingCatalogSupabaseApi", () => {
       trashed_at: null,
     } }, error: null }] });
 
-    await expect(new MeetingCatalogSupabaseApi(client).send(operations[0]!)).resolves.toEqual({ meeting: {
+    await expect(new MeetingCatalogSupabaseApi(client).send(operations[0]!, folderRow.user_id)).resolves.toEqual({ meeting: {
       id,
       title: "Planning",
       folderId,
@@ -296,16 +297,25 @@ describe("MeetingCatalogSupabaseApi", () => {
       id, title: "Planning", folderId, status: "draft", startedAt: null, endedAt: null,
       createdAt: timestamp, updatedAt: timestamp, trashedAt: null, syncVersion: 2,
     }]);
-    expect(queries.folders?.select).toHaveBeenCalledWith("id,name,created_at,updated_at,sync_version");
+    expect(queries.folders?.select).toHaveBeenCalledWith("user_id,id,name,created_at,updated_at,sync_version");
     expect(queries.folders?.order.mock.calls).toEqual([
       ["name", { ascending: true }],
       ["id", { ascending: true }],
     ]);
-    expect(queries.meetings?.select).toHaveBeenCalledWith("id,title,folder_id,status,started_at,ended_at,created_at,updated_at,trashed_at,sync_version");
+    expect(queries.meetings?.select).toHaveBeenCalledWith("user_id,id,title,folder_id,status,started_at,ended_at,created_at,updated_at,trashed_at,sync_version");
     expect(queries.meetings?.order.mock.calls).toEqual([
       ["updated_at", { ascending: false }],
       ["id", { ascending: true }],
     ]);
+  });
+
+  test("rejects pull rows owned by a different actor", async () => {
+    const { client } = supabaseClient({ tableResults: {
+      folders: { data: [{ ...folderRow, user_id: "00000000-0000-4000-8000-00000000000b" }], error: null },
+    } });
+
+    await expect(new MeetingCatalogSupabaseApi(client).listFolders(folderRow.user_id))
+      .rejects.toEqual(new CatalogApiError(401, "AUTH_REQUIRED"));
   });
 
   test("canonicalizes offset Postgres timestamps across complete list responses", async () => {
@@ -337,11 +347,12 @@ describe("MeetingCatalogSupabaseApi", () => {
     [{ data: null, error: { message: "expired jwt secret" }, status: 401 }, new CatalogApiError(401, "AUTH_REQUIRED")],
     [{ data: null, error: { message: "private upstream detail" }, status: 503 }, new CatalogApiError(503, "REQUEST_FAILED")],
     [{ data: { status: 401, code: "AUTH_REQUIRED" }, error: null }, new CatalogApiError(401, "AUTH_REQUIRED")],
+    [{ data: { status: 401, code: "AUTH_CONTEXT_CHANGED" }, error: null }, new CatalogApiError(401, "AUTH_REQUIRED")],
     [{ data: { status: 409, code: "CONFLICT" }, error: null }, new CatalogApiError(409, "CONFLICT")],
   ])("maps Supabase and RPC failures to fixed catalog errors", async (result, expected) => {
     const { client } = supabaseClient({ rpcResults: [result] });
 
-    await expect(new MeetingCatalogSupabaseApi(client).send(operations[1]!)).rejects.toEqual(expected);
+    await expect(new MeetingCatalogSupabaseApi(client).send(operations[1]!, folderRow.user_id)).rejects.toEqual(expected);
   });
 
   test("maps a list response HTTP 401 to auth required without exposing its error", async () => {
@@ -358,14 +369,14 @@ describe("MeetingCatalogSupabaseApi", () => {
   ])("preserves typed RPC 404 conflicts", async (operation, code) => {
     const { client } = supabaseClient({ rpcResults: [{ data: { status: 404, code }, error: null }] });
 
-    await expect(new MeetingCatalogSupabaseApi(client).send(operation!)).rejects.toEqual(new CatalogApiError(404, code));
+    await expect(new MeetingCatalogSupabaseApi(client).send(operation!, folderRow.user_id)).rejects.toEqual(new CatalogApiError(404, code));
   });
 
   test("normalizes thrown failures without exposing raw Supabase details", async () => {
     const rpc = vi.fn().mockRejectedValue(new TypeError("https://secret.supabase.co?token=private"));
     const client = { rpc, from: vi.fn() } as unknown as SupabaseCatalogClient;
 
-    const error = await new MeetingCatalogSupabaseApi(client).send(operations[1]!).catch((caught: unknown) => caught);
+    const error = await new MeetingCatalogSupabaseApi(client).send(operations[1]!, folderRow.user_id).catch((caught: unknown) => caught);
 
     expect(error).toEqual(new CatalogApiError(0, "REQUEST_FAILED"));
     expect(JSON.stringify(error)).not.toContain("secret.supabase.co");
@@ -382,14 +393,14 @@ describe("MeetingCatalogSupabaseApi", () => {
   ])("rejects %s as a safe request failure", async (_label, result) => {
     const { client } = supabaseClient({ rpcResults: [result] });
 
-    await expect(new MeetingCatalogSupabaseApi(client).send(operations[0]!)).rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
+    await expect(new MeetingCatalogSupabaseApi(client).send(operations[0]!, folderRow.user_id)).rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
   });
 
   test("rejects a non-JSON outbox payload before calling the RPC", async () => {
     const { client, rpc } = supabaseClient();
     const operation = { ...operations[1]!, payload: { title: "Renamed", expectedSyncVersion: 0n } };
 
-    await expect(new MeetingCatalogSupabaseApi(client).send(operation)).rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
+    await expect(new MeetingCatalogSupabaseApi(client).send(operation, folderRow.user_id)).rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
     expect(rpc).not.toHaveBeenCalled();
   });
 
