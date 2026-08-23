@@ -20,6 +20,7 @@ const IsoTimestampSchema = z.iso.datetime();
 const UserIdSchema = z.uuid().transform((value) => value.toLowerCase());
 const DeviceAccessSchema = z.object({ userId: UserIdSchema, authorizedAt: IsoTimestampSchema, expiresAt: IsoTimestampSchema }).strict();
 const RestoreStatusSchema = z.enum(["draft", "recording", "recoverable", "uploading", "processing", "ready", "failed"]);
+const ConditionalOperationPayloadSchema = z.object({ expectedSyncVersion: z.int().nonnegative() }).passthrough();
 const outboxSource = Symbol("outboxSource");
 
 type SourcedOutboxOperation = OutboxOperation & {
@@ -477,10 +478,33 @@ export class MeetingCatalogRepository {
 
     await db.transaction("rw", db.meetings, db.folders, db.outbox, async () => {
       const pending = await db.outbox.toArray();
-      const hasLaterEntityMutation = pending.some((item) => item.entityId === operationToApply.entityId && item.sequence !== undefined && item.sequence > sequence);
+      const laterEntityMutations = pending
+        .filter((item) => item.entityId === operationToApply.entityId && item.sequence !== undefined && item.sequence > sequence)
+        .sort((left, right) => left.sequence! - right.sequence!);
+      const hasLaterEntityMutation = laterEntityMutations.length > 0;
       const pendingFolderRemovals = new Set(pending
         .filter((item) => item.kind === "folder.remove" && item.sequence !== sequence)
         .map((item) => item.entityId));
+
+      const operationStillPending = pending.some((item) => item.sequence === sequence && item.id === operationToApply.id);
+      const laterMeetingMutations = laterEntityMutations.filter((item) => item.kind.startsWith("meeting."));
+      if (operationToApply.kind === "meeting.note" && receivedMeeting && !operationStillPending && laterMeetingMutations[0]?.kind === "meeting.note") {
+        MeetingNoteOperationSchema.parse(operationToApply.payload);
+        const replacementPayload = MeetingNoteOperationSchema.parse(laterMeetingMutations[0].payload);
+        const versionShift = receivedMeeting.syncVersion - replacementPayload.expectedSyncVersion;
+        if (versionShift > 0) {
+          for (const item of laterMeetingMutations) {
+            const payload = ConditionalOperationPayloadSchema.parse(item.payload);
+            await db.outbox.update(item.sequence!, {
+              payload: { ...payload, expectedSyncVersion: payload.expectedSyncVersion + versionShift },
+            });
+          }
+          const current = await db.meetings.get(operationToApply.entityId);
+          if (current) {
+            await db.meetings.put(MeetingSchema.parse({ ...current, syncVersion: current.syncVersion + versionShift }));
+          }
+        }
+      }
 
       if (operationToApply.kind === "folder.remove") {
         const meetings = await db.meetings.where("folderId").equals(operationToApply.entityId).toArray();

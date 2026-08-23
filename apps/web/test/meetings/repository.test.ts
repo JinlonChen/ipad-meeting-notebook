@@ -140,10 +140,47 @@ describe("MeetingCatalogRepository", () => {
     await catalog.saveNote(meeting.id, "second", "2026-08-21T00:02:00.000Z");
     await catalog.syncApplySuccessfulOperation(inFlight, { meeting: first });
 
-    await expect(catalog.get(meeting.id)).resolves.toMatchObject({ note: "second", syncVersion: 1 });
-    await expect(catalog.pendingOperations()).resolves.toEqual([
-      expect.objectContaining({ kind: "meeting.note", payload: expect.objectContaining({ note: "second" }) }),
-    ]);
+    await expect(catalog.get(meeting.id)).resolves.toMatchObject({ note: "second", syncVersion: 2 });
+    const replacement = (await catalog.pendingOperations())[0]!;
+    expect(replacement).toMatchObject({
+      kind: "meeting.note",
+      payload: { note: "second", updatedAt: "2026-08-21T00:02:00.000Z", expectedSyncVersion: 1 },
+    });
+
+    await catalog.syncApplySuccessfulOperation(replacement, {
+      meeting: { ...first, note: "second", updatedAt: "2026-08-21T00:02:00.000Z", syncVersion: 2 },
+    });
+
+    await expect(catalog.get(meeting.id)).resolves.toMatchObject({ note: "second", syncVersion: 2 });
+    await expect(catalog.pendingOperations()).resolves.toEqual([]);
+  });
+
+  test("rebases a replacement note and every later meeting mutation after a stale acknowledgement", async () => {
+    const catalog = repository();
+    const meeting = await catalog.create("Planning", null, now);
+    const create = (await catalog.pendingOperations())[0]!;
+    await catalog.syncApplySuccessfulOperation(create, { meeting });
+    const first = await catalog.saveNote(meeting.id, "first", later);
+    const inFlight = (await catalog.pendingOperations())[0]!;
+    await catalog.saveNote(meeting.id, "second", "2026-08-21T00:02:00.000Z");
+    await catalog.rename(meeting.id, "Renamed", "2026-08-21T00:03:00.000Z");
+
+    await catalog.syncApplySuccessfulOperation(inFlight, { meeting: first });
+
+    const pending = await catalog.pendingOperations();
+    expect(pending.map((item) => item.kind)).toEqual(["meeting.note", "meeting.rename"]);
+    expect(pending.map((item) => (item.payload as { expectedSyncVersion: number }).expectedSyncVersion)).toEqual([1, 2]);
+    await expect(catalog.get(meeting.id)).resolves.toMatchObject({ note: "second", title: "Renamed", syncVersion: 3 });
+
+    await catalog.syncApplySuccessfulOperation(pending[0]!, {
+      meeting: { ...first, note: "second", updatedAt: "2026-08-21T00:02:00.000Z", syncVersion: 2 },
+    });
+    await catalog.syncApplySuccessfulOperation(pending[1]!, {
+      meeting: { ...first, note: "second", title: "Renamed", updatedAt: "2026-08-21T00:03:00.000Z", syncVersion: 3 },
+    });
+
+    await expect(catalog.get(meeting.id)).resolves.toMatchObject({ note: "second", title: "Renamed", syncVersion: 3 });
+    await expect(catalog.pendingOperations()).resolves.toEqual([]);
   });
 
   test("rejects oversized notes without changing the meeting or outbox", async () => {
