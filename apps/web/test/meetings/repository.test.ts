@@ -4,6 +4,7 @@ import Dexie from "dexie";
 import { MeetingCatalogRepository } from "../../src/meetings/repository.js";
 
 const now = "2026-08-21T00:00:00.000Z";
+const later = "2026-08-21T00:01:00.000Z";
 const userA = "00000000-0000-4000-8000-00000000000a";
 const userB = "00000000-0000-4000-8000-00000000000b";
 
@@ -57,6 +58,116 @@ describe("MeetingCatalogRepository", () => {
     const second = (await catalog.pendingOperations())[0]!;
     expect(first.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(second.id).toBe(first.id);
+  });
+
+  test("backfills an empty note when opening a version 2 meeting database", async () => {
+    const name = `meeting-catalog-test-${databaseNumber++}`;
+    const meeting = {
+      id: crypto.randomUUID(),
+      title: "Legacy meeting",
+      folderId: null,
+      status: "draft",
+      startedAt: null,
+      endedAt: null,
+      createdAt: now,
+      updatedAt: now,
+      trashedAt: null,
+      syncVersion: 0,
+    };
+    const legacy = new Dexie(name);
+    legacy.version(2).stores({ meetings: "id,updatedAt,status,folderId,title", folders: "id,name,updatedAt", outbox: "++sequence,id,entityId,kind,createdAt", settings: "key" });
+    await legacy.table("meetings").put(meeting);
+    legacy.close();
+    const catalog = new MeetingCatalogRepository(name);
+    repositories.push(catalog);
+
+    await expect(catalog.get(meeting.id)).resolves.toEqual({ ...meeting, note: "" });
+  });
+
+  test("saves a note locally and queues one conditional mutation", async () => {
+    const catalog = repository();
+    const meeting = await catalog.create("Planning", null, now);
+
+    await catalog.saveNote(meeting.id, "结论\n待办", later);
+
+    await expect(catalog.get(meeting.id)).resolves.toMatchObject({ note: "结论\n待办", syncVersion: 1 });
+    const noteOperations = (await catalog.pendingOperations()).filter((item) => item.kind === "meeting.note");
+    expect(noteOperations).toEqual([
+      expect.objectContaining({
+        entityId: meeting.id,
+        payload: { note: "结论\n待办", updatedAt: later, expectedSyncVersion: 0 },
+      }),
+    ]);
+  });
+
+  test("replaces only a tail note operation and preserves its server base version", async () => {
+    const catalog = repository();
+    const meeting = await catalog.create("Planning", null, now);
+    await catalog.saveNote(meeting.id, "first", later);
+    const first = (await catalog.pendingOperations()).find((item) => item.kind === "meeting.note")!;
+
+    await catalog.saveNote(meeting.id, "second", "2026-08-21T00:02:00.000Z");
+
+    const notes = (await catalog.pendingOperations()).filter((item) => item.kind === "meeting.note");
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatchObject({ payload: { note: "second", updatedAt: "2026-08-21T00:02:00.000Z", expectedSyncVersion: 0 } });
+    expect(notes[0]!.id).not.toBe(first.id);
+    expect(notes[0]!.sequence).not.toBe(first.sequence);
+    await expect(catalog.get(meeting.id)).resolves.toMatchObject({ note: "second", syncVersion: 1 });
+  });
+
+  test("appends after a later rename instead of reordering dependent versions", async () => {
+    const catalog = repository();
+    const meeting = await catalog.create("Planning", null, now);
+    await catalog.saveNote(meeting.id, "first", later);
+    await catalog.rename(meeting.id, "Renamed", "2026-08-21T00:02:00.000Z");
+
+    await catalog.saveNote(meeting.id, "second", "2026-08-21T00:03:00.000Z");
+
+    const entity = (await catalog.pendingOperations()).filter((item) => item.entityId === meeting.id);
+    expect(entity.map((item) => item.kind)).toEqual(["meeting.create", "meeting.note", "meeting.rename", "meeting.note"]);
+    expect(entity.slice(1).map((item) => (item.payload as { expectedSyncVersion: number }).expectedSyncVersion)).toEqual([0, 1, 2]);
+  });
+
+  test("a stale in-flight note acknowledgement cannot overwrite a replacement note", async () => {
+    const catalog = repository();
+    const meeting = await catalog.create("Planning", null, now);
+    const create = (await catalog.pendingOperations())[0]!;
+    await catalog.syncApplySuccessfulOperation(create, { meeting });
+    const first = await catalog.saveNote(meeting.id, "first", later);
+    const inFlight = (await catalog.pendingOperations())[0]!;
+
+    await catalog.saveNote(meeting.id, "second", "2026-08-21T00:02:00.000Z");
+    await catalog.syncApplySuccessfulOperation(inFlight, { meeting: first });
+
+    await expect(catalog.get(meeting.id)).resolves.toMatchObject({ note: "second", syncVersion: 1 });
+    await expect(catalog.pendingOperations()).resolves.toEqual([
+      expect.objectContaining({ kind: "meeting.note", payload: expect.objectContaining({ note: "second" }) }),
+    ]);
+  });
+
+  test("rejects oversized notes without changing the meeting or outbox", async () => {
+    const catalog = repository();
+    const meeting = await catalog.create("Planning", null, now);
+    const before = await catalog.pendingOperations();
+
+    await expect(catalog.saveNote(meeting.id, "x".repeat(200_001), later)).rejects.toThrow();
+
+    await expect(catalog.get(meeting.id)).resolves.toEqual(meeting);
+    await expect(catalog.pendingOperations()).resolves.toEqual(before);
+  });
+
+  test("rejects note saves while the same meeting has a pending conflict", async () => {
+    const catalog = repository();
+    const meeting = await catalog.create("Planning", null, now);
+    const create = (await catalog.pendingOperations())[0]!;
+    await catalog.syncRecordFailure(create, "CONFLICT");
+    const before = await catalog.pendingOperations();
+
+    await expect(catalog.saveNote(meeting.id, "blocked", later)).rejects.toMatchObject({ name: "MeetingConflictPendingError" });
+
+    await expect(catalog.get(meeting.id)).resolves.toEqual(meeting);
+    await expect(catalog.pendingOperations()).resolves.toEqual(before);
   });
 
   test("rejects an unknown folder without writing either side of the mutation", async () => {

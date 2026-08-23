@@ -2,6 +2,8 @@ import {
   CreateFolderInputSchema,
   CreateMeetingInputSchema,
   FolderSchema,
+  MeetingNoteOperationSchema,
+  MeetingNoteSchema,
   MeetingSchema,
   type Folder,
   type Meeting,
@@ -32,6 +34,13 @@ export class MeetingNotFoundError extends Error {
   constructor(id: string) {
     super(`Meeting not found: ${id}`);
     this.name = "MeetingNotFoundError";
+  }
+}
+
+export class MeetingConflictPendingError extends Error {
+  constructor(id: string) {
+    super(`Meeting conflict pending: ${id}`);
+    this.name = "MeetingConflictPendingError";
   }
 }
 
@@ -194,6 +203,7 @@ export class MeetingCatalogRepository {
         updatedAt: createdAt,
         trashedAt: null,
         syncVersion: 0,
+        note: "",
       });
       await db.meetings.add(meeting);
       await this.enqueueOutbox(db, operation("meeting.create", meeting.id, value, createdAt));
@@ -312,6 +322,35 @@ export class MeetingCatalogRepository {
       await db.meetings.put(meeting);
       await this.enqueueOutbox(db, operation("meeting.rename", meetingId, { title: normalizedTitle, updatedAt, expectedSyncVersion: current.syncVersion }, updatedAt));
       return meeting;
+    });
+  }
+
+  async saveNote(id: string, note: string, now: string): Promise<Meeting> {
+    const db = this.db;
+    const normalizedNote = MeetingNoteSchema.parse(note);
+    const meetingId = MeetingIdSchema.parse(id);
+    const updatedAt = timestamp(now);
+    return db.transaction("rw", db.meetings, db.outbox, async () => {
+      const current = await db.meetings.get(meetingId);
+      if (!current) throw new MeetingNotFoundError(meetingId);
+      const entityOperations = await db.outbox.where("entityId").equals(meetingId).sortBy("sequence");
+      if (entityOperations.some((item) => item.lastError === "CONFLICT")) throw new MeetingConflictPendingError(meetingId);
+      const tail = entityOperations.at(-1);
+      const replacingTail = tail?.kind === "meeting.note" && tail.sequence !== undefined;
+      const expectedSyncVersion = replacingTail
+        ? MeetingNoteOperationSchema.parse(tail.payload).expectedSyncVersion
+        : current.syncVersion;
+      const next = MeetingSchema.parse({
+        ...current,
+        note: normalizedNote,
+        updatedAt,
+        syncVersion: replacingTail ? current.syncVersion : current.syncVersion + 1,
+      });
+      const payload = MeetingNoteOperationSchema.parse({ note: normalizedNote, updatedAt, expectedSyncVersion });
+      if (replacingTail) await db.outbox.delete(tail.sequence!);
+      await db.meetings.put(next);
+      await this.enqueueOutbox(db, operation("meeting.note", meetingId, payload, updatedAt));
+      return next;
     });
   }
 
