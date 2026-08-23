@@ -56,6 +56,17 @@ export async function installSupabaseRoutes(page: Page, meetings: RemoteMeeting[
       await route.fulfill({ status: 204, body: "" });
       return;
     }
+    if (url.pathname === "/rest/v1/rpc/get_catalog_snapshot") {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: 200,
+          folders: [],
+          meetings: meetings.map((meeting) => ({ ...meeting, user_id: userId })),
+        }),
+      });
+      return;
+    }
     if (url.pathname === "/rest/v1/folders") {
       await route.fulfill({ contentType: "application/json", body: "[]" });
       return;

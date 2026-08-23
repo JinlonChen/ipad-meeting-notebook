@@ -3,6 +3,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 
 import { AuthApiError, AuthNetworkError, type AuthApi } from "../auth/api.js";
 import { LoginPage } from "../auth/LoginPage.js";
+import type { DeviceAccess } from "../meetings/local-db.js";
 import { MeetingListPage, WorkspacePlaceholder } from "../meetings/MeetingListPage.js";
 import { MeetingCatalogRepository } from "../meetings/repository.js";
 import { CatalogSync, type MeetingCatalogApi, type SyncResult } from "../meetings/sync.js";
@@ -81,9 +82,9 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
   const nextGeneration = useCallback(() => ++generation.current, []);
   const owns = useCallback((value: number) => mounted.current && generation.current === value, []);
 
-  const clearAuthorization = useCallback(async (currentGeneration: number): Promise<boolean> => {
+  const clearAuthorization = useCallback(async (currentGeneration: number, expectedAccess?: DeviceAccess): Promise<boolean> => {
     try {
-      const expected = await repository.validDeviceAccess(now());
+      const expected = expectedAccess ?? await repository.validDeviceAccess(now());
       if (!owns(currentGeneration)) return false;
       if (expected) await repository.clearDeviceAccess(expected);
     } catch {
@@ -94,6 +95,25 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
     setDeviceExpiresAt(null);
     return true;
   }, [now, owns, repository]);
+
+  const lockInitialMismatch = useCallback((markerUserId: string, initialUserId: string | null) => {
+    const currentGeneration = nextGeneration();
+    setDeviceExpiresAt(null);
+    setGate("loading");
+    void (async () => {
+      try {
+        const access = await repository.validDeviceAccess(now());
+        if (!owns(currentGeneration)) return;
+        if (!access || access.userId !== markerUserId || access.userId === initialUserId) {
+          setGate("offline-lock");
+          return;
+        }
+        if (await clearAuthorization(currentGeneration, access)) setGate("offline-lock");
+      } catch {
+        if (owns(currentGeneration)) setGate("error");
+      }
+    })();
+  }, [clearAuthorization, nextGeneration, now, owns, repository]);
 
   useEffect(() => {
     mounted.current = true;
@@ -141,8 +161,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
         if (!owns(currentGeneration)) return;
         const observed = observedInitialUserId.current;
         if (acceptInitialSession.current && observed !== undefined && access && observed !== access.userId) {
-          setDeviceExpiresAt(null);
-          setGate("offline-lock");
+          if (await clearAuthorization(currentGeneration, access)) setGate("offline-lock");
           return;
         }
         if (access) {
@@ -158,8 +177,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
         }
         if (!owns(currentGeneration)) return;
         if (acceptInitialSession.current && observedInitialUserId.current !== undefined && access && observedInitialUserId.current !== access.userId) {
-          setDeviceExpiresAt(null);
-          setGate("offline-lock");
+          if (await clearAuthorization(currentGeneration, access)) setGate("offline-lock");
           return;
         }
         setDeviceExpiresAt(access?.expiresAt ?? null);
@@ -178,17 +196,29 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
       observedInitialUserId.current = change.userId;
       if (activeUserId.current !== null && activeUserId.current !== change.userId) {
         synchronizer.pauseForUserChange();
-        nextGeneration();
-        setDeviceExpiresAt(null);
-        setGate("offline-lock");
+        lockInitialMismatch(activeUserId.current, change.userId);
       }
       return;
     }
     const transition = authTransition.current;
     if (explicitLogout.current || transition?.kind === "logout") return;
+    if (change.event === "token_refreshed" && activeUserId.current === change.userId) {
+      const currentGeneration = nextGeneration();
+      void repository.refreshDeviceAccess(change.userId, change.sessionExpiresAt).then((access) => {
+        if (access && owns(currentGeneration) && activeUserId.current === change.userId) {
+          setDeviceExpiresAt(access.expiresAt);
+        }
+      }).catch(() => {
+        if (owns(currentGeneration) && activeUserId.current === change.userId) {
+          setDeviceExpiresAt(null);
+          setGate("error");
+        }
+      });
+      return;
+    }
     if (!transition && change.event === "session" && activeUserId.current === change.userId) return;
     synchronizer.pauseForUserChange();
-    if (change.event === "session") {
+    if (change.event === "session" || change.event === "token_refreshed") {
       nextGeneration();
       setGate("loading");
       queueMicrotask(() => {
@@ -202,7 +232,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
     void clearAuthorization(currentGeneration).then((cleared) => {
       if (cleared) setGate(change.event === "signed_out" ? "login" : "error");
     });
-  }), [auth, authorize, clearAuthorization, nextGeneration, synchronizer]);
+  }), [auth, authorize, clearAuthorization, lockInitialMismatch, nextGeneration, owns, repository, synchronizer]);
   useEffect(() => {
     const becameOnline = () => {
       if (!explicitLogout.current) void authorize();

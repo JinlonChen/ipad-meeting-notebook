@@ -386,6 +386,18 @@ export class MeetingCatalogRepository {
     return access;
   }
 
+  async refreshDeviceAccess(userIdInput: string, sessionExpiresAt: string): Promise<DeviceAccess | null> {
+    const userId = UserIdSchema.parse(userIdInput);
+    const expiresAt = timestamp(sessionExpiresAt);
+    return this.bootstrapDb.transaction("rw", this.bootstrapDb.settings, async () => {
+      const current = DeviceAccessSchema.safeParse((await this.bootstrapDb.settings.get("deviceAccess"))?.value);
+      if (!current.success || current.data.userId !== userId || expiresAt <= current.data.expiresAt) return null;
+      const refreshed = DeviceAccessSchema.parse({ ...current.data, expiresAt });
+      await this.bootstrapDb.settings.put({ key: "deviceAccess", value: refreshed });
+      return refreshed;
+    });
+  }
+
   async hasDeviceAccess(now: string): Promise<boolean> {
     return (await this.validDeviceAccess(now)) !== null;
   }

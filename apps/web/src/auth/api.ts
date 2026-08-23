@@ -23,6 +23,7 @@ type SessionIdentity = { id: string; sessionExpiresAt: string };
 export type AuthSessionChange =
   | { event: "initial"; userId: string | null }
   | { event: "session"; userId: string }
+  | { event: "token_refreshed"; userId: string; sessionExpiresAt: string }
   | { event: "signed_out" | "invalid"; userId: null };
 type SupabaseAuthClient = Pick<SupabaseClient<Database>, "auth">;
 type ErrorShape = { status?: unknown; code?: unknown; name?: unknown };
@@ -54,13 +55,29 @@ function requiredProperty(value: unknown, property: string): unknown {
 
 function safeSessionChange(event: unknown, value: unknown): AuthSessionChange {
   if (event === "INITIAL_SESSION" && value === null) return { event: "initial", userId: null };
-  if (event === "SIGNED_OUT" || value === null) return { event: "signed_out", userId: null };
+  if (event === "SIGNED_OUT") return { event: "signed_out", userId: null };
+  if (event === "TOKEN_REFRESHED" && value === null) return { event: "invalid", userId: null };
+  if (value === null) return { event: "signed_out", userId: null };
   if (typeof value !== "object" || !value) return { event: "invalid", userId: null };
   const user = "user" in value ? value.user : undefined;
   if (typeof user !== "object" || !user || !("id" in user) || typeof user.id !== "string" || !uuidPattern.test(user.id)) {
     return { event: "invalid", userId: null };
   }
-  return { event: event === "INITIAL_SESSION" ? "initial" : "session", userId: user.id.toLowerCase() };
+  const userId = user.id.toLowerCase();
+  if (event === "TOKEN_REFRESHED") {
+    const expiresAt = "expires_at" in value ? value.expires_at : undefined;
+    if (typeof expiresAt !== "number" || !Number.isSafeInteger(expiresAt) || expiresAt <= 0) {
+      return { event: "invalid", userId: null };
+    }
+    const expiryMilliseconds = expiresAt * 1_000;
+    if (!Number.isSafeInteger(expiryMilliseconds)) return { event: "invalid", userId: null };
+    try {
+      return { event: "token_refreshed", userId, sessionExpiresAt: new Date(expiryMilliseconds).toISOString() };
+    } catch {
+      return { event: "invalid", userId: null };
+    }
+  }
+  return { event: event === "INITIAL_SESSION" ? "initial" : "session", userId };
 }
 
 function supabaseFailure(error: unknown): AuthApiError | AuthNetworkError {

@@ -37,19 +37,21 @@ describe("supabaseAuthApi", () => {
     const stop = api.onSessionChange(listener);
     callback("INITIAL_SESSION", { access_token: "secret-initial-jwt", user: { id: userId, email: "secret@example.com" } });
     callback("SIGNED_IN", { access_token: "secret-jwt", user: { id: userId, email: "secret@example.com" } });
+    callback("TOKEN_REFRESHED", { access_token: "secret-refresh-jwt", expires_at: expirySeconds, user: { id: userId, email: "secret@example.com" } });
     callback("SIGNED_OUT", null);
 
     expect(listener.mock.calls).toEqual([
       [{ event: "initial", userId }],
       [{ event: "session", userId }],
+      [{ event: "token_refreshed", userId, sessionExpiresAt: expiry }],
       [{ event: "signed_out", userId: null }],
     ]);
-    expect(JSON.stringify(listener.mock.calls)).not.toMatch(/secret-(initial-)?jwt|secret@example\.com/);
+    expect(JSON.stringify(listener.mock.calls)).not.toMatch(/secret-(initial-|refresh-)?jwt|secret@example\.com/);
     stop();
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
-  test("maps malformed auth event users to one safe invalid event", () => {
+  test("maps malformed auth event users and refresh expiries to safe invalid events", () => {
     let callback!: (event: string, session: unknown) => void;
     const onAuthStateChange = vi.fn().mockImplementation((listener) => {
       callback = listener;
@@ -60,9 +62,13 @@ describe("supabaseAuthApi", () => {
     api.onSessionChange(listener);
 
     callback("TOKEN_REFRESHED", { access_token: "private-token", user: { id: "private@example.com", email: "private@example.com" } });
+    callback("TOKEN_REFRESHED", { access_token: "private-token", expires_at: "private-expiry", user: { id: userId, email: "private@example.com" } });
 
-    expect(listener).toHaveBeenCalledWith({ event: "invalid", userId: null });
-    expect(JSON.stringify(listener.mock.calls)).not.toMatch(/private-token|private@example\.com/);
+    expect(listener.mock.calls).toEqual([
+      [{ event: "invalid", userId: null }],
+      [{ event: "invalid", userId: null }],
+    ]);
+    expect(JSON.stringify(listener.mock.calls)).not.toMatch(/private-token|private-expiry|private@example\.com/);
   });
 
   test("verifies the remote user before reading and normalizing the current session expiry", async () => {

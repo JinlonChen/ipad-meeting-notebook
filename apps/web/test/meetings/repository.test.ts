@@ -146,6 +146,57 @@ describe("MeetingCatalogRepository", () => {
     await expect(catalog.pendingOperations()).resolves.toHaveLength(1);
   });
 
+  test("only extends device access for the marker's verified user", async () => {
+    const catalog = repository();
+    const original = await catalog.authorizeDevice(userA, "2026-09-20T00:00:00.000Z", now);
+
+    await expect(catalog.refreshDeviceAccess(userA, "2026-10-20T00:00:00.000Z")).resolves.toEqual({
+      ...original,
+      expiresAt: "2026-10-20T00:00:00.000Z",
+    });
+    await expect(catalog.refreshDeviceAccess(userA, "2026-09-01T00:00:00.000Z")).resolves.toBeNull();
+    await expect(catalog.refreshDeviceAccess(userB, "2026-11-20T00:00:00.000Z")).resolves.toBeNull();
+    await expect(catalog.validDeviceAccess("2026-10-01T00:00:00.000Z")).resolves.toEqual({
+      ...original,
+      expiresAt: "2026-10-20T00:00:00.000Z",
+    });
+
+    const userBAccess = await catalog.authorizeDevice(userB, "2026-10-25T00:00:00.000Z", now);
+    await expect(catalog.refreshDeviceAccess(userA, "2026-11-20T00:00:00.000Z")).resolves.toBeNull();
+    await expect(catalog.validDeviceAccess("2026-10-21T00:00:00.000Z")).resolves.toEqual(userBAccess);
+
+    await catalog.clearDeviceAccess();
+    await expect(catalog.refreshDeviceAccess(userA, "2026-11-20T00:00:00.000Z")).resolves.toBeNull();
+    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(false);
+  });
+
+  test("keeps the newest expiry when old and new token refreshes race", async () => {
+    const name = `meeting-catalog-refresh-race-${databaseNumber++}`;
+    const first = new MeetingCatalogRepository(name);
+    const second = new MeetingCatalogRepository(name);
+    repositories.push(first, second);
+    const original = await first.authorizeDevice(userA, "2026-09-20T00:00:00.000Z", now);
+
+    await Promise.all([
+      first.refreshDeviceAccess(userA, "2026-10-20T00:00:00.000Z"),
+      second.refreshDeviceAccess(userA, "2026-11-20T00:00:00.000Z"),
+    ]);
+
+    await expect(first.validDeviceAccess("2026-10-21T00:00:00.000Z")).resolves.toEqual({
+      ...original,
+      expiresAt: "2026-11-20T00:00:00.000Z",
+    });
+  });
+
+  test("rejects malformed token refresh identities and timestamps", async () => {
+    const catalog = repository();
+    await catalog.authorizeDevice(userA, "2026-09-20T00:00:00.000Z", now);
+
+    await expect(catalog.refreshDeviceAccess("private@example.com", "2026-10-20T00:00:00.000Z")).rejects.toBeInstanceOf(Error);
+    await expect(catalog.refreshDeviceAccess(userA, "private-expiry")).rejects.toBeInstanceOf(Error);
+    await expect(catalog.validDeviceAccess("2026-09-01T00:00:00.000Z")).resolves.toMatchObject({ userId: userA });
+  });
+
   test("isolates meetings and outbox operations by verified Supabase user", async () => {
     const catalog = repository();
     await catalog.activateUser(userA);

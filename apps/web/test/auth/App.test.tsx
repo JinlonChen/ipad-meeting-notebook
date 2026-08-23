@@ -253,6 +253,127 @@ describe("App session gate", () => {
     expect(sync.refresh).not.toHaveBeenCalled();
   });
 
+  test("extends offline access on a same-user token refresh without pausing or refreshing the catalog", async () => {
+    let currentNow = new Date("2026-08-21T00:00:00.000Z");
+    const initialExpiry = "2026-08-21T00:01:00.000Z";
+    const refreshedExpiry = "2026-08-21T00:02:00.000Z";
+    const catalog = repository();
+    let authListener!: (change: AuthSessionChange) => void;
+    const auth = api({
+      me: vi.fn().mockResolvedValue({ id: userA, sessionExpiresAt: initialExpiry }),
+      onSessionChange: vi.fn().mockImplementation((listener) => {
+        authListener = listener;
+        return () => undefined;
+      }),
+    });
+    const sync = synchronizer();
+    render(<App repository={catalog} auth={auth} synchronizer={sync} now={() => currentNow.toISOString()} />);
+    await screen.findByRole("heading", { name: "会议本" });
+    await waitFor(() => expect(sync.refresh).toHaveBeenCalledOnce());
+    vi.mocked(auth.me).mockClear();
+    sync.pauseForUserChange.mockClear();
+    sync.refresh.mockClear();
+
+    act(() => authListener({ event: "token_refreshed", userId: userA, sessionExpiresAt: refreshedExpiry }));
+
+    await waitFor(async () => expect(await catalog.validDeviceAccess(currentNow.toISOString())).toMatchObject({
+      userId: userA,
+      authorizedAt: "2026-08-21T00:00:00.000Z",
+      expiresAt: refreshedExpiry,
+    }));
+    expect(sync.pauseForUserChange).not.toHaveBeenCalled();
+    expect(auth.me).not.toHaveBeenCalled();
+    expect(sync.refresh).not.toHaveBeenCalled();
+
+    vi.useFakeTimers();
+    act(() => window.dispatchEvent(new Event("offline")));
+    currentNow = new Date(initialExpiry);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(screen.getByRole("heading", { name: "会议本" })).toBeVisible();
+
+    currentNow = new Date(refreshedExpiry);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(screen.getByRole("heading", { name: "离线解锁需要登录" })).toBeVisible();
+  });
+
+  test("fully revalidates a token refresh that belongs to a different user", async () => {
+    const catalog = repository();
+    let authListener!: (change: AuthSessionChange) => void;
+    const auth = api({
+      me: vi.fn()
+        .mockResolvedValueOnce({ id: userA, sessionExpiresAt: expiry })
+        .mockResolvedValueOnce({ id: userB, sessionExpiresAt: expiry }),
+      onSessionChange: vi.fn().mockImplementation((listener) => {
+        authListener = listener;
+        return () => undefined;
+      }),
+    });
+    const sync = synchronizer();
+    render(<App repository={catalog} auth={auth} synchronizer={sync} now={() => now} />);
+    await screen.findByRole("heading", { name: "会议本" });
+    sync.pauseForUserChange.mockClear();
+
+    act(() => authListener({ event: "token_refreshed", userId: userB, sessionExpiresAt: expiry }));
+
+    await waitFor(async () => expect(await catalog.validDeviceAccess(now)).toMatchObject({ userId: userB }));
+    expect(auth.me).toHaveBeenCalledTimes(2);
+    expect(sync.pauseForUserChange).toHaveBeenCalled();
+  });
+
+  test("does not let an older A token refresh overwrite a newer B marker", async () => {
+    const catalog = repository();
+    const releaseRefresh = deferred<void>();
+    const refresh = catalog.refreshDeviceAccess.bind(catalog);
+    vi.spyOn(catalog, "refreshDeviceAccess").mockImplementationOnce(async (...args) => {
+      await releaseRefresh.promise;
+      return refresh(...args);
+    });
+    let authListener!: (change: AuthSessionChange) => void;
+    const auth = api({
+      me: vi.fn()
+        .mockResolvedValueOnce({ id: userA, sessionExpiresAt: expiry })
+        .mockResolvedValueOnce({ id: userB, sessionExpiresAt: expiry }),
+      onSessionChange: vi.fn().mockImplementation((listener) => {
+        authListener = listener;
+        return () => undefined;
+      }),
+    });
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
+    await screen.findByRole("heading", { name: "会议本" });
+
+    act(() => authListener({ event: "token_refreshed", userId: userA, sessionExpiresAt: "2026-10-21T00:00:00.000Z" }));
+    await waitFor(() => expect(catalog.refreshDeviceAccess).toHaveBeenCalledOnce());
+    act(() => authListener({ event: "session", userId: userB }));
+    await waitFor(async () => expect(await catalog.validDeviceAccess(now)).toMatchObject({ userId: userB }));
+    releaseRefresh.resolve();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(catalog.validDeviceAccess(now)).resolves.toMatchObject({ userId: userB });
+    expect(screen.getByRole("heading", { name: "会议本" })).toBeVisible();
+  });
+
+  test("locks safely when persisting a same-user token refresh fails and recovers through revalidation", async () => {
+    const user = userEvent.setup();
+    const catalog = repository();
+    let authListener!: (change: AuthSessionChange) => void;
+    vi.spyOn(catalog, "refreshDeviceAccess").mockRejectedValueOnce(new Error("private-refresh-value"));
+    const auth = api({ onSessionChange: vi.fn().mockImplementation((listener) => {
+      authListener = listener;
+      return () => undefined;
+    }) });
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
+    await screen.findByRole("heading", { name: "会议本" });
+
+    act(() => authListener({ event: "token_refreshed", userId: userA, sessionExpiresAt: "2026-10-21T00:00:00.000Z" }));
+
+    await screen.findByRole("heading", { name: "无法验证访问权限" });
+    expect(catalog.refreshDeviceAccess).toHaveBeenCalledOnce();
+    expect(document.body).not.toHaveTextContent("private-refresh-value");
+    expect(screen.queryByRole("heading", { name: "会议本" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "重试" }));
+    await screen.findByRole("heading", { name: "会议本" });
+  });
+
   test("fails closed on malformed cross-tab auth events without exposing event details", async () => {
     const catalog = repository();
     let authListener!: (change: AuthSessionChange) => void;
@@ -500,7 +621,49 @@ describe("App session gate", () => {
     render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
 
     await screen.findByRole("heading", { name: "离线解锁需要登录" });
-    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(true);
+    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(false);
+  });
+
+  test("clears an A marker when a delayed initial session B arrives after the offline catalog opens", async () => {
+    const catalog = repository();
+    await catalog.authorizeDevice(userA, expiry, now);
+    let authListener!: (change: AuthSessionChange) => void;
+    const auth = api({
+      me: vi.fn().mockRejectedValue(new AuthNetworkError()),
+      onSessionChange: vi.fn().mockImplementation((listener) => {
+        authListener = listener;
+        return () => undefined;
+      }),
+    });
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
+    await screen.findByText("离线，0 项待同步");
+
+    act(() => authListener({ event: "initial", userId: userB }));
+
+    await screen.findByRole("heading", { name: "离线解锁需要登录" });
+    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(false);
+  });
+
+  test("fails closed with a fixed retry when an initial mismatch marker cannot be cleared", async () => {
+    const user = userEvent.setup();
+    const catalog = repository();
+    await catalog.authorizeDevice(userA, expiry, now);
+    vi.spyOn(catalog, "clearDeviceAccess").mockRejectedValueOnce(new Error("private-clear-value"));
+    const auth = api({
+      me: vi.fn().mockRejectedValue(new AuthNetworkError()),
+      onSessionChange: vi.fn().mockImplementation((listener) => {
+        listener({ event: "initial", userId: userB });
+        return () => undefined;
+      }),
+    });
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} now={() => now} />);
+
+    await screen.findByRole("heading", { name: "无法验证访问权限" });
+    expect(document.body).not.toHaveTextContent("private-clear-value");
+    expect(screen.queryByRole("heading", { name: "会议本" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "重试" }));
+    await screen.findByRole("heading", { name: "离线解锁需要登录" });
+    await expect(catalog.hasDeviceAccess(now)).resolves.toBe(false);
   });
 
   test("does not refresh as online until an offline catalog revalidates its session", async () => {
