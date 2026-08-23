@@ -17,8 +17,33 @@ const FolderNameSchema = z.string().trim().min(1).max(80);
 const IsoDateTimeSchema = z.iso.datetime();
 const SyncVersionSchema = z.int().nonnegative();
 export const MeetingNoteSchema = z.string()
-  .max(400_000)
-  .refine((value) => Array.from(value).length <= 200_000, "Meeting note must contain at most 200,000 characters");
+  .max(400_000, "Meeting note must contain at most 400,000 UTF-16 code units")
+  .superRefine((value, context) => {
+    let codePoints = 0;
+    for (let index = 0; index < value.length; index += 1) {
+      const codeUnit = value.charCodeAt(index);
+      if (codeUnit === 0) {
+        context.addIssue({ code: "custom", message: "Meeting note cannot contain NUL characters" });
+        return;
+      }
+      if (codeUnit >= 0xD800 && codeUnit <= 0xDBFF) {
+        const trailing = value.charCodeAt(index + 1);
+        if (trailing < 0xDC00 || trailing > 0xDFFF) {
+          context.addIssue({ code: "custom", message: "Meeting note must contain only valid Unicode scalar values" });
+          return;
+        }
+        index += 1;
+      } else if (codeUnit >= 0xDC00 && codeUnit <= 0xDFFF) {
+        context.addIssue({ code: "custom", message: "Meeting note must contain only valid Unicode scalar values" });
+        return;
+      }
+      codePoints += 1;
+      if (codePoints > 200_000) {
+        context.addIssue({ code: "custom", message: "Meeting note must contain at most 200,000 characters" });
+        return;
+      }
+    }
+  });
 export const ExpectedSyncVersionSchema = SyncVersionSchema;
 export const IdempotencyKeySchema = z.uuid();
 

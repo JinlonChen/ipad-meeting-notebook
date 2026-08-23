@@ -20,7 +20,7 @@ type LoadState =
   | { kind: "missing" }
   | { kind: "trashed" }
   | { kind: "error" }
-  | { kind: "ready"; meeting: Meeting; folders: Folder[] };
+  | { kind: "ready"; meeting: Meeting; folders: Folder[]; noteSyncState: Awaited<ReturnType<MeetingCatalogRepository["meetingNoteSyncState"]>> };
 
 function statusLabel(status: Meeting["status"]): string {
   return ({
@@ -83,7 +83,7 @@ export function MeetingWorkspacePage({ repository, refresh, scheduleRefresh = re
       if (loadGenerationRef.current !== generation) return;
       if (!meeting) setLoadState({ kind: refreshFailed ? "error" : "missing" });
       else if (meeting.status === "trashed") setLoadState({ kind: "trashed" });
-      else setLoadState({ kind: "ready", meeting, folders });
+      else setLoadState({ kind: "ready", meeting, folders, noteSyncState: await repository.meetingNoteSyncState(meeting.id) });
     } catch {
       if (loadGenerationRef.current === generation) setLoadState({ kind: "error" });
     }
@@ -106,7 +106,7 @@ export function MeetingWorkspacePage({ repository, refresh, scheduleRefresh = re
   if (loadState.kind === "missing") return <WorkspaceMessage title="找不到会议" onBack={returnImmediately} />;
   if (loadState.kind === "trashed") return <WorkspaceMessage title="会议已移至废纸篓" onBack={returnImmediately} />;
   if (loadState.kind === "error") return <WorkspaceMessage title="无法载入会议" onBack={returnImmediately} />;
-  return <MeetingEditor meeting={loadState.meeting} folders={loadState.folders} repository={repository} scheduleRefresh={scheduleRefresh} online={online} now={now} />;
+  return <MeetingEditor meeting={loadState.meeting} folders={loadState.folders} noteSyncState={loadState.noteSyncState} repository={repository} scheduleRefresh={scheduleRefresh} online={online} now={now} />;
 }
 
 function WorkspaceMessage({ title, status, onBack }: { title: string; status?: string; onBack: () => void }) {
@@ -122,16 +122,17 @@ function WorkspaceMessage({ title, status, onBack }: { title: string; status?: s
 type EditorProps = {
   meeting: Meeting;
   folders: Folder[];
+  noteSyncState: Awaited<ReturnType<MeetingCatalogRepository["meetingNoteSyncState"]>>;
   repository: MeetingCatalogRepository;
   scheduleRefresh: () => Promise<SyncResult>;
   online: boolean;
   now: () => string;
 };
 
-function MeetingEditor({ meeting, folders, repository, scheduleRefresh, online, now }: EditorProps) {
+function MeetingEditor({ meeting, folders, noteSyncState, repository, scheduleRefresh, online, now }: EditorProps) {
   const navigate = useNavigate();
   const [returning, setReturning] = useState(false);
-  const note = useMeetingNote({ meetingId: meeting.id, initialNote: meeting.note, repository, scheduleRefresh, online, now });
+  const note = useMeetingNote({ meetingId: meeting.id, initialNote: meeting.note, initialSyncState: noteSyncState, repository, scheduleRefresh, online, now });
   const folderName = folders.find((folder) => folder.id === meeting.folderId)?.name ?? "未分类";
 
   useEffect(() => {

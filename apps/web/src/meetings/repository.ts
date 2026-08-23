@@ -86,6 +86,8 @@ export type PendingStatus = {
   conflict: PendingConflict | null;
 };
 
+export type MeetingNoteSyncState = "idle" | "pending" | "conflict";
+
 export class MeetingCatalogRepository {
   private readonly baseName: string;
   private readonly bootstrapDb: MeetingCatalogDatabase;
@@ -236,6 +238,14 @@ export class MeetingCatalogRepository {
       Object.defineProperty(item, outboxSource, { value: db, enumerable: false });
     }
     return operations;
+  }
+
+  async meetingNoteSyncState(id: string): Promise<MeetingNoteSyncState> {
+    const meetingId = MeetingIdSchema.parse(id);
+    const operations = await this.db.outbox.where("entityId").equals(meetingId).toArray();
+    const noteOperations = operations.filter((operation) => operation.kind === "meeting.note");
+    if (noteOperations.some((operation) => operation.lastError === "CONFLICT")) return "conflict";
+    return noteOperations.length > 0 ? "pending" : "idle";
   }
 
   async pendingStatus(): Promise<PendingStatus> {

@@ -399,6 +399,33 @@ describe("MeetingWorkspacePage", () => {
     expect(scheduleRefresh).not.toHaveBeenCalled();
   });
 
+  test("restores the pending note status when reopening an offline meeting", async () => {
+    const repository = catalog();
+    const meeting = await repository.create("离线重开", null, now);
+    await repository.saveNote(meeting.id, "重开后仍待同步", later);
+    const scheduleRefresh = vi.fn().mockResolvedValue({ state: "idle" as const });
+
+    renderWorkspace(repository, meeting.id, { online: false, scheduleRefresh });
+
+    expect(await screen.findByRole("textbox", { name: "会议笔记" })).toHaveValue("重开后仍待同步");
+    expect(screen.getByRole("status")).toHaveTextContent("已保存到本机，待同步");
+    expect(scheduleRefresh).not.toHaveBeenCalled();
+  });
+
+  test("restores a pending note conflict when reopening a meeting", async () => {
+    const repository = catalog();
+    const meeting = await repository.create("冲突重开", null, now);
+    await repository.saveNote(meeting.id, "冲突笔记", later);
+    const noteOperation = (await repository.pendingOperations()).find((operation) => operation.kind === "meeting.note");
+    await repository.syncRecordFailure(noteOperation!, "CONFLICT");
+
+    renderWorkspace(repository, meeting.id, { online: false });
+
+    expect(await screen.findByRole("textbox", { name: "会议笔记" })).toHaveValue("冲突笔记");
+    expect(screen.getByRole("status")).toHaveTextContent("冲突");
+    expect(screen.getByRole("alert")).toHaveTextContent("会议笔记存在同步冲突");
+  });
+
   test("synchronizes an outbox restored from an offline launch once per reconnect without remounting the editor", async () => {
     const repository = catalog();
     const meeting = await repository.create("离线启动待同步", null, now);

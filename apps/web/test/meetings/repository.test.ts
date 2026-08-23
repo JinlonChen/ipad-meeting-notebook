@@ -194,6 +194,41 @@ describe("MeetingCatalogRepository", () => {
     await expect(catalog.pendingOperations()).resolves.toEqual(before);
   });
 
+  test.each([
+    ["NUL", "before\u0000after"],
+    ["lone high surrogate", "before\uD800after"],
+    ["lone low surrogate", "before\uDC00after"],
+    ["incorrect surrogate pair", "before\uD800xafter"],
+  ])("atomically rejects a note containing %s", async (_case, invalidNote) => {
+    const catalog = repository();
+    const meeting = await catalog.create(`Invalid ${_case}`, null, now);
+    const meetingBefore = await catalog.get(meeting.id);
+    const outboxBefore = await catalog.pendingOperations();
+
+    await expect(catalog.saveNote(meeting.id, invalidNote, later)).rejects.toThrow();
+
+    await expect(catalog.get(meeting.id)).resolves.toEqual(meetingBefore);
+    expect(await catalog.pendingOperations()).toEqual(outboxBefore);
+  });
+
+  test("reports only the requested meeting note's pending and conflict state", async () => {
+    const catalog = repository();
+    const first = await catalog.create("First", null, now);
+    const second = await catalog.create("Second", null, now);
+
+    await expect(catalog.meetingNoteSyncState(first.id)).resolves.toBe("idle");
+    await catalog.saveNote(first.id, "pending note", later);
+    await expect(catalog.meetingNoteSyncState(first.id)).resolves.toBe("pending");
+    await expect(catalog.meetingNoteSyncState(second.id)).resolves.toBe("idle");
+
+    const noteOperation = (await catalog.pendingOperations()).find((operation) =>
+      operation.entityId === first.id && operation.kind === "meeting.note");
+    await catalog.syncRecordFailure(noteOperation!, "CONFLICT");
+
+    await expect(catalog.meetingNoteSyncState(first.id)).resolves.toBe("conflict");
+    await expect(catalog.meetingNoteSyncState(second.id)).resolves.toBe("idle");
+  });
+
   test("rejects note saves while the same meeting has a pending conflict", async () => {
     const catalog = repository();
     const meeting = await catalog.create("Planning", null, now);

@@ -68,6 +68,27 @@ describe("MeetingCatalogHttpApi", () => {
     }));
   });
 
+  test.each([
+    ["NUL", "before\u0000after"],
+    ["lone high surrogate", "before\uD800after"],
+    ["lone low surrogate", "before\uDC00after"],
+    ["incorrect surrogate pair", "before\uD800xafter"],
+  ])("rejects a note containing %s before HTTP fetch", async (_case, invalidNote) => {
+    const fetcher = vi.fn();
+    const operation = {
+      id: "00000000-0000-4000-8000-000000000018",
+      entityId: id,
+      kind: "meeting.note" as const,
+      payload: { note: invalidNote, updatedAt: timestamp, expectedSyncVersion: 0 },
+      createdAt: timestamp,
+      attempts: 0,
+      lastError: null,
+    };
+
+    await expect(new MeetingCatalogHttpApi(fetcher).send(operation)).rejects.toEqual(new CatalogApiError(0, "REQUEST_FAILED"));
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   test("preserves a typed missing meeting response for a note mutation", async () => {
     const operation = {
       id: "00000000-0000-4000-8000-000000000019",
@@ -347,6 +368,28 @@ describe("MeetingCatalogSupabaseApi", () => {
       p_expected_sync_version: 2,
       p_expected_user_id: folderRow.user_id,
     });
+  });
+
+  test.each([
+    ["NUL", "before\u0000after"],
+    ["lone high surrogate", "before\uD800after"],
+    ["lone low surrogate", "before\uDC00after"],
+    ["incorrect surrogate pair", "before\uD800xafter"],
+  ])("rejects a note containing %s before Supabase RPC", async (_case, invalidNote) => {
+    const operation = {
+      id: "00000000-0000-4000-8000-000000000018",
+      entityId: id,
+      kind: "meeting.note" as const,
+      payload: { note: invalidNote, updatedAt: timestamp, expectedSyncVersion: 0 },
+      createdAt: timestamp,
+      attempts: 0,
+      lastError: null,
+    };
+    const { client, rpc } = supabaseClient();
+
+    await expect(new MeetingCatalogSupabaseApi(client).send(operation, folderRow.user_id))
+      .rejects.toEqual(new CatalogApiError(500, "REQUEST_FAILED"));
+    expect(rpc).not.toHaveBeenCalled();
   });
 
   test.each([

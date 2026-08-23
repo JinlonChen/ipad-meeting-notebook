@@ -1,7 +1,7 @@
 import { MeetingNoteSchema } from "@meeting/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { MeetingConflictPendingError, MeetingCatalogRepository } from "./repository.js";
+import { MeetingConflictPendingError, MeetingCatalogRepository, type MeetingNoteSyncState } from "./repository.js";
 import type { SyncResult } from "./sync.js";
 
 export type NoteSaveState = "idle" | "saving" | "saved-local" | "pending-sync" | "synced" | "conflict" | "error";
@@ -22,14 +22,15 @@ type Options = {
   online: boolean;
   scheduleRefresh: () => Promise<SyncResult>;
   now: () => string;
+  initialSyncState?: MeetingNoteSyncState;
 };
 
 const SAVE_DELAY_MS = 600;
 
-export function useMeetingNote({ meetingId, initialNote, repository, online, scheduleRefresh, now }: Options): UseMeetingNoteResult {
+export function useMeetingNote({ meetingId, initialNote, repository, online, scheduleRefresh, now, initialSyncState = "idle" }: Options): UseMeetingNoteResult {
   const [draft, setDraftState] = useState(initialNote);
-  const [state, setState] = useState<NoteSaveState>("idle");
-  const [error, setError] = useState("");
+  const [state, setState] = useState<NoteSaveState>(initialSyncState === "conflict" ? "conflict" : initialSyncState === "pending" ? "saved-local" : "idle");
+  const [error, setError] = useState(initialSyncState === "conflict" ? "会议笔记存在同步冲突，请在会议列表中处理。" : "");
   const draftRef = useRef(initialNote);
   const draftRevisionRef = useRef(0);
   const persistedRef = useRef(initialNote);

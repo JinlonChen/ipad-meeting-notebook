@@ -195,6 +195,28 @@ describe("meeting routes", () => {
     }
   });
 
+  test.each([
+    ["NUL", "before\u0000after"],
+    ["lone high surrogate", "before\uD800after"],
+    ["lone low surrogate", "before\uDC00after"],
+    ["incorrect surrogate pair", "before\uD800xafter"],
+  ])("rejects a note containing %s at the shared API boundary", async (_case, invalidNote) => {
+    const server = await createTestApp();
+    try {
+      const cookie = await login(server);
+      await server.inject({ method: "POST", url: "/api/meetings", headers: { cookie }, payload: { id: MEETING_ONE, title: "Notes", folderId: null, clientCreatedAt: CREATED_AT } });
+
+      expect(await server.inject({
+        method: "PATCH",
+        url: `/api/meetings/${MEETING_ONE}`,
+        headers: { cookie },
+        payload: { note: invalidNote, expectedSyncVersion: 0 },
+      })).toMatchObject({ statusCode: 400, body: '{"code":"INVALID_REQUEST"}' });
+    } finally {
+      await server.close();
+    }
+  });
+
   test("trashes, restores, filters literal search, and sanitizes invalid requests", async () => {
     const server = await createTestApp();
     try {

@@ -131,8 +131,10 @@ test("meeting notes survive offline navigation and synchronize after reconnect",
   await page.getByRole("button", { name: "返回会议" }).click();
   await openMeeting(page, meeting);
   await expect(page.getByRole("textbox", { name: "会议笔记" })).toHaveValue(noteText);
+  await expect(page.getByRole("status")).toHaveText("已保存到本机，待同步");
   await page.reload();
   await expect(page.getByRole("textbox", { name: "会议笔记" })).toHaveValue(noteText);
+  await expect(page.getByRole("status")).toHaveText("已保存到本机，待同步");
   expect(noteRpcRequests).toHaveLength(0);
   await expect.poll(() => outboxRows(page)).not.toEqual([]);
   await page.screenshot({ path: testInfo.outputPath("meeting-notes-offline-744x1133.png"), fullPage: true });

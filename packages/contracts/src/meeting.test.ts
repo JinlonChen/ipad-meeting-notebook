@@ -115,6 +115,21 @@ describe("meeting contracts", () => {
     expect(() => MeetingNoteSchema.parse(emoji.repeat(200_001))).toThrow();
   });
 
+  test.each([
+    ["NUL", "before\u0000after"],
+    ["a lone high surrogate", "before\uD800after"],
+    ["a lone low surrogate", "before\uDC00after"],
+    ["an incorrectly paired high surrogate", "before\uD800xafter"],
+  ])("rejects %s because PostgreSQL cannot represent it", (_case, note) => {
+    expect(() => MeetingNoteSchema.parse(note)).toThrow();
+  });
+
+  test("preserves a valid supplementary Unicode scalar pair", () => {
+    const note = "before\uD83D\uDE00after";
+
+    expect(MeetingNoteSchema.parse(note)).toBe(note);
+  });
+
   test("strictly parses meeting note mutation bodies", () => {
     const note = "\u7b2c\u4e00\u884c\nSecond line";
 

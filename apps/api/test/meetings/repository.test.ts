@@ -109,6 +109,20 @@ describe("SqliteMeetingRepository", () => {
     expect(() => meetings.update(ID_TWO, { note: "😀".repeat(200_001) }, LATER, 1)).toThrow(ZodError);
   });
 
+  test.each([
+    ["NUL", "before\u0000after"],
+    ["lone high surrogate", "before\uD800after"],
+    ["lone low surrogate", "before\uDC00after"],
+    ["incorrect surrogate pair", "before\uD800xafter"],
+  ])("rejects a note containing %s before changing SQLite state", (_case, invalidNote) => {
+    const { meetings } = repository();
+    meetings.create({ id: ID_ONE, title: "Invalid note", folderId: null, clientCreatedAt: CREATED_AT });
+    const before = meetings.get(ID_ONE);
+
+    expect(() => meetings.update(ID_ONE, { note: invalidNote }, LATER, 0)).toThrow(ZodError);
+    expect(meetings.get(ID_ONE)).toEqual(before);
+  });
+
   test("replays the same note mutation and rejects idempotency key reuse", () => {
     const { meetings } = repository();
     meetings.create({ id: ID_ONE, title: "Notes", folderId: null, clientCreatedAt: CREATED_AT });
