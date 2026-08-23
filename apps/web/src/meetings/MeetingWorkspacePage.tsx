@@ -60,35 +60,46 @@ export function MeetingWorkspacePage({ repository, refresh, scheduleRefresh = re
   const [loadState, setLoadState] = useState<LoadState>({ kind: "loading" });
   const refreshRef = useRef(refresh);
   const onlineRef = useRef(online);
+  const previousOnlineRef = useRef(online);
+  const loadGenerationRef = useRef(0);
   refreshRef.current = refresh;
   onlineRef.current = online;
 
-  useEffect(() => {
-    let active = true;
+  const loadCatalog = useCallback(async (refreshOnline: boolean) => {
+    const generation = ++loadGenerationRef.current;
     setLoadState({ kind: "loading" });
-    void (async () => {
-      let refreshFailed = false;
-      if (onlineRef.current) {
-        try {
-          const result = await refreshRef.current();
-          refreshFailed = result.state !== "idle";
-        } catch {
-          refreshFailed = true;
-        }
-      }
-      if (!active) return;
+    let refreshFailed = false;
+    if (refreshOnline) {
       try {
-        const [meeting, folders] = await Promise.all([repository.get(id), repository.listFolders()]);
-        if (!active) return;
-        if (!meeting) setLoadState({ kind: refreshFailed ? "error" : "missing" });
-        else if (meeting.status === "trashed") setLoadState({ kind: "trashed" });
-        else setLoadState({ kind: "ready", meeting, folders });
+        const result = await refreshRef.current();
+        refreshFailed = result.state !== "idle";
       } catch {
-        if (active) setLoadState({ kind: "error" });
+        refreshFailed = true;
       }
-    })();
-    return () => { active = false; };
+    }
+    if (loadGenerationRef.current !== generation) return;
+    try {
+      const [meeting, folders] = await Promise.all([repository.get(id), repository.listFolders()]);
+      if (loadGenerationRef.current !== generation) return;
+      if (!meeting) setLoadState({ kind: refreshFailed ? "error" : "missing" });
+      else if (meeting.status === "trashed") setLoadState({ kind: "trashed" });
+      else setLoadState({ kind: "ready", meeting, folders });
+    } catch {
+      if (loadGenerationRef.current === generation) setLoadState({ kind: "error" });
+    }
   }, [id, repository]);
+
+  useEffect(() => {
+    void loadCatalog(onlineRef.current);
+    return () => { loadGenerationRef.current += 1; };
+  }, [loadCatalog]);
+
+  useEffect(() => {
+    const wasOnline = previousOnlineRef.current;
+    previousOnlineRef.current = online;
+    if (wasOnline || !online || loadState.kind === "ready") return;
+    void loadCatalog(true);
+  }, [loadCatalog, loadState.kind, online]);
 
   const returnImmediately = useCallback(() => navigate("/meetings"), [navigate]);
   if (loadState.kind === "loading") return <WorkspaceMessage title="会议笔记" status="正在载入会议..." onBack={returnImmediately} />;

@@ -38,6 +38,7 @@ export function useMeetingNote({ meetingId, initialNote, repository, online, sch
   const activeSaveRef = useRef<Promise<boolean> | null>(null);
   const pendingSyncRevisionRef = useRef<number | null>(null);
   const syncingRevisionsRef = useRef(new Set<number>());
+  const syncAttemptRef = useRef(0);
   const mountedRef = useRef(true);
   const onlineRef = useRef(online);
   const previousOnlineRef = useRef(online);
@@ -69,6 +70,7 @@ export function useMeetingNote({ meetingId, initialNote, repository, online, sch
     }
     if (syncingRevisionsRef.current.has(savedRevision)) return;
     syncingRevisionsRef.current.add(savedRevision);
+    syncAttemptRef.current += 1;
     setState("pending-sync");
     try {
       const result = await scheduleRefreshRef.current();
@@ -147,10 +149,10 @@ export function useMeetingNote({ meetingId, initialNote, repository, online, sch
     previousOnlineRef.current = online;
     if (wasOnline || !online) return;
     let active = true;
+    const syncAttempt = syncAttemptRef.current;
     void flush().then((saved) => {
-      if (!active || !saved || !onlineRef.current) return;
-      const pendingRevision = pendingSyncRevisionRef.current;
-      if (pendingRevision !== null) void synchronize(pendingRevision);
+      if (!active || !saved || !onlineRef.current || syncAttemptRef.current !== syncAttempt) return;
+      void synchronize(pendingSyncRevisionRef.current ?? persistedRevisionRef.current);
     });
     return () => { active = false; };
   }, [flush, online, synchronize]);

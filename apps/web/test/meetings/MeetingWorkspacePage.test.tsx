@@ -182,6 +182,52 @@ describe("MeetingWorkspacePage", () => {
     expect(refresh).not.toHaveBeenCalled();
   });
 
+  test("recovers an offline missing deep link once and leaves later ready reconnects to the editor", async () => {
+    const repository = catalog();
+    const pulled = remoteMeeting({ title: "重连拉取会议", note: "重连后的云端笔记" });
+    const refresh = vi.fn(async () => {
+      await repository.syncRefresh([], [pulled]);
+      return { state: "idle" as const };
+    });
+    const scheduleRefresh = vi.fn().mockResolvedValue({ state: "idle" as const });
+    const rendered = renderWorkspace(repository, pulled.id, { online: false, refresh, scheduleRefresh });
+    expect(await screen.findByRole("heading", { name: "找不到会议" })).toBeVisible();
+
+    rendered.rerender(workspace(repository, pulled.id, true, refresh, scheduleRefresh));
+
+    expect(await screen.findByRole("heading", { name: "重连拉取会议" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "会议笔记" })).toHaveValue("重连后的云端笔记");
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(scheduleRefresh).not.toHaveBeenCalled();
+
+    rendered.rerender(workspace(repository, pulled.id, true, refresh, scheduleRefresh));
+    await flushPromises();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    rendered.rerender(workspace(repository, pulled.id, false, refresh, scheduleRefresh));
+    rendered.rerender(workspace(repository, pulled.id, true, refresh, scheduleRefresh));
+    await waitFor(() => expect(scheduleRefresh).toHaveBeenCalledTimes(1));
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not loop a failed missing deep-link refresh and retries on the next reconnect", async () => {
+    const repository = catalog();
+    const refresh = vi.fn().mockResolvedValue({ state: "error" as const });
+    const rendered = renderWorkspace(repository, missingMeetingId, { online: false, refresh });
+    await screen.findByRole("heading", { name: "找不到会议" });
+
+    rendered.rerender(workspace(repository, missingMeetingId, true, refresh, rendered.scheduleRefresh));
+
+    expect(await screen.findByRole("heading", { name: "无法载入会议" })).toBeVisible();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    rendered.rerender(workspace(repository, missingMeetingId, true, refresh, rendered.scheduleRefresh));
+    await flushPromises();
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    rendered.rerender(workspace(repository, missingMeetingId, false, refresh, rendered.scheduleRefresh));
+    rendered.rerender(workspace(repository, missingMeetingId, true, refresh, rendered.scheduleRefresh));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+  });
+
   test("falls back to an existing local meeting when online refresh fails", async () => {
     const repository = catalog();
     const meeting = await repository.create("本地回退", null, now);
@@ -335,6 +381,54 @@ describe("MeetingWorkspacePage", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已保存到本机，待同步"));
     expect(refresh).not.toHaveBeenCalled();
     expect(scheduleRefresh).not.toHaveBeenCalled();
+  });
+
+  test("synchronizes an outbox restored from an offline launch once per reconnect without remounting the editor", async () => {
+    const repository = catalog();
+    const meeting = await repository.create("离线启动待同步", null, now);
+    await repository.saveNote(meeting.id, "上次启动留下的笔记", later);
+    expect(await repository.pendingOperations()).not.toHaveLength(0);
+    const refresh = vi.fn().mockResolvedValue({ state: "idle" as const });
+    const scheduleRefresh = vi.fn().mockResolvedValue({ state: "idle" as const });
+    const rendered = renderWorkspace(repository, meeting.id, { online: false, refresh, scheduleRefresh });
+    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    expect(editor).toHaveValue("上次启动留下的笔记");
+
+    rendered.rerender(workspace(repository, meeting.id, true, refresh, scheduleRefresh));
+
+    await waitFor(() => expect(scheduleRefresh).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已同步"));
+    expect(screen.getByRole("textbox", { name: "会议笔记" })).toBe(editor);
+    expect(editor).toHaveValue("上次启动留下的笔记");
+    expect(refresh).not.toHaveBeenCalled();
+
+    rendered.rerender(workspace(repository, meeting.id, true, refresh, scheduleRefresh));
+    await flushPromises();
+    expect(scheduleRefresh).toHaveBeenCalledTimes(1);
+    rendered.rerender(workspace(repository, meeting.id, false, refresh, scheduleRefresh));
+    rendered.rerender(workspace(repository, meeting.id, true, refresh, scheduleRefresh));
+    await waitFor(() => expect(scheduleRefresh).toHaveBeenCalledTimes(2));
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  test("keeps a restored outbox and local draft after reconnect failure without retry loops", async () => {
+    const repository = catalog();
+    const meeting = await repository.create("离线启动失败", null, now);
+    await repository.saveNote(meeting.id, "待下次重连的笔记", later);
+    const pendingCount = (await repository.pendingOperations()).length;
+    const scheduleRefresh = vi.fn().mockResolvedValue({ state: "error" as const });
+    const rendered = renderWorkspace(repository, meeting.id, { online: false, scheduleRefresh });
+    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+
+    rendered.rerender(workspace(repository, meeting.id, true, rendered.refresh, scheduleRefresh));
+
+    await waitFor(() => expect(scheduleRefresh).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已保存到本机，待同步"));
+    expect(editor).toHaveValue("待下次重连的笔记");
+    expect(await repository.pendingOperations()).toHaveLength(pendingCount);
+    rendered.rerender(workspace(repository, meeting.id, true, rendered.refresh, scheduleRefresh));
+    await flushPromises();
+    expect(scheduleRefresh).toHaveBeenCalledTimes(1);
   });
 
   test("automatically synchronizes one pending local revision after reconnect", async () => {
