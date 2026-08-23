@@ -1054,7 +1054,7 @@ describe("MeetingListPage", () => {
     await user.click(screen.getByRole("button", { name: "创建" }));
 
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(trigger).toHaveFocus();
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 
   test("moves focus to a stable category control after deleting its trigger", async () => {
