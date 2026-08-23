@@ -35,20 +35,28 @@ type RenderOptions = {
   scheduleRefresh?: () => Promise<SyncResult>;
 };
 
+function workspace(
+  repository: MeetingCatalogRepository,
+  id: string,
+  online: boolean,
+  refresh: () => Promise<SyncResult>,
+  scheduleRefresh: () => Promise<SyncResult>,
+) {
+  return <MemoryRouter initialEntries={[`/meetings/${id}`]}>
+    <Routes>
+      <Route
+        path="/meetings/:id"
+        element={<MeetingWorkspacePage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} online={online} now={() => later} />}
+      />
+      <Route path="/meetings" element={<main><h1>会议列表</h1></main>} />
+    </Routes>
+  </MemoryRouter>;
+}
+
 function renderWorkspace(repository: MeetingCatalogRepository, id: string, options: RenderOptions = {}) {
   const refresh = options.refresh ?? vi.fn().mockResolvedValue({ state: "idle" as const });
   const scheduleRefresh = options.scheduleRefresh ?? vi.fn().mockResolvedValue({ state: "idle" as const });
-  const rendered = render(
-    <MemoryRouter initialEntries={[`/meetings/${id}`]}>
-      <Routes>
-        <Route
-          path="/meetings/:id"
-          element={<MeetingWorkspacePage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} online={options.online ?? false} now={() => later} />}
-        />
-        <Route path="/meetings" element={<main><h1>会议列表</h1></main>} />
-      </Routes>
-    </MemoryRouter>,
-  );
+  const rendered = render(workspace(repository, id, options.online ?? false, refresh, scheduleRefresh));
   return { ...rendered, refresh, scheduleRefresh };
 }
 
@@ -222,6 +230,89 @@ describe("MeetingWorkspacePage", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已保存到本机，待同步"));
     expect(refresh).not.toHaveBeenCalled();
     expect(scheduleRefresh).not.toHaveBeenCalled();
+  });
+
+  test("automatically synchronizes one pending local revision after reconnect", async () => {
+    const repository = catalog();
+    const meeting = await repository.create("重连同步", null, now);
+    const synchronization = deferred<SyncResult>();
+    const scheduleRefresh = vi.fn(() => synchronization.promise);
+    const rendered = renderWorkspace(repository, meeting.id, { online: false, scheduleRefresh });
+    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+
+    fireEvent.change(editor, { target: { value: "离线时保存的内容" } });
+    fireEvent.blur(editor);
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已保存到本机，待同步"));
+    expect(scheduleRefresh).not.toHaveBeenCalled();
+
+    rendered.rerender(workspace(repository, meeting.id, true, rendered.refresh, scheduleRefresh));
+    await waitFor(() => expect(scheduleRefresh).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("status")).toHaveTextContent("正在同步");
+    rendered.rerender(workspace(repository, meeting.id, true, rendered.refresh, scheduleRefresh));
+    await flushPromises();
+    expect(scheduleRefresh).toHaveBeenCalledTimes(1);
+
+    synchronization.resolve({ state: "idle" });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已同步"));
+  });
+
+  test("waits for the active serialized local save and synchronizes only its latest draft after reconnect", async () => {
+    const repository = catalog();
+    const meeting = await repository.create("写入中重连", null, now);
+    const firstWrite = deferred<void>();
+    const originalSave = repository.saveNote.bind(repository);
+    const savedValues: string[] = [];
+    const saveNote = vi.spyOn(repository, "saveNote").mockImplementation(async (id, note, timestamp) => {
+      savedValues.push(note);
+      if (savedValues.length === 1) await firstWrite.promise;
+      return originalSave(id, note, timestamp);
+    });
+    const scheduleRefresh = vi.fn().mockResolvedValue({ state: "idle" as const });
+    const rendered = renderWorkspace(repository, meeting.id, { online: false, scheduleRefresh });
+    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+
+    fireEvent.change(editor, { target: { value: "旧内容" } });
+    fireEvent.blur(editor);
+    await waitFor(() => expect(saveNote).toHaveBeenCalledTimes(1));
+    fireEvent.change(editor, { target: { value: "重连时的最新内容" } });
+    rendered.rerender(workspace(repository, meeting.id, true, rendered.refresh, scheduleRefresh));
+    await flushPromises();
+    expect(scheduleRefresh).not.toHaveBeenCalled();
+
+    firstWrite.resolve();
+    await waitFor(() => expect(saveNote).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(scheduleRefresh).toHaveBeenCalledTimes(1));
+    expect(savedValues).toEqual(["旧内容", "重连时的最新内容"]);
+    await expect(repository.get(meeting.id)).resolves.toMatchObject({ note: "重连时的最新内容" });
+    expect(editor).toHaveValue("重连时的最新内容");
+  });
+
+  test("keeps the draft pending after reconnect sync failure and retries only on a later reconnect", async () => {
+    const repository = catalog();
+    const meeting = await repository.create("重连失败", null, now);
+    const scheduleRefresh = vi.fn()
+      .mockResolvedValueOnce({ state: "error" as const })
+      .mockResolvedValueOnce({ state: "idle" as const });
+    const rendered = renderWorkspace(repository, meeting.id, { online: false, scheduleRefresh });
+    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+
+    fireEvent.change(editor, { target: { value: "同步失败也不丢失" } });
+    fireEvent.blur(editor);
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已保存到本机，待同步"));
+
+    rendered.rerender(workspace(repository, meeting.id, true, rendered.refresh, scheduleRefresh));
+    await waitFor(() => expect(scheduleRefresh).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已保存到本机，待同步"));
+    expect(editor).toHaveValue("同步失败也不丢失");
+
+    rendered.rerender(workspace(repository, meeting.id, true, rendered.refresh, scheduleRefresh));
+    await flushPromises();
+    expect(scheduleRefresh).toHaveBeenCalledTimes(1);
+    rendered.rerender(workspace(repository, meeting.id, false, rendered.refresh, scheduleRefresh));
+    rendered.rerender(workspace(repository, meeting.id, true, rendered.refresh, scheduleRefresh));
+    await waitFor(() => expect(scheduleRefresh).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已同步"));
+    expect(editor).toHaveValue("同步失败也不丢失");
   });
 
   test("schedules online synchronization and shows synced after it completes", async () => {

@@ -36,8 +36,11 @@ export function useMeetingNote({ meetingId, initialNote, repository, online, sch
   const persistedRevisionRef = useRef(0);
   const timerRef = useRef<number | undefined>(undefined);
   const activeSaveRef = useRef<Promise<boolean> | null>(null);
+  const pendingSyncRevisionRef = useRef<number | null>(null);
+  const syncingRevisionsRef = useRef(new Set<number>());
   const mountedRef = useRef(true);
   const onlineRef = useRef(online);
+  const previousOnlineRef = useRef(online);
   const scheduleRefreshRef = useRef(scheduleRefresh);
   const nowRef = useRef(now);
   const flushRef = useRef<() => Promise<boolean>>(async () => true);
@@ -64,9 +67,14 @@ export function useMeetingNote({ meetingId, initialNote, repository, online, sch
       if (mountedRef.current) setState("saved-local");
       return;
     }
+    if (syncingRevisionsRef.current.has(savedRevision)) return;
+    syncingRevisionsRef.current.add(savedRevision);
     setState("pending-sync");
     try {
       const result = await scheduleRefreshRef.current();
+      if (result.state === "idle" && pendingSyncRevisionRef.current === savedRevision) {
+        pendingSyncRevisionRef.current = null;
+      }
       if (!mountedRef.current || draftRevisionRef.current !== savedRevision) return;
       if (result.state === "idle") {
         setState("synced");
@@ -79,6 +87,8 @@ export function useMeetingNote({ meetingId, initialNote, repository, online, sch
       }
     } catch {
       if (mountedRef.current && draftRevisionRef.current === savedRevision) setState("saved-local");
+    } finally {
+      syncingRevisionsRef.current.delete(savedRevision);
     }
   }, []);
 
@@ -108,6 +118,7 @@ export function useMeetingNote({ meetingId, initialNote, repository, online, sch
 
       persistedRef.current = value;
       persistedRevisionRef.current = revision;
+      pendingSyncRevisionRef.current = revision;
       if (!mountedRef.current) return true;
       if (draftRevisionRef.current !== revision) continue;
       setState("saved-local");
@@ -129,6 +140,19 @@ export function useMeetingNote({ meetingId, initialNote, repository, online, sch
     return active;
   }, [clearTimer, runSaveQueue]);
   flushRef.current = flush;
+
+  useEffect(() => {
+    const wasOnline = previousOnlineRef.current;
+    previousOnlineRef.current = online;
+    if (wasOnline || !online) return;
+    let active = true;
+    void flush().then((saved) => {
+      if (!active || !saved || !onlineRef.current) return;
+      const pendingRevision = pendingSyncRevisionRef.current;
+      if (pendingRevision !== null) void synchronize(pendingRevision);
+    });
+    return () => { active = false; };
+  }, [flush, online, synchronize]);
 
   const setDraft = useCallback((value: string) => {
     draftRevisionRef.current += 1;
