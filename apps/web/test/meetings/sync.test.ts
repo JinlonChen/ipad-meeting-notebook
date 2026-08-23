@@ -123,6 +123,61 @@ describe("CatalogSync", () => {
     await expect(store.pendingOperations()).resolves.toEqual([]);
   });
 
+  test("stops a stale multi-operation flush after acknowledging its in-flight operation", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    await store.activateUser(userA);
+    const first = await store.create("A first", null, now);
+    const second = await store.create("A second", null, "2026-08-21T00:01:00.000Z");
+    let release!: (value: { meeting: typeof first }) => void;
+    const firstResponse = new Promise<{ meeting: typeof first }>((resolve) => { release = resolve; });
+    const send = vi.fn().mockImplementationOnce(() => firstResponse).mockResolvedValue({ meeting: second });
+    const sync = new CatalogSync(store, api(send));
+    const flushing = sync.flush();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+
+    sync.pauseForUserChange();
+    await store.activateUser(userB);
+    release({ meeting: first });
+
+    await expect(flushing).resolves.toEqual({ state: "paused_auth" });
+    expect(send).toHaveBeenCalledOnce();
+    await expect(store.pendingOperations()).resolves.toEqual([]);
+    await store.activateUser(userA);
+    await expect(store.pendingOperations()).resolves.toEqual([expect.objectContaining({ entityId: second.id })]);
+  });
+
+  test("discards a stale pull response after switching users", async () => {
+    const store = catalog();
+    catalogs.push(store);
+    await store.activateUser(userA);
+    const remoteA = {
+      id: crypto.randomUUID(), title: "A remote", folderId: null, status: "ready" as const,
+      startedAt: null, endedAt: null, createdAt: now, updatedAt: now, trashedAt: null, syncVersion: 1,
+    };
+    let releaseFolders!: (value: []) => void;
+    let releaseMeetings!: (value: [typeof remoteA]) => void;
+    const client: MeetingCatalogApi = {
+      send: vi.fn(),
+      listFolders: vi.fn(() => new Promise<[]>((resolve) => { releaseFolders = resolve; })),
+      listMeetings: vi.fn(() => new Promise<[typeof remoteA]>((resolve) => { releaseMeetings = resolve; })),
+    };
+    const sync = new CatalogSync(store, client);
+    const refreshing = sync.refresh();
+    await vi.waitFor(() => expect(client.listMeetings).toHaveBeenCalledOnce());
+
+    sync.pauseForUserChange();
+    await store.activateUser(userB);
+    const localB = await store.create("B local", null, "2026-08-21T00:01:00.000Z");
+    releaseFolders([]);
+    releaseMeetings([remoteA]);
+
+    await expect(refreshing).resolves.toEqual({ state: "paused_auth" });
+    await expect(store.list({ includeTrashed: true })).resolves.toEqual([localB]);
+    await store.activateUser(userA);
+    await expect(store.list({ includeTrashed: true })).resolves.toEqual([]);
+  });
+
   test("retains a failed operation with one bounded retry attempt and succeeds on a later flush", async () => {
     const store = catalog();
     catalogs.push(store);

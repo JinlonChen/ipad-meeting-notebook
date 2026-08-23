@@ -6,6 +6,7 @@ import {
   type Folder,
   type Meeting,
 } from "@meeting/contracts";
+import Dexie from "dexie";
 import { z } from "zod";
 
 import { type DeviceAccess, MeetingCatalogDatabase, type OutboxKind, type OutboxOperation } from "./local-db.js";
@@ -17,6 +18,11 @@ const IsoTimestampSchema = z.iso.datetime();
 const UserIdSchema = z.uuid().transform((value) => value.toLowerCase());
 const DeviceAccessSchema = z.object({ userId: UserIdSchema, authorizedAt: IsoTimestampSchema, expiresAt: IsoTimestampSchema }).strict();
 const RestoreStatusSchema = z.enum(["draft", "recording", "recoverable", "uploading", "processing", "ready", "failed"]);
+const outboxSource = Symbol("outboxSource");
+
+type SourcedOutboxOperation = OutboxOperation & {
+  [outboxSource]?: MeetingCatalogDatabase;
+};
 
 function restoreSettingKey(meetingId: string): string {
   return `meetingRestore:${meetingId}`;
@@ -56,6 +62,7 @@ export type MeetingListOptions = {
 
 export type MeetingCatalogRepositoryOptions = {
   beforeOutboxWrite?: (operation: OutboxOperation) => undefined;
+  afterLegacyOwnerClaim?: () => undefined;
 };
 
 export type PendingConflict = {
@@ -76,20 +83,26 @@ export class MeetingCatalogRepository {
   private activeUserId: string | null = null;
   private activationQueue: Promise<void> = Promise.resolve();
   private readonly userDatabases = new Map<string, MeetingCatalogDatabase>();
-  private readonly operationDatabases = new Map<string, MeetingCatalogDatabase>();
   private readonly beforeOutboxWrite: NonNullable<MeetingCatalogRepositoryOptions["beforeOutboxWrite"]>;
+  private readonly afterLegacyOwnerClaim: NonNullable<MeetingCatalogRepositoryOptions["afterLegacyOwnerClaim"]>;
 
   constructor(name?: string, options: MeetingCatalogRepositoryOptions = {}) {
     this.baseName = name ?? "meeting-catalog";
     this.bootstrapDb = new MeetingCatalogDatabase(this.baseName);
     this.db = this.bootstrapDb;
     this.beforeOutboxWrite = options.beforeOutboxWrite ?? (() => undefined);
+    this.afterLegacyOwnerClaim = options.afterLegacyOwnerClaim ?? (() => undefined);
   }
 
   private enqueueOutbox(db: MeetingCatalogDatabase, item: OutboxOperation): Promise<number | undefined> {
     this.beforeOutboxWrite(item);
-    this.operationDatabases.set(item.id, db);
     return db.outbox.add(item);
+  }
+
+  private operationSource(item: OutboxOperation): MeetingCatalogDatabase {
+    const source = (item as SourcedOutboxOperation)[outboxSource];
+    if (!source) throw new Error("OUTBOX_SOURCE_REQUIRED");
+    return source;
   }
 
   async activateUser(userIdInput: string): Promise<void> {
@@ -101,9 +114,14 @@ export class MeetingCatalogRepository {
         this.userDatabases.set(userId, userDb);
       }
 
-      const ownerSetting = await this.bootstrapDb.settings.get("catalogOwner");
-      const owner = UserIdSchema.safeParse(ownerSetting?.value);
-      if (!owner.success) {
+      const owner = await this.bootstrapDb.transaction("rw", this.bootstrapDb.settings, async () => {
+        const current = UserIdSchema.safeParse((await this.bootstrapDb.settings.get("catalogOwner"))?.value);
+        if (current.success) return { userId: current.data, claimed: false };
+        await this.bootstrapDb.settings.put({ key: "catalogOwner", value: userId });
+        return { userId, claimed: true };
+      });
+      if (owner.userId === userId) {
+        if (owner.claimed) this.afterLegacyOwnerClaim();
         const legacy = await this.bootstrapDb.transaction(
           "r",
           this.bootstrapDb.meetings,
@@ -130,7 +148,6 @@ export class MeetingCatalogRepository {
           this.bootstrapDb.outbox,
           this.bootstrapDb.settings,
           async () => {
-            await this.bootstrapDb.settings.put({ key: "catalogOwner", value: userId });
             await this.bootstrapDb.meetings.clear();
             await this.bootstrapDb.folders.clear();
             await this.bootstrapDb.outbox.clear();
@@ -148,9 +165,10 @@ export class MeetingCatalogRepository {
 
   async deleteDatabase(): Promise<void> {
     await this.activationQueue;
-    const databases = [this.bootstrapDb, ...this.userDatabases.values()];
-    for (const database of databases) database.close();
-    await Promise.all(databases.map((database) => database.delete()));
+    for (const database of [this.bootstrapDb, ...this.userDatabases.values()]) database.close();
+    const userPrefix = `${this.baseName}--user--`;
+    const databaseNames = (await Dexie.getDatabaseNames()).filter((name) => name === this.baseName || name.startsWith(userPrefix));
+    await Promise.all(databaseNames.map((name) => Dexie.delete(name)));
   }
 
   async create(title: string, folderId: string | null, now: string): Promise<Meeting> {
@@ -197,7 +215,9 @@ export class MeetingCatalogRepository {
   async pendingOperations(): Promise<OutboxOperation[]> {
     const db = this.db;
     const operations = await db.outbox.orderBy("sequence").toArray();
-    for (const item of operations) this.operationDatabases.set(item.id, db);
+    for (const item of operations) {
+      Object.defineProperty(item, outboxSource, { value: db, enumerable: false });
+    }
     return operations;
   }
 
@@ -380,7 +400,7 @@ export class MeetingCatalogRepository {
   }
 
   async syncApplySuccessfulOperation(operationToApply: OutboxOperation, response: { meeting?: unknown; folder?: unknown }): Promise<void> {
-    const db = this.operationDatabases.get(operationToApply.id) ?? this.db;
+    const db = this.operationSource(operationToApply);
     const sequence = z.number().int().nonnegative().parse(operationToApply.sequence);
     const expectsMeeting = operationToApply.kind.startsWith("meeting.");
     const expectsFolder = operationToApply.kind.startsWith("folder.") && operationToApply.kind !== "folder.remove";
@@ -425,11 +445,10 @@ export class MeetingCatalogRepository {
       }
       await db.outbox.delete(sequence);
     });
-    this.operationDatabases.delete(operationToApply.id);
   }
 
   async syncRecordFailure(operationToUpdate: OutboxOperation, error: "SYNC_FAILED" | "AUTH_REQUIRED" | "CONFLICT"): Promise<void> {
-    const db = this.operationDatabases.get(operationToUpdate.id) ?? this.db;
+    const db = this.operationSource(operationToUpdate);
     const sequence = z.number().int().nonnegative().parse(operationToUpdate.sequence);
     await db.outbox.update(sequence, {
       lastError: error,

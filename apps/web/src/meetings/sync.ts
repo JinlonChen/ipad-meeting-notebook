@@ -97,14 +97,27 @@ export class CatalogSync {
     this.authPaused = false;
   }
 
+  pauseForUserChange(): void {
+    this.authEpoch += 1;
+    this.authPaused = true;
+  }
+
+  private isStale(epoch: number): boolean {
+    return epoch !== this.authEpoch || this.authPaused;
+  }
+
   private async flushInternal(epoch: number): Promise<SyncResult> {
-    if (this.authPaused && epoch === this.authEpoch) return { state: "paused_auth" };
+    if (this.isStale(epoch)) return { state: "paused_auth" };
     const operations = await this.repository.pendingOperations();
+    if (this.isStale(epoch)) return { state: "paused_auth" };
     for (const operation of operations) {
+      if (this.isStale(epoch)) return { state: "paused_auth" };
       try {
         const response = await this.api.send(operation);
         await this.repository.syncApplySuccessfulOperation(operation, response);
+        if (this.isStale(epoch)) return { state: "paused_auth" };
       } catch (error) {
+        if (this.isStale(epoch)) return { state: "paused_auth" };
         const status = statusOf(error);
         if (status === 401) {
           if (epoch === this.authEpoch) this.authPaused = true;
@@ -117,6 +130,7 @@ export class CatalogSync {
         }
         if (operation.kind === "folder.remove" && status === 404 && error instanceof CatalogApiError && error.code === "FOLDER_NOT_FOUND") {
           await this.repository.syncApplySuccessfulOperation(operation, {});
+          if (this.isStale(epoch)) return { state: "paused_auth" };
           continue;
         }
         if (isTypedNotFoundConflict(operation, error)) {
@@ -147,11 +161,15 @@ export class CatalogSync {
   private async refreshInternal(epoch: number): Promise<SyncResult> {
     const flushed = await this.flushInternal(epoch);
     if (flushed.state !== "idle") return flushed;
+    if (this.isStale(epoch)) return { state: "paused_auth" };
     try {
       const [folders, meetings] = await Promise.all([this.api.listFolders(), this.api.listMeetings()]);
+      if (this.isStale(epoch)) return { state: "paused_auth" };
       await this.repository.syncRefresh(folders, meetings);
+      if (this.isStale(epoch)) return { state: "paused_auth" };
       return { state: "idle" };
     } catch (error) {
+      if (this.isStale(epoch)) return { state: "paused_auth" };
       if (statusOf(error) === 401) {
         if (epoch === this.authEpoch) this.authPaused = true;
         return { state: "paused_auth" };

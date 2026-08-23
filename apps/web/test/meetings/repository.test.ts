@@ -178,6 +178,52 @@ describe("MeetingCatalogRepository", () => {
     await expect(catalog.pendingOperations()).resolves.toEqual([expect.objectContaining({ entityId: legacy.id })]);
   });
 
+  test("atomically assigns a legacy catalog to only one user across repository instances", async () => {
+    const name = `meeting-catalog-atomic-claim-${databaseNumber++}`;
+    const legacyCatalog = new MeetingCatalogRepository(name);
+    const userACatalog = new MeetingCatalogRepository(name);
+    const userBCatalog = new MeetingCatalogRepository(name);
+    repositories.push(legacyCatalog, userACatalog, userBCatalog);
+    const legacy = await legacyCatalog.create("旧版会议", null, now);
+
+    const activations = await Promise.allSettled([
+      userACatalog.activateUser(userA),
+      userBCatalog.activateUser(userB),
+    ]);
+    expect(activations.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+
+    const bootstrap = new Dexie(name);
+    bootstrap.version(2).stores({ meetings: "id,updatedAt,status,folderId,title", folders: "id,name,updatedAt", outbox: "++sequence,id,entityId,kind,createdAt", settings: "key" });
+    const owner = (await bootstrap.table("settings").get("catalogOwner") as { value?: unknown } | undefined)?.value;
+    bootstrap.close();
+    expect([userA, userB]).toContain(owner);
+    const meetingsByUser = {
+      [userA]: await userACatalog.list({ includeTrashed: true }),
+      [userB]: await userBCatalog.list({ includeTrashed: true }),
+    };
+    expect(meetingsByUser[owner as typeof userA]).toEqual([legacy]);
+    expect(meetingsByUser[owner === userA ? userB : userA]).toEqual([]);
+  });
+
+  test("resumes legacy migration for the same owner after interruption", async () => {
+    const name = `meeting-catalog-claim-recovery-${databaseNumber++}`;
+    const legacyCatalog = new MeetingCatalogRepository(name);
+    repositories.push(legacyCatalog);
+    const legacy = await legacyCatalog.create("待恢复迁移", null, now);
+    const interrupted = new MeetingCatalogRepository(name, {
+      afterLegacyOwnerClaim: () => { throw new Error("interrupted after owner claim"); },
+    });
+    repositories.push(interrupted);
+
+    await expect(interrupted.activateUser(userA)).rejects.toThrow("interrupted after owner claim");
+
+    const recovered = new MeetingCatalogRepository(name);
+    repositories.push(recovered);
+    await recovered.activateUser(userA);
+    await expect(recovered.list({ includeTrashed: true })).resolves.toEqual([legacy]);
+    await expect(recovered.pendingOperations()).resolves.toEqual([expect.objectContaining({ entityId: legacy.id })]);
+  });
+
   test("rejects unverified user ids and legacy device markers", async () => {
     const name = `meeting-catalog-test-${databaseNumber++}`;
     const legacy = new Dexie(name);
@@ -207,6 +253,34 @@ describe("MeetingCatalogRepository", () => {
     await expect(Dexie.exists(name)).resolves.toBe(false);
     await expect(Dexie.exists(`${name}--user--${userA}`)).resolves.toBe(false);
     await expect(Dexie.exists(`${name}--user--${userB}`)).resolves.toBe(false);
+  });
+
+  test("deletes user databases discovered after restart without deleting lookalike names", async () => {
+    const name = `meeting-catalog-restart-delete-${databaseNumber++}`;
+    const original = new MeetingCatalogRepository(name);
+    repositories.push(original);
+    await original.activateUser(userA);
+    await original.create("A", null, now);
+    await original.activateUser(userB);
+    await original.create("B", null, now);
+    const lookalikeName = `${name}-other--user--${userA}`;
+    const lookalike = new Dexie(lookalikeName);
+    lookalike.version(1).stores({ records: "id" });
+    await lookalike.table("records").put({ id: "keep" });
+    lookalike.close();
+
+    try {
+      const restarted = new MeetingCatalogRepository(name);
+      repositories.push(restarted);
+      await restarted.deleteDatabase();
+
+      await expect(Dexie.exists(name)).resolves.toBe(false);
+      await expect(Dexie.exists(`${name}--user--${userA}`)).resolves.toBe(false);
+      await expect(Dexie.exists(`${name}--user--${userB}`)).resolves.toBe(false);
+      await expect(Dexie.exists(lookalikeName)).resolves.toBe(true);
+    } finally {
+      await Dexie.delete(lookalikeName);
+    }
   });
 
   test("uses shared schemas to reject invalid titles and identifiers", async () => {
@@ -279,6 +353,37 @@ describe("MeetingCatalogRepository", () => {
         entityName: "冲突会议",
       },
     });
+  });
+
+  test("rejects failure updates without an outbox source instead of mutating the active user", async () => {
+    const catalog = repository();
+    await catalog.activateUser(userA);
+    await catalog.create("A", null, now);
+    const sourceOperation = (await catalog.pendingOperations())[0]!;
+    await catalog.activateUser(userB);
+    const meetingB = await catalog.create("B", null, "2026-08-21T00:01:00.000Z");
+
+    await expect(catalog.syncRecordFailure({ ...sourceOperation }, "CONFLICT")).rejects.toThrow("OUTBOX_SOURCE_REQUIRED");
+
+    await expect(catalog.pendingOperations()).resolves.toEqual([
+      expect.objectContaining({ entityId: meetingB.id, lastError: null }),
+    ]);
+  });
+
+  test("rejects successful acknowledgements without an outbox source instead of mutating the active user", async () => {
+    const catalog = repository();
+    await catalog.activateUser(userA);
+    const meetingA = await catalog.create("A", null, now);
+    const sourceOperation = (await catalog.pendingOperations())[0]!;
+    await catalog.activateUser(userB);
+    const meetingB = await catalog.create("B", null, "2026-08-21T00:01:00.000Z");
+
+    await expect(catalog.syncApplySuccessfulOperation({ ...sourceOperation }, { meeting: meetingA })).rejects.toThrow("OUTBOX_SOURCE_REQUIRED");
+
+    await expect(catalog.list({ includeTrashed: true })).resolves.toEqual([meetingB]);
+    await expect(catalog.pendingOperations()).resolves.toEqual([
+      expect.objectContaining({ entityId: meetingB.id, lastError: null }),
+    ]);
   });
 
   test("abandons a conflicted meeting create and only its later entity mutations", async () => {

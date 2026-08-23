@@ -11,6 +11,7 @@ import { normalizeBasePath } from "./base-path.js";
 const defaultNow = () => new Date().toISOString();
 const noopSynchronizer: CatalogSynchronizer = {
   refresh: async () => ({ state: "idle" }),
+  pauseForUserChange: () => undefined,
   resumeAfterLogin: () => undefined,
 };
 
@@ -27,6 +28,7 @@ type Props = {
 export type CatalogSynchronizer = {
   refresh(): Promise<SyncResult>;
   scheduleRefresh?(): Promise<SyncResult>;
+  pauseForUserChange(): void;
   resumeAfterLogin(): void;
 };
 type Gate = "loading" | "catalog" | "login" | "offline-lock" | "logging-out" | "logout-error" | "error";
@@ -72,6 +74,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
   const mounted = useRef(true);
   const generation = useRef(0);
   const explicitLogout = useRef(false);
+  const activeUserId = useRef<string | null>(null);
   const nextGeneration = useCallback(() => ++generation.current, []);
   const owns = useCallback((value: number) => mounted.current && generation.current === value, []);
 
@@ -98,10 +101,14 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
   const authorize = useCallback(async () => {
     if (explicitLogout.current) return;
     const currentGeneration = nextGeneration();
+    synchronizer.pauseForUserChange();
     try {
       const session = await auth.me();
       if (!owns(currentGeneration) || explicitLogout.current) return;
-      await repository.activateUser(session.id);
+      if (activeUserId.current !== session.id) {
+        await repository.activateUser(session.id);
+        activeUserId.current = session.id;
+      }
       if (!owns(currentGeneration) || explicitLogout.current) return;
       const access = await repository.authorizeDevice(session.id, session.sessionExpiresAt, now());
       if (!owns(currentGeneration) || explicitLogout.current) {
@@ -110,6 +117,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
       }
       setDeviceExpiresAt(access.expiresAt);
       setOnline(true);
+      synchronizer.resumeAfterLogin();
       setGate("catalog");
     } catch (error) {
       if (!owns(currentGeneration) || explicitLogout.current) return;
@@ -123,7 +131,10 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
         if (!owns(currentGeneration)) return;
         if (access) {
           try {
-            await repository.activateUser(access.userId);
+            if (activeUserId.current !== access.userId) {
+              await repository.activateUser(access.userId);
+              activeUserId.current = access.userId;
+            }
           } catch {
             if (owns(currentGeneration)) setGate("error");
             return;
@@ -136,12 +147,11 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
       }
       setGate("error");
     }
-  }, [auth, clearAuthorization, nextGeneration, now, owns, repository]);
+  }, [auth, clearAuthorization, nextGeneration, now, owns, repository, synchronizer]);
 
   useEffect(() => { void authorize(); }, [authorize]);
   useEffect(() => {
     const becameOnline = () => {
-      setOnline(true);
       if (!explicitLogout.current) void authorize();
     };
     const becameOffline = () => setOnline(false);
@@ -176,6 +186,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
 
   const login = useCallback(async (email: string, password: string) => {
     const currentGeneration = nextGeneration();
+    synchronizer.pauseForUserChange();
     await auth.login(email, password);
     if (!owns(currentGeneration)) return;
     let session: Awaited<ReturnType<AuthApi["me"]>>;
@@ -189,7 +200,10 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
       throw error;
     }
     if (!owns(currentGeneration)) return;
-    await repository.activateUser(session.id);
+    if (activeUserId.current !== session.id) {
+      await repository.activateUser(session.id);
+      activeUserId.current = session.id;
+    }
     if (!owns(currentGeneration)) return;
     const access = await repository.authorizeDevice(session.id, session.sessionExpiresAt, now());
     if (!owns(currentGeneration)) {
@@ -216,6 +230,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
   );
   const logout = useCallback(async () => {
     explicitLogout.current = true;
+    synchronizer.pauseForUserChange();
     const currentGeneration = nextGeneration();
     if (mounted.current) setGate("logging-out");
     const remoteLogout = auth.logout().catch(() => undefined);
@@ -229,7 +244,7 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
     if (owns(currentGeneration)) setDeviceExpiresAt(null);
     await remoteLogout;
     if (owns(currentGeneration)) setGate("login");
-  }, [auth, nextGeneration, owns, repository]);
+  }, [auth, nextGeneration, owns, repository, synchronizer]);
 
   if (gate === "loading") return <main className="gate-loading" role="status">正在验证访问权限...</main>;
   if (gate === "logging-out") return <main className="gate-loading" role="status">正在退出...</main>;

@@ -24,7 +24,7 @@ function api(overrides: Partial<AuthApi> = {}): AuthApi {
   return { me: vi.fn().mockResolvedValue({ id: userA, sessionExpiresAt: expiry }), login: vi.fn().mockResolvedValue(undefined), logout: vi.fn().mockResolvedValue(undefined), ...overrides };
 }
 function synchronizer(state: "idle" | "paused_auth" | "conflict" | "error" = "idle") {
-  return { refresh: vi.fn().mockResolvedValue({ state }), resumeAfterLogin: vi.fn() };
+  return { refresh: vi.fn().mockResolvedValue({ state }), pauseForUserChange: vi.fn(), resumeAfterLogin: vi.fn() };
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -71,6 +71,62 @@ describe("App session gate", () => {
 
     await screen.findByRole("heading", { name: "会议本" });
     await expect(catalog.hasDeviceAccess(now)).resolves.toBe(true);
+  });
+
+  test("pauses stale synchronization before checking the authenticated session and resumes after activation", async () => {
+    const calls: string[] = [];
+    const catalog = repository();
+    const sync = synchronizer();
+    sync.pauseForUserChange.mockImplementation(() => { calls.push("pause"); });
+    sync.resumeAfterLogin.mockImplementation(() => { calls.push("resume"); });
+    const auth = api({ me: vi.fn().mockImplementation(async () => {
+      calls.push("me");
+      return { id: userA, sessionExpiresAt: expiry };
+    }) });
+
+    render(<App repository={catalog} auth={auth} synchronizer={sync} now={() => now} />);
+
+    await screen.findByRole("heading", { name: "会议本" });
+    expect(calls.slice(0, 3)).toEqual(["pause", "me", "resume"]);
+  });
+
+  test("pauses stale synchronization before login changes the remote session", async () => {
+    const user = userEvent.setup();
+    const calls: string[] = [];
+    const catalog = repository();
+    const sync = synchronizer();
+    sync.pauseForUserChange.mockImplementation(() => { calls.push("pause"); });
+    sync.resumeAfterLogin.mockImplementation(() => { calls.push("resume"); });
+    const auth = api({
+      me: vi.fn()
+        .mockImplementationOnce(async () => { calls.push("me-initial"); throw new AuthApiError(401, "AUTH_REQUIRED"); })
+        .mockImplementationOnce(async () => { calls.push("me-login"); return { id: userB, sessionExpiresAt: expiry }; }),
+      login: vi.fn().mockImplementation(async () => { calls.push("login"); }),
+    });
+    render(<App repository={catalog} auth={auth} synchronizer={sync} now={() => now} />);
+    await screen.findByRole("heading", { name: "登录会议本" });
+
+    await user.type(screen.getByLabelText("邮箱"), "b@example.com");
+    await user.type(screen.getByLabelText("密码"), "private-secret");
+    await user.click(screen.getByRole("button", { name: "登录" }));
+
+    await screen.findByRole("heading", { name: "会议本" });
+    expect(calls).toEqual(["pause", "me-initial", "pause", "login", "me-login", "resume"]);
+  });
+
+  test("pauses stale synchronization before logout changes the remote session", async () => {
+    const user = userEvent.setup();
+    const catalog = repository();
+    const sync = synchronizer();
+    const auth = api();
+    render(<App repository={catalog} auth={auth} synchronizer={sync} now={() => now} />);
+    await screen.findByRole("heading", { name: "会议本" });
+
+    await user.click(screen.getByRole("button", { name: "退出" }));
+
+    await screen.findByRole("heading", { name: "登录会议本" });
+    expect(sync.pauseForUserChange).toHaveBeenCalledTimes(2);
+    expect(sync.pauseForUserChange.mock.invocationCallOrder[1]).toBeLessThan((auth.logout as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!);
   });
 
   test("switches local catalogs with the authenticated Supabase user", async () => {
@@ -184,14 +240,39 @@ describe("App session gate", () => {
   test("keeps an unexpired local marker available offline but keeps expired access behind the login gate", async () => {
     const valid = repository();
     await valid.authorizeDevice(userA, expiry, now);
-    const rendered = render(<App repository={valid} auth={api({ me: vi.fn().mockRejectedValue(new AuthNetworkError()) })} synchronizer={synchronizer()} now={() => now} />);
+    const offlineSync = synchronizer();
+    const rendered = render(<App repository={valid} auth={api({ me: vi.fn().mockRejectedValue(new AuthNetworkError()) })} synchronizer={offlineSync} now={() => now} />);
     await screen.findByText("离线，0 项待同步");
+    expect(offlineSync.pauseForUserChange).toHaveBeenCalledOnce();
+    expect(offlineSync.resumeAfterLogin).not.toHaveBeenCalled();
+    expect(offlineSync.refresh).not.toHaveBeenCalled();
     rendered.unmount();
 
     const expired = repository();
     await expired.authorizeDevice(userA, now, "2026-08-01T00:00:00.000Z");
     render(<App repository={expired} auth={api({ me: vi.fn().mockRejectedValue(new AuthNetworkError()) })} synchronizer={synchronizer()} now={() => now} />);
     await screen.findByRole("heading", { name: "离线解锁需要登录" });
+  });
+
+  test("does not refresh as online until an offline catalog revalidates its session", async () => {
+    const catalog = repository();
+    await catalog.authorizeDevice(userA, expiry, now);
+    const reauthorization = deferred<{ id: string; sessionExpiresAt: string }>();
+    const auth = api({
+      me: vi.fn()
+        .mockRejectedValueOnce(new AuthNetworkError())
+        .mockImplementationOnce(() => reauthorization.promise),
+    });
+    const sync = synchronizer();
+    render(<App repository={catalog} auth={auth} synchronizer={sync} now={() => now} />);
+    await screen.findByText("离线，0 项待同步");
+
+    act(() => window.dispatchEvent(new Event("online")));
+    await waitFor(() => expect(sync.pauseForUserChange).toHaveBeenCalledTimes(2));
+    expect(sync.refresh).not.toHaveBeenCalled();
+
+    reauthorization.resolve({ id: userA, sessionExpiresAt: expiry });
+    await waitFor(() => expect(sync.refresh).toHaveBeenCalledOnce());
   });
 
   test("locks an open offline catalog when its device authorization expires", async () => {
@@ -250,6 +331,7 @@ describe("App session gate", () => {
     const catalog = repository();
     const synchronizer = {
       refresh: vi.fn().mockResolvedValueOnce({ state: "paused_auth" as const }).mockResolvedValue({ state: "idle" as const }),
+      pauseForUserChange: vi.fn(),
       resumeAfterLogin: vi.fn(),
     };
     const auth = api({ me: vi.fn().mockRejectedValueOnce(new AuthApiError(401, "AUTH_REQUIRED")).mockResolvedValue({ id: userA, sessionExpiresAt: expiry }) });
@@ -362,7 +444,7 @@ describe("App session gate", () => {
     const catalog = repository();
     const refresh = deferred<{ state: "paused_auth" }>();
     const auth = api({ me: vi.fn().mockResolvedValue({ id: userA, sessionExpiresAt: expiry }) });
-    const sync = { refresh: vi.fn().mockImplementationOnce(() => refresh.promise).mockResolvedValue({ state: "idle" as const }), resumeAfterLogin: vi.fn() };
+    const sync = { refresh: vi.fn().mockImplementationOnce(() => refresh.promise).mockResolvedValue({ state: "idle" as const }), pauseForUserChange: vi.fn(), resumeAfterLogin: vi.fn() };
     render(<App repository={catalog} auth={auth} synchronizer={sync} now={() => now} />);
 
     await screen.findByRole("heading", { name: "会议本" });
@@ -384,7 +466,7 @@ describe("App session gate", () => {
     const catalog = repository();
     const refresh = deferred<{ state: "paused_auth" }>();
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const rendered = render(<App repository={catalog} auth={api()} synchronizer={{ refresh: vi.fn().mockImplementation(() => refresh.promise), resumeAfterLogin: vi.fn() }} now={() => now} />);
+    const rendered = render(<App repository={catalog} auth={api()} synchronizer={{ refresh: vi.fn().mockImplementation(() => refresh.promise), pauseForUserChange: vi.fn(), resumeAfterLogin: vi.fn() }} now={() => now} />);
 
     await screen.findByRole("heading", { name: "会议本" });
     rendered.unmount();
