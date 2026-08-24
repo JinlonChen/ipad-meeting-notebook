@@ -53,8 +53,8 @@
 - [x] **Step 2: Implement** pure `selectRecordingMimeType()` and verify green.
 - [x] **Step 3: Write failing controller tests** with fake media/wake-lock ports proving `getUserMedia({audio:true})`, `MediaRecorder.start(10_000)`, immediate durable chunk callback, timer updates, and track cleanup.
 - [x] **Step 4: Implement** `RecordingController` with injected ports, serialized chunk writes, and a stop that awaits the final `dataavailable` write.
-- [ ] **Step 5: Write failing interruption tests** for `visibilitychange`, recorder errors, and wake-lock release; implement explicit interrupted state and reacquire wake lock only while visible.
-- [ ] **Step 6: Run focused tests and commit.**
+- [x] **Step 5: Write failing interruption tests** for `visibilitychange`, recorder errors, and wake-lock release; implement explicit interrupted state and reacquire wake lock only while visible.
+- [x] **Step 6: Run focused tests and commit.**
 
 ### Task 4: Build the iPad recording workspace controls
 

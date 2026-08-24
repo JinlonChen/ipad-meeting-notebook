@@ -69,4 +69,65 @@ describe("RecordingController", () => {
     await controller.stop();
     expect(persistChunk).toHaveBeenCalledOnce();
   });
+
+  test("marks recording interrupted when the page becomes hidden", async () => {
+    const recorder = new FakeRecorder();
+    let visible = true;
+    let visibilityListener: () => void = () => undefined;
+    const controller = new RecordingController({
+      getUserMedia: async () => ({ getTracks: () => [] } as unknown as MediaStream),
+      createRecorder: () => recorder as unknown as MediaRecorder,
+      requestWakeLock: async () => null,
+      persistChunk: async () => undefined,
+      nowMilliseconds: () => 0,
+      visibility: {
+        isVisible: () => visible,
+        subscribe: (listener) => { visibilityListener = listener; return () => undefined; },
+      },
+    });
+    await controller.start();
+
+    visible = false;
+    visibilityListener();
+    await vi.waitFor(() => expect(controller.status()).toBe("interrupted"));
+
+    expect(recorder.stop).toHaveBeenCalledOnce();
+  });
+
+  test("marks a recorder error as interrupted", async () => {
+    const recorder = new FakeRecorder();
+    const controller = new RecordingController({
+      getUserMedia: async () => ({ getTracks: () => [] } as unknown as MediaStream),
+      createRecorder: () => recorder as unknown as MediaRecorder,
+      requestWakeLock: async () => null,
+      persistChunk: async () => undefined,
+      nowMilliseconds: () => 0,
+    });
+    await controller.start();
+
+    recorder.dispatchEvent(new Event("error"));
+    await vi.waitFor(() => expect(controller.status()).toBe("interrupted"));
+  });
+
+  test("reacquires a released wake lock only while visible", async () => {
+    const recorder = new FakeRecorder();
+    const firstLock = new EventTarget() as EventTarget & { release(): Promise<void> };
+    firstLock.release = vi.fn().mockResolvedValue(undefined);
+    const secondLock = new EventTarget() as EventTarget & { release(): Promise<void> };
+    secondLock.release = vi.fn().mockResolvedValue(undefined);
+    const requestWakeLock = vi.fn().mockResolvedValueOnce(firstLock).mockResolvedValueOnce(secondLock);
+    const controller = new RecordingController({
+      getUserMedia: async () => ({ getTracks: () => [] } as unknown as MediaStream),
+      createRecorder: () => recorder as unknown as MediaRecorder,
+      requestWakeLock,
+      persistChunk: async () => undefined,
+      nowMilliseconds: () => 0,
+      visibility: { isVisible: () => true, subscribe: () => () => undefined },
+    });
+    await controller.start();
+
+    firstLock.dispatchEvent(new Event("release"));
+    await vi.waitFor(() => expect(requestWakeLock).toHaveBeenCalledTimes(2));
+    await controller.stop();
+  });
 });
