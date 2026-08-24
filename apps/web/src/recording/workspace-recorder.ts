@@ -39,6 +39,10 @@ export class WorkspaceRecorder implements MeetingRecorderPort {
     for (const listener of this.listeners) listener(meetingId, state);
   }
 
+  hasActiveRecording(): boolean {
+    return this.active !== null;
+  }
+
   async prepare(meetingId: string): Promise<"idle" | "recording" | "recoverable"> {
     if (!this.initialization) {
       this.initialization = (async () => {
@@ -64,9 +68,14 @@ export class WorkspaceRecorder implements MeetingRecorderPort {
         this.onChunkPersisted();
       },
       onInterrupted: async () => {
-        await this.repository.recoverInterruptedSessions();
-        if (this.active?.controller === controller) this.active = null;
-        this.publish(meetingId, "recoverable");
+        try {
+          await this.repository.recoverInterruptedSessions();
+        } catch {
+          // The retry path also finishes a session that is still marked as recording.
+        } finally {
+          if (this.active?.controller === controller) this.active = null;
+          this.publish(meetingId, "recoverable");
+        }
       },
     });
     this.active = { meetingId, controller };
@@ -82,13 +91,22 @@ export class WorkspaceRecorder implements MeetingRecorderPort {
   async stop(meetingId: string): Promise<void> {
     if (this.active?.meetingId === meetingId) {
       const controller = this.active.controller;
-      this.active = null;
-      await controller.stop();
+      try {
+        await controller.stop();
+        await this.repository.stop(meetingId, this.now());
+      } finally {
+        if (this.active?.controller === controller) this.active = null;
+      }
+      this.publish(meetingId, "idle");
+      return;
+    }
+    const session = await this.repository.session(meetingId);
+    if (session?.state === "recording") {
       await this.repository.stop(meetingId, this.now());
       this.publish(meetingId, "idle");
       return;
     }
-    if ((await this.repository.session(meetingId))?.state === "recoverable") {
+    if (session?.state === "recoverable") {
       await this.repository.completeRecovery(meetingId, this.now());
       this.publish(meetingId, "idle");
     }
