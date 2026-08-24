@@ -5,6 +5,7 @@ import { MeetingRecordingControls, type MeetingRecorderPort } from "../../src/re
 
 function port(overrides: Partial<MeetingRecorderPort> = {}): MeetingRecorderPort {
   return {
+    hasActiveRecording: vi.fn().mockReturnValue(false),
     prepare: vi.fn().mockResolvedValue("idle"),
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
