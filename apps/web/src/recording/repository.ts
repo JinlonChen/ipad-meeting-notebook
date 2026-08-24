@@ -54,10 +54,22 @@ export class MeetingRecordingRepository {
     return this.database.transaction("rw", this.database.recordingSessions, async () => {
       const existing = await this.database.recordingSessions.get(meetingId);
       if (existing?.state === "recording") return RecordingSessionSchema.parse(existing);
-      if (existing) throw new Error(existing.state === "recoverable" ? "RECORDING_REQUIRES_RECOVERY" : "RECORDING_ALREADY_STOPPED");
       const active = (await this.database.recordingSessions.toArray()).find((session) =>
-        session.state === "recording" || session.state === "recoverable");
+        session.meetingId !== meetingId && (session.state === "recording" || session.state === "recoverable"));
       if (active) throw new ActiveRecordingExistsError(active.meetingId);
+      if (existing?.state === "recoverable") throw new Error("RECORDING_REQUIRES_RECOVERY");
+      if (existing?.state === "stopped") {
+        const restarted = RecordingSessionSchema.parse({
+          ...existing,
+          state: "recording",
+          startedAt,
+          endedAt: null,
+          elapsedMs: 0,
+          expiresAt: expiresFrom(startedAt),
+        });
+        await this.database.recordingSessions.put(restarted);
+        return restarted;
+      }
       const session = RecordingSessionSchema.parse({
         meetingId,
         state: "recording",
