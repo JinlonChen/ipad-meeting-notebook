@@ -25,12 +25,12 @@ export class SupabaseMeetingIntelligenceApi implements MeetingIntelligencePort {
   }
 
   async configure(input: AiProviderConfiguration): Promise<void> {
-    const { error } = await this.client.functions.invoke("configure-meeting-ai-v2", { body: input });
+    const { error } = await this.client.functions.invoke("configure-meeting-ai-v3", { body: input });
     if (error) throw failed();
   }
 
   async process(meetingId: string): Promise<void> {
-    const { error } = await this.client.functions.invoke("process-meeting-intelligence-v2", { body: { meetingId } });
+    const { error } = await this.client.functions.invoke("process-meeting-intelligence-v3", { body: { meetingId } });
     if (error) throw failed();
   }
 
