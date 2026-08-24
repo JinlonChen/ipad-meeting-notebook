@@ -5,8 +5,22 @@ select has_table('public', 'meeting_audio_chunks', 'meeting audio metadata table
 select is((select public from storage.buckets where id = 'meeting-audio'), false, 'meeting audio bucket is private');
 select is((select file_size_limit from storage.buckets where id = 'meeting-audio'), 104857600::bigint, 'meeting audio objects are bounded');
 select policies_are('public', 'meeting_audio_chunks', array['meeting_audio_chunks_owner_insert', 'meeting_audio_chunks_owner_select']);
-select has_policy('storage', 'objects', 'meeting_audio_objects_owner_select', 'owner storage select policy exists');
-select has_policy('storage', 'objects', 'meeting_audio_objects_owner_insert', 'owner storage insert policy exists');
+select ok(
+  exists (
+    select 1 from pg_policies
+    where schemaname = 'storage' and tablename = 'objects'
+      and policyname = 'meeting_audio_objects_owner_select'
+  ),
+  'owner storage select policy exists'
+);
+select ok(
+  exists (
+    select 1 from pg_policies
+    where schemaname = 'storage' and tablename = 'objects'
+      and policyname = 'meeting_audio_objects_owner_insert'
+  ),
+  'owner storage insert policy exists'
+);
 select is(has_table_privilege('anon', 'public.meeting_audio_chunks', 'SELECT'), false, 'anon cannot select audio metadata');
 select is(has_table_privilege('anon', 'public.meeting_audio_chunks', 'INSERT'), false, 'anon cannot insert audio metadata');
 select is(has_table_privilege('authenticated', 'public.meeting_audio_chunks', 'UPDATE'), false, 'browser cannot overwrite audio metadata');

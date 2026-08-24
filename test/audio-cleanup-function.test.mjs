@@ -107,13 +107,13 @@ test("cleanup probes for more work only after a full batch", async () => {
   );
 });
 
-test("cleanup function is a JWT-verified POST-only service-role endpoint", async () => {
+test("cleanup function bypasses legacy gateway JWT checks but enforces the service-role key internally", async () => {
   const [source, config] = await Promise.all([
     read("supabase/functions/cleanup-expired-audio/index.ts"),
     read("supabase/config.toml"),
   ]);
 
-  assert.match(config, /\[functions\.cleanup-expired-audio\]\s+verify_jwt\s*=\s*true/);
+  assert.match(config, /\[functions\.cleanup-expired-audio\]\s+verify_jwt\s*=\s*false/);
   assert.match(source, /Deno\.env\.get\("SUPABASE_URL"\)/);
   assert.match(source, /Deno\.env\.get\("SUPABASE_SERVICE_ROLE_KEY"\)/);
   assert.match(source, /request\.method\s*!==\s*"POST"/);

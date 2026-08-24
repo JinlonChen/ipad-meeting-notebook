@@ -101,8 +101,8 @@
 
 - [x] **Step 1: Write cleanup function tests/contracts** proving only expired audio objects and chunk metadata are removed; meetings, notes, transcripts, and summaries are never cascaded.
 - [x] **Step 2: Implement the service-role Edge Function** with bounded batches, idempotent deletion, and structured logs containing IDs but no audio or note content.
-- [ ] **Step 3: Add E2E tests** for permission acceptance, chunk persistence, offline recording, reload recovery, reconnect upload, duplicate prevention, foreground interruption warning, and expiry cleanup using fake browser media.
-- [ ] **Step 4: Run** `npm test`, `npm run typecheck`, `npm run build`, `npm run scan:web-dist`, and `npm run test:e2e`.
+- [x] **Step 3: Add E2E tests** for permission acceptance, chunk persistence, offline recording, reload recovery, reconnect upload, duplicate prevention, foreground interruption warning, and expiry cleanup using fake browser media.
+- [x] **Step 4: Run** `npm test`, `npm run typecheck`, `npm run build`, `npm run scan:web-dist`, and `npm run test:e2e`.
 - [ ] **Step 5: Deploy migration/function/storage policy**, merge through CI, wait for Pages, and verify production assets and console.
 - [ ] **Step 6: Perform real iPad mini 6 checks** for microphone permission, 15-minute offline recovery, one-hour foreground recording, force-close recovery, playback integrity, and 48-hour deletion. Do not mark hardware-only checks passed before the user runs them.
 

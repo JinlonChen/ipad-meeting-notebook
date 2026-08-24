@@ -13,4 +13,4 @@ enabled = true
 enable_signup = false
 
 [functions.cleanup-expired-audio]
-verify_jwt = true
+verify_jwt = false

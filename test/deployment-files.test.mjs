@@ -125,6 +125,10 @@ test("operator guide covers local setup, safe provisioning, Pages, and iPad offl
     "npm ci",
     "npm run dev -w @meeting/web",
     "supabase/migrations/202608220001_meeting_catalog.sql",
+    "supabase/migrations/202608230002_meeting_notes.sql",
+    "supabase/migrations/202608240001_meeting_audio.sql",
+    "supabase/migrations/202608240002_audio_cleanup.sql",
+    "npx supabase functions deploy cleanup-expired-audio",
     "npx supabase test db",
     "VITE_SUPABASE_URL",
     "VITE_SUPABASE_ANON_KEY",
@@ -141,5 +145,6 @@ test("operator guide covers local setup, safe provisioning, Pages, and iPad offl
   assert.match(readme, /原始录音.*云端.*iPad.*48 小时/s);
   assert.match(readme, /PWA.*关闭.*下次启动.*清理/s);
   assert.match(readme, /会议笔记.*完整转写.*AI 总结.*永久保存/s);
-  assert.match(readme, /当前阶段.*不(?:包含|实现).*录音.*转写.*AI.*手写/s);
+  assert.match(readme, /当前版本.*可恢复的会议录音/s);
+  assert.match(readme, /当前阶段.*尚未实现.*转写.*AI.*手写/s);
 });
