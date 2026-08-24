@@ -8,18 +8,21 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const migrationPath = resolve(root, "supabase/migrations/202608220001_meeting_catalog.sql");
 const noteMigrationPath = resolve(root, "supabase/migrations/202608230002_meeting_notes.sql");
 const audioMigrationPath = resolve(root, "supabase/migrations/202608240001_meeting_audio.sql");
+const intelligenceMigrationPath = resolve(root, "supabase/migrations/202608240003_meeting_intelligence.sql");
 const catalogTestPath = resolve(root, "supabase/tests/meeting_catalog.sql");
 const audioTestPath = resolve(root, "supabase/tests/meeting_audio.sql");
 
 let sql;
 let noteSql;
 let audioSql;
+let intelligenceSql;
 let catalogTestSql;
 let audioTestSql;
 test.before(async () => {
   sql = await readFile(migrationPath, "utf8");
   noteSql = await readFile(noteMigrationPath, "utf8");
   audioSql = await readFile(audioMigrationPath, "utf8");
+  intelligenceSql = await readFile(intelligenceMigrationPath, "utf8");
   catalogTestSql = await readFile(catalogTestPath, "utf8");
   audioTestSql = await readFile(audioTestPath, "utf8");
 });
@@ -42,6 +45,10 @@ function normalizedAudioSql() {
 
 function normalizedAudioTestSql() {
   return audioTestSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizedIntelligenceSql() {
+  return intelligenceSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
 }
 
 test("catalog tables enable row level security", () => {
@@ -180,4 +187,28 @@ test("meeting audio pgTAP covers privacy, ownership, uniqueness, and anon denial
   assert.match(source, /duplicate meeting sequence is rejected/);
   assert.match(source, /now\(\) \+ interval '49 hours'[^;]+23514[^;]+owner cannot extend audio metadata expiry beyond 48 hours/);
   assert.match(source, /expires_at, created_at[^;]+now\(\) \+ interval '10 years'[^;]+42501[^;]+owner cannot forge metadata creation time/);
+});
+
+test("meeting intelligence stores generated results by meeting owner", () => {
+  const source = normalizedIntelligenceSql();
+  for (const table of ["meeting_transcript_segments", "meeting_minutes", "meeting_intelligence_jobs"]) {
+    assert.match(source, new RegExp(`create table public\\.${table}`));
+    assert.match(source, new RegExp(`alter table public\\.${table} enable row level security`));
+    assert.match(source, new RegExp(`create policy ${table}_owner_select on public\\.${table} for select to authenticated using \\(auth\\.uid\\(\\) = user_id\\)`));
+    assert.match(source, new RegExp(`revoke all on public\\.${table} from public, anon`));
+    assert.match(source, new RegExp(`revoke (all|insert, update, delete) on public\\.${table} from authenticated`));
+  }
+  assert.match(source, /unique \(user_id, meeting_id, position\)/);
+  assert.match(source, /check \(ended_offset_ms > started_offset_ms\)/);
+});
+
+test("AI provider keys are write-only to the client and configured state is a boolean RPC", () => {
+  const source = normalizedIntelligenceSql();
+  assert.match(source, /create table public\.ai_provider_credentials/);
+  assert.match(source, /alter table public\.ai_provider_credentials enable row level security/);
+  assert.match(source, /revoke all on public\.ai_provider_credentials from public, anon, authenticated/);
+  assert.doesNotMatch(source, /create policy [^;]+ on public\.ai_provider_credentials for select to authenticated/);
+  assert.match(source, /create or replace function public\.ai_provider_configured\(\) returns boolean language sql stable security definer set search_path = pg_catalog, public/);
+  assert.match(source, /revoke all on function public\.ai_provider_configured\(\) from public, anon/);
+  assert.match(source, /grant execute on function public\.ai_provider_configured\(\) to authenticated/);
 });
