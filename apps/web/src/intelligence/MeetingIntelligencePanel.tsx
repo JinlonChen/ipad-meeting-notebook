@@ -57,7 +57,7 @@ export function MeetingIntelligencePanel({ api, meetingId, online }: { api: Meet
       {snapshot.minutes.actions.length > 0 && <MinutesList title="待办" items={snapshot.minutes.actions.map((item) => `${item.text}${item.owner ? ` · ${item.owner}` : " · 待确认"}`)} />}
     </section>}
     {snapshot?.transcript.length ? <section className="transcript-result" aria-label="会议转写"><h2>会议转写</h2>{snapshot.transcript.map((segment) => <p key={segment.id}><time>{Math.floor(segment.startedOffsetMs / 60_000).toString().padStart(2, "0")}:{Math.floor(segment.startedOffsetMs / 1_000 % 60).toString().padStart(2, "0")}</time><span>{segment.text}</span></p>)}</section> : null}
-    {error && <p className="workspace-error" role="alert">{error}</p>}
+    {error && <p className="workspace-error" aria-live="polite">{error}</p>}
   </section>;
 }
 
