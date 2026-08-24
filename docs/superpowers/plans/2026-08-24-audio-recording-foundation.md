@@ -33,13 +33,13 @@
 - Create: `apps/web/src/recording/repository.ts`
 - Test: `apps/web/test/recording/repository.test.ts`
 
-- [ ] **Step 1: Write failing tests** proving `start()` is idempotent per meeting, only one active recording exists, `appendChunk()` atomically advances the sequence, and blobs survive repository re-open.
-- [ ] **Step 2: Run** `npm test -w @meeting/web -- recording/repository.test.ts` and confirm missing-module failure.
-- [ ] **Step 3: Implement** `MeetingRecordingRepository` using the active user database tables and transactions; reject empty chunks and non-monotonic session clocks.
-- [ ] **Step 4: Write failing stop/recovery tests** proving a clean stop records `endedAt`, an unclosed recording becomes `recoverable` on launch, and recovery never fabricates missing time.
-- [ ] **Step 5: Implement** `stop()`, `markInterrupted()`, `recoverableSessions()`, and `completeRecovery()`.
-- [ ] **Step 6: Write failing retention tests** at 47:59:59 and 48:00:00, then implement `deleteExpiredAudio(now)` so only raw blobs/session audio metadata are removed and meeting notes remain untouched.
-- [ ] **Step 7: Run focused and full web tests, then commit.**
+- [x] **Step 1: Write failing tests** proving `start()` is idempotent per meeting, only one active recording exists, `appendChunk()` atomically advances the sequence, and blobs survive repository re-open.
+- [x] **Step 2: Run** `npm test -w @meeting/web -- recording/repository.test.ts` and confirm missing-module failure.
+- [x] **Step 3: Implement** `MeetingRecordingRepository` using the active user database tables and transactions; reject empty chunks and non-monotonic session clocks.
+- [x] **Step 4: Write failing stop/recovery tests** proving a clean stop records `endedAt`, an unclosed recording becomes `recoverable` on launch, and recovery never fabricates missing time.
+- [x] **Step 5: Implement** `stop()`, `markInterrupted()`, `recoverableSessions()`, and `completeRecovery()`.
+- [x] **Step 6: Write failing retention tests** at 47:59:59 and 48:00:00, then implement `deleteExpiredAudio(now)` so only raw blobs/session audio metadata are removed and meeting notes remain untouched.
+- [x] **Step 7: Run focused and full web tests, then commit.**
 
 ### Task 3: Capture 10-second MediaRecorder chunks safely
 
