@@ -9,6 +9,7 @@ import { MeetingWorkspacePage } from "../meetings/MeetingWorkspacePage.js";
 import { MeetingCatalogRepository } from "../meetings/repository.js";
 import { CatalogSync, type MeetingCatalogApi, type SyncResult } from "../meetings/sync.js";
 import { createBrowserWorkspaceRecorder } from "../recording/browser-recorder.js";
+import type { MeetingRecorderPort } from "../recording/MeetingRecordingControls.js";
 import { MeetingRecordingRepository } from "../recording/repository.js";
 import { RecordingUploadWorker, type RecordingStoragePort } from "../recording/storage.js";
 import { normalizeBasePath } from "./base-path.js";
@@ -26,6 +27,7 @@ type Props = {
   catalog?: MeetingCatalogApi;
   synchronizer?: CatalogSynchronizer;
   recordingStorage?: RecordingStoragePort;
+  recorder?: MeetingRecorderPort;
   now?: () => string;
   configurationError?: boolean;
   startupError?: boolean;
@@ -43,7 +45,7 @@ function isUnauthorized(error: unknown): boolean {
   return error instanceof AuthApiError ? error.status === 401 : typeof error === "object" && error !== null && "status" in error && error.status === 401;
 }
 
-export function App({ repository, auth, catalog, synchronizer, recordingStorage, now, configurationError = false, startupError = false, onStartupRetry }: Props) {
+export function App({ repository, auth, catalog, synchronizer, recordingStorage, recorder, now, configurationError = false, startupError = false, onStartupRetry }: Props) {
   const resolvedSynchronizer = useMemo(() => {
     if (synchronizer) return synchronizer;
     if (repository && catalog) return new CatalogSync(repository, catalog);
@@ -55,7 +57,7 @@ export function App({ repository, auth, catalog, synchronizer, recordingStorage,
   if (configurationError || !repository || !auth) {
     return <ConfigurationPanel />;
   }
-  return <SessionApp repository={repository} auth={auth} synchronizer={resolvedSynchronizer} recordingStorage={recordingStorage} now={now ?? defaultNow} />;
+  return <SessionApp repository={repository} auth={auth} synchronizer={resolvedSynchronizer} recordingStorage={recordingStorage} recorder={recorder} now={now ?? defaultNow} />;
 }
 
 function ConfigurationPanel() {
@@ -71,10 +73,11 @@ type SessionProps = {
   auth: AuthApi;
   synchronizer: CatalogSynchronizer;
   recordingStorage: RecordingStoragePort | undefined;
+  recorder: MeetingRecorderPort | undefined;
   now: () => string;
 };
 
-function SessionApp({ repository, auth, synchronizer, recordingStorage, now }: SessionProps) {
+function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder, now }: SessionProps) {
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [gate, setGate] = useState<Gate>("loading");
   const [deviceExpiresAt, setDeviceExpiresAt] = useState<string | null>(null);
@@ -85,8 +88,19 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, now }: S
   const observedInitialUserId = useRef<string | null | undefined>(undefined);
   const acceptInitialSession = useRef(true);
   const authTransition = useRef<{ kind: "login" | "logout"; token: symbol } | null>(null);
+  const authorizationsInFlight = useRef(0);
+  const deviceExpiresAtRef = useRef<string | null>(null);
+  const activeRecorder = useRef<MeetingRecorderPort | null>(recorder ?? null);
   const nextGeneration = useCallback(() => ++generation.current, []);
   const owns = useCallback((value: number) => mounted.current && generation.current === value, []);
+  const updateDeviceExpiry = useCallback((expiresAt: string | null) => {
+    deviceExpiresAtRef.current = expiresAt;
+    setDeviceExpiresAt(expiresAt);
+  }, []);
+  const hasProtectedRecording = useCallback(async (): Promise<boolean> => {
+    if (!activeRecorder.current?.hasActiveRecording()) return false;
+    return new MeetingRecordingRepository(repository.recordingDatabase()).hasActiveRecording();
+  }, [repository]);
 
   const clearAuthorization = useCallback(async (currentGeneration: number, expectedAccess?: DeviceAccess): Promise<boolean> => {
     try {
@@ -98,13 +112,13 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, now }: S
       return false;
     }
     if (!owns(currentGeneration)) return false;
-    setDeviceExpiresAt(null);
+    updateDeviceExpiry(null);
     return true;
-  }, [now, owns, repository]);
+  }, [now, owns, repository, updateDeviceExpiry]);
 
   const lockInitialMismatch = useCallback((markerUserId: string, initialUserId: string | null) => {
     const currentGeneration = nextGeneration();
-    setDeviceExpiresAt(null);
+    updateDeviceExpiry(null);
     setGate("loading");
     void (async () => {
       try {
@@ -119,7 +133,7 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, now }: S
         if (owns(currentGeneration)) setGate("error");
       }
     })();
-  }, [clearAuthorization, nextGeneration, now, owns, repository]);
+  }, [clearAuthorization, nextGeneration, now, owns, repository, updateDeviceExpiry]);
 
   useEffect(() => {
     mounted.current = true;
@@ -131,68 +145,96 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, now }: S
 
   const authorize = useCallback(async (allowOfflineAccess = true) => {
     if (explicitLogout.current) return;
-    const currentGeneration = nextGeneration();
-    synchronizer.pauseForUserChange();
+    authorizationsInFlight.current += 1;
     try {
-      const session = await auth.me();
-      if (!owns(currentGeneration) || explicitLogout.current) return;
-      acceptInitialSession.current = false;
-      if (activeUserId.current !== session.id) {
-        await repository.activateUser(session.id);
-        activeUserId.current = session.id;
-      }
-      if (!owns(currentGeneration) || explicitLogout.current) return;
-      const access = await repository.authorizeDevice(session.id, session.sessionExpiresAt, now());
-      if (!owns(currentGeneration) || explicitLogout.current) {
-        await repository.clearDeviceAccess(access);
-        return;
-      }
-      setDeviceExpiresAt(access.expiresAt);
-      setOnline(true);
-      synchronizer.resumeAfterLogin();
-      setGate("catalog");
-    } catch (error) {
-      if (!owns(currentGeneration) || explicitLogout.current) return;
-      if (isUnauthorized(error)) {
-        if (await clearAuthorization(currentGeneration)) setGate("login");
-        return;
-      }
-      if (error instanceof AuthNetworkError) {
-        setOnline(false);
-        if (!allowOfflineAccess) {
-          if (await clearAuthorization(currentGeneration)) setGate("offline-lock");
+      const currentGeneration = nextGeneration();
+      synchronizer.pauseForUserChange();
+      try {
+        const session = await auth.me();
+        if (!owns(currentGeneration) || explicitLogout.current) return;
+        acceptInitialSession.current = false;
+        if (activeUserId.current !== session.id) {
+          await repository.activateUser(session.id);
+          activeUserId.current = session.id;
+        }
+        if (!owns(currentGeneration) || explicitLogout.current) return;
+        const access = await repository.authorizeDevice(session.id, session.sessionExpiresAt, now());
+        if (!owns(currentGeneration) || explicitLogout.current) {
+          await repository.clearDeviceAccess(access);
           return;
         }
-        const access = await repository.validDeviceAccess(now());
-        if (!owns(currentGeneration)) return;
-        const observed = observedInitialUserId.current;
-        if (acceptInitialSession.current && observed !== undefined && access && observed !== access.userId) {
-          if (await clearAuthorization(currentGeneration, access)) setGate("offline-lock");
+        updateDeviceExpiry(access.expiresAt);
+        setOnline(true);
+        synchronizer.resumeAfterLogin();
+        setGate("catalog");
+      } catch (error) {
+        if (!owns(currentGeneration) || explicitLogout.current) return;
+        if (isUnauthorized(error)) {
+          if (await clearAuthorization(currentGeneration)) setGate("login");
           return;
         }
-        if (access) {
-          try {
-            if (activeUserId.current !== access.userId) {
-              await repository.activateUser(access.userId);
-              activeUserId.current = access.userId;
-            }
-          } catch {
-            if (owns(currentGeneration)) setGate("error");
+        if (error instanceof AuthNetworkError) {
+          setOnline(false);
+          if (!allowOfflineAccess) {
+            if (await clearAuthorization(currentGeneration)) setGate("offline-lock");
             return;
           }
-        }
-        if (!owns(currentGeneration)) return;
-        if (acceptInitialSession.current && observedInitialUserId.current !== undefined && access && observedInitialUserId.current !== access.userId) {
-          if (await clearAuthorization(currentGeneration, access)) setGate("offline-lock");
+          let access: DeviceAccess | null;
+          try {
+            access = await repository.validDeviceAccess(now());
+          } catch {
+            if (owns(currentGeneration)) {
+              updateDeviceExpiry(null);
+              setGate("error");
+            }
+            return;
+          }
+          if (!owns(currentGeneration)) return;
+          if (!access && allowOfflineAccess) {
+            try {
+              if (await hasProtectedRecording()) {
+                if (owns(currentGeneration)) setGate("catalog");
+                return;
+              }
+            } catch {
+              if (owns(currentGeneration)) {
+                updateDeviceExpiry(null);
+                setGate("error");
+              }
+              return;
+            }
+          }
+          const observed = observedInitialUserId.current;
+          if (acceptInitialSession.current && observed !== undefined && access && observed !== access.userId) {
+            if (await clearAuthorization(currentGeneration, access)) setGate("offline-lock");
+            return;
+          }
+          if (access) {
+            try {
+              if (activeUserId.current !== access.userId) {
+                await repository.activateUser(access.userId);
+                activeUserId.current = access.userId;
+              }
+            } catch {
+              if (owns(currentGeneration)) setGate("error");
+              return;
+            }
+          }
+          if (!owns(currentGeneration)) return;
+          if (acceptInitialSession.current && observedInitialUserId.current !== undefined && access && observedInitialUserId.current !== access.userId) {
+            if (await clearAuthorization(currentGeneration, access)) setGate("offline-lock");
+            return;
+          }
+          updateDeviceExpiry(access?.expiresAt ?? null);
+          setGate(access ? "catalog" : "offline-lock");
           return;
         }
-        setDeviceExpiresAt(access?.expiresAt ?? null);
-        setGate(access ? "catalog" : "offline-lock");
-        return;
+        setGate("error");
       }
-      setGate("error");
+    } finally {
+      authorizationsInFlight.current -= 1;
     }
-  }, [auth, clearAuthorization, nextGeneration, now, owns, repository, synchronizer]);
+  }, [auth, clearAuthorization, hasProtectedRecording, nextGeneration, now, owns, repository, synchronizer, updateDeviceExpiry]);
 
   useEffect(() => { void authorize(); }, [authorize]);
   useEffect(() => auth.onSessionChange((change) => {
@@ -210,15 +252,18 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, now }: S
     if (explicitLogout.current || transition?.kind === "logout") return;
     if (change.event === "token_refreshed" && activeUserId.current === change.userId) {
       const currentGeneration = nextGeneration();
+      authorizationsInFlight.current += 1;
       void repository.refreshDeviceAccess(change.userId, change.sessionExpiresAt).then((access) => {
         if (access && owns(currentGeneration) && activeUserId.current === change.userId) {
-          setDeviceExpiresAt(access.expiresAt);
+          updateDeviceExpiry(access.expiresAt);
         }
       }).catch(() => {
         if (owns(currentGeneration) && activeUserId.current === change.userId) {
-          setDeviceExpiresAt(null);
+          updateDeviceExpiry(null);
           setGate("error");
         }
+      }).finally(() => {
+        authorizationsInFlight.current -= 1;
       });
       return;
     }
@@ -238,7 +283,7 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, now }: S
     void clearAuthorization(currentGeneration).then((cleared) => {
       if (cleared) setGate(change.event === "signed_out" ? "login" : "error");
     });
-  }), [auth, authorize, clearAuthorization, lockInitialMismatch, nextGeneration, owns, repository, synchronizer]);
+  }), [auth, authorize, clearAuthorization, lockInitialMismatch, nextGeneration, owns, repository, synchronizer, updateDeviceExpiry]);
   useEffect(() => {
     const becameOnline = () => {
       if (!explicitLogout.current) void authorize();
@@ -252,26 +297,66 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, now }: S
   useEffect(() => {
     if (gate !== "catalog" || online || !deviceExpiresAt) return;
     let timeout: number | undefined;
-    const lockIfExpired = () => {
-      if (!mounted.current || new Date(now()).getTime() < new Date(deviceExpiresAt).getTime()) return false;
-      nextGeneration();
-      setDeviceExpiresAt(null);
-      setGate("offline-lock");
-      return true;
-    };
+    let cancelled = false;
+    let checking = false;
     const scheduleExpiryCheck = () => {
-      const remaining = new Date(deviceExpiresAt).getTime() - new Date(now()).getTime();
-      timeout = window.setTimeout(() => {
-        if (!lockIfExpired()) scheduleExpiryCheck();
-      }, Math.max(0, Math.min(remaining, 2_147_000_000)));
-    };
-    scheduleExpiryCheck();
-    document.addEventListener("visibilitychange", lockIfExpired);
-    return () => {
+      if (cancelled) return;
       if (timeout !== undefined) window.clearTimeout(timeout);
-      document.removeEventListener("visibilitychange", lockIfExpired);
+      const currentExpiry = deviceExpiresAtRef.current;
+      if (!currentExpiry) return;
+      const remaining = new Date(currentExpiry).getTime() - new Date(now()).getTime();
+      timeout = window.setTimeout(lockIfExpired, remaining > 0 ? Math.min(remaining, 2_147_000_000) : 1_000);
     };
-  }, [deviceExpiresAt, gate, nextGeneration, now, online]);
+    const lockIfExpired = async () => {
+      if (cancelled || checking || !mounted.current) return;
+      if (authorizationsInFlight.current > 0) {
+        scheduleExpiryCheck();
+        return;
+      }
+      const currentExpiry = deviceExpiresAtRef.current;
+      if (!currentExpiry || new Date(now()).getTime() < new Date(currentExpiry).getTime()) {
+        scheduleExpiryCheck();
+        return;
+      }
+      checking = true;
+      try {
+        const protectedRecording = await hasProtectedRecording();
+        if (authorizationsInFlight.current > 0) {
+          scheduleExpiryCheck();
+          return;
+        }
+        const latestExpiry = deviceExpiresAtRef.current;
+        if (!latestExpiry || new Date(now()).getTime() < new Date(latestExpiry).getTime()) {
+          scheduleExpiryCheck();
+          return;
+        }
+        if (protectedRecording) {
+          scheduleExpiryCheck();
+          return;
+        }
+        if (cancelled || !mounted.current) return;
+        nextGeneration();
+        updateDeviceExpiry(null);
+        setGate("offline-lock");
+      } catch {
+        if (!cancelled && mounted.current) {
+          nextGeneration();
+          updateDeviceExpiry(null);
+          setGate("error");
+        }
+      } finally {
+        checking = false;
+      }
+    };
+    const checkOnVisibilityChange = () => { void lockIfExpired(); };
+    scheduleExpiryCheck();
+    document.addEventListener("visibilitychange", checkOnVisibilityChange);
+    return () => {
+      cancelled = true;
+      if (timeout !== undefined) window.clearTimeout(timeout);
+      document.removeEventListener("visibilitychange", checkOnVisibilityChange);
+    };
+  }, [deviceExpiresAt, gate, hasProtectedRecording, nextGeneration, now, online, updateDeviceExpiry]);
 
   const login = useCallback(async (email: string, password: string) => {
     const transition = { kind: "login" as const, token: Symbol("login") };
@@ -304,14 +389,14 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, now }: S
         await repository.clearDeviceAccess(access);
         return;
       }
-      setDeviceExpiresAt(access.expiresAt);
+      updateDeviceExpiry(access.expiresAt);
       explicitLogout.current = false;
       synchronizer.resumeAfterLogin();
       setGate("catalog");
     } finally {
       if (authTransition.current?.token === transition.token) authTransition.current = null;
     }
-  }, [auth, clearAuthorization, nextGeneration, now, owns, repository, synchronizer]);
+  }, [auth, clearAuthorization, nextGeneration, now, owns, repository, synchronizer, updateDeviceExpiry]);
   const guardSync = useCallback(async (request: () => Promise<SyncResult>) => {
     const currentGeneration = generation.current;
     const result = await request();
@@ -341,30 +426,35 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, now }: S
         if (owns(currentGeneration)) setGate("logout-error");
         return;
       }
-      if (owns(currentGeneration)) setDeviceExpiresAt(null);
+      if (owns(currentGeneration)) updateDeviceExpiry(null);
       await remoteLogout;
       if (owns(currentGeneration)) setGate("login");
     } finally {
       if (authTransition.current?.token === transition.token) authTransition.current = null;
     }
-  }, [auth, nextGeneration, owns, repository, synchronizer]);
+  }, [auth, nextGeneration, owns, repository, synchronizer, updateDeviceExpiry]);
+  const registerRecorder = useCallback((recorder: MeetingRecorderPort | null) => {
+    activeRecorder.current = recorder;
+  }, []);
 
   if (gate === "loading") return <main className="gate-loading" role="status">正在验证访问权限...</main>;
   if (gate === "logging-out") return <main className="gate-loading" role="status">正在退出...</main>;
   if (gate === "logout-error") return <main className="login-page"><section className="login-panel"><h1>无法安全退出</h1><p>本地访问权限尚未清除。</p><button className="primary-button" onClick={() => void logout()}>重试退出</button></section></main>;
   if (gate === "login" || gate === "offline-lock") return <LoginPage onLogin={login} offline={gate === "offline-lock"} />;
   if (gate === "error") return <main className="login-page"><section className="login-panel"><h1>无法验证访问权限</h1><button className="primary-button" onClick={() => void authorize()}>重试</button></section></main>;
-  return <CatalogRoutes repository={repository} recordingStorage={recordingStorage} refresh={guardedRefresh} scheduleRefresh={guardedScheduledRefresh} now={now} online={online} onLogout={() => void logout()} />;
+  return <CatalogRoutes repository={repository} recordingStorage={recordingStorage} recorder={recorder} refresh={guardedRefresh} scheduleRefresh={guardedScheduledRefresh} now={now} online={online} onLogout={() => void logout()} onRecorderChange={registerRecorder} />;
 }
 
-function CatalogRoutes({ repository, recordingStorage, refresh, scheduleRefresh, now, online, onLogout }: {
+function CatalogRoutes({ repository, recordingStorage, recorder, refresh, scheduleRefresh, now, online, onLogout, onRecorderChange }: {
   repository: MeetingCatalogRepository;
   recordingStorage: RecordingStoragePort | undefined;
+  recorder: MeetingRecorderPort | undefined;
   refresh: () => Promise<SyncResult>;
   scheduleRefresh: () => Promise<SyncResult>;
   now: () => string;
   online: boolean;
   onLogout: () => void;
+  onRecorderChange: (recorder: MeetingRecorderPort | null) => void;
 }) {
   const onlineRef = useRef(online);
   onlineRef.current = online;
@@ -378,9 +468,13 @@ function CatalogRoutes({ repository, recordingStorage, refresh, scheduleRefresh,
     return {
       userId,
       worker,
-      recorder: createBrowserWorkspaceRecorder(repository.recordingDatabase(), now, scheduleUpload),
+      recorder: recorder ?? createBrowserWorkspaceRecorder(repository.recordingDatabase(), now, scheduleUpload),
     };
   });
+  useEffect(() => {
+    onRecorderChange(recording.recorder);
+    return () => onRecorderChange(null);
+  }, [onRecorderChange, recording.recorder]);
   useEffect(() => {
     if (online && recording.userId && recording.worker) {
       void recording.worker.run(recording.userId).catch(() => undefined);
