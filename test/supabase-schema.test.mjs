@@ -218,3 +218,15 @@ test("AI provider keys are write-only to the client and configured state is a bo
   assert.match(source, /revoke all on function public\.ai_provider_configured\(\) from public, anon/);
   assert.match(source, /grant execute on function public\.ai_provider_configured\(\) to authenticated/);
 });
+
+test("AI edge functions answer browser CORS preflight requests", async () => {
+  for (const file of [
+    "supabase/functions/configure-meeting-ai/index.ts",
+    "supabase/functions/process-meeting-intelligence/index.ts",
+  ]) {
+    const source = await readFile(resolve(root, file), "utf8");
+    assert.match(source, /request\.method === ["']OPTIONS["']/);
+    assert.match(source, /Access-Control-Allow-Origin/);
+    assert.match(source, /Access-Control-Allow-Headers/);
+  }
+});

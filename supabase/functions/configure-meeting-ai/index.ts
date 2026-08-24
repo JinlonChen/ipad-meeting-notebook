@@ -1,6 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 
-const JSON_HEADERS = { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" };
+const CORS_HEADERS = {
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Origin": "*",
+};
+const JSON_HEADERS = { ...CORS_HEADERS, "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" };
 
 function response(body: Record<string, unknown>, status: number): Response {
   return new Response(JSON.stringify(body), { headers: JSON_HEADERS, status });
@@ -22,6 +27,7 @@ function validBaseUrl(value: unknown): string | null {
 }
 
 Deno.serve(async (request) => {
+  if (request.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
   if (request.method !== "POST") return response({ error: "method_not_allowed" }, 405);
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");

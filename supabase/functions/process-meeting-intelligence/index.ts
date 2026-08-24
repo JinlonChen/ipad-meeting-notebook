@@ -1,7 +1,13 @@
 import { createClient } from "@supabase/supabase-js";
 import { processMeetingIntelligence } from "./intelligence-core.mjs";
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Origin": "*",
+};
 const JSON_HEADERS = {
+  ...CORS_HEADERS,
   "Cache-Control": "no-store",
   "Content-Type": "application/json; charset=utf-8",
 };
@@ -103,6 +109,7 @@ function minutesPrompt(): string {
 }
 
 Deno.serve(async (request) => {
+  if (request.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
   if (request.method !== "POST") return jsonResponse({ error: "method_not_allowed" }, 405);
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
