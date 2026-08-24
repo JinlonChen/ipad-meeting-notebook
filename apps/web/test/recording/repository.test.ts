@@ -98,6 +98,23 @@ describe("MeetingRecordingRepository", () => {
     });
   });
 
+  test("allows a new recording after a saved session and continues chunk sequencing", async () => {
+    const { repository } = createRepository();
+    await repository.start(meetingA, start);
+    await repository.appendChunk(meetingA, new Blob(["first"], { type: "audio/webm" }), 0, 10_000, "2026-08-24T00:00:10.000Z");
+    await repository.stop(meetingA, "2026-08-24T00:01:00.000Z");
+
+    await expect(repository.start(meetingA, "2026-08-24T00:02:00.000Z")).resolves.toMatchObject({
+      state: "recording",
+      endedAt: null,
+      nextSequence: 1,
+    });
+    const second = await repository.appendChunk(meetingA, new Blob(["second"], { type: "audio/webm" }), 0, 10_000, "2026-08-24T00:02:10.000Z");
+
+    expect(second.sequence).toBe(1);
+    await expect(repository.listChunks(meetingA)).resolves.toHaveLength(2);
+  });
+
   test("deletes raw audio at 48 hours while preserving meetings and notes", async () => {
     const { repository, database } = createRepository();
     const meeting = {
