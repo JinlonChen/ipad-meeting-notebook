@@ -1,5 +1,5 @@
 import type { Folder, Meeting } from "@meeting/contracts";
-import { Folder as FolderIcon, FolderPlus, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { Folder as FolderIcon, FolderPlus, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Settings, Trash2, X } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -462,6 +462,7 @@ export function MeetingListPage({ repository, refresh, scheduleRefresh = refresh
       <div className="topbar-actions">
         <span className={`sync-state ${online ? "" : "offline"}`} aria-live="polite">{stateText()}</span>
         {pendingStatus?.conflict && <button className="conflict-button" onClick={(event) => openConflict(event.currentTarget)}>处理冲突</button>}
+        <button className="icon-button" aria-label="AI 设置" title="AI 设置" onClick={() => navigate("/settings/ai")}><Settings size={18} /></button>
         <button ref={syncTrigger} className="icon-button" aria-label="同步会议" title="同步会议" disabled={!online || pendingOperation === "sync"} onClick={() => void syncNow()}><RefreshCw size={18} /></button>
         {onLogout && <button className="text-button" onClick={onLogout}>退出</button>}
       </div>

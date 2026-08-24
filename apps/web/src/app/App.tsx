@@ -12,6 +12,8 @@ import { createBrowserWorkspaceRecorder } from "../recording/browser-recorder.js
 import type { MeetingRecorderPort } from "../recording/MeetingRecordingControls.js";
 import { MeetingRecordingRepository } from "../recording/repository.js";
 import { RecordingUploadWorker, type RecordingStoragePort } from "../recording/storage.js";
+import type { MeetingIntelligencePort } from "../intelligence/MeetingIntelligencePanel.js";
+import { AiSettingsPage } from "../intelligence/AiSettingsPage.js";
 import { normalizeBasePath } from "./base-path.js";
 
 const defaultNow = () => new Date().toISOString();
@@ -28,6 +30,7 @@ type Props = {
   synchronizer?: CatalogSynchronizer;
   recordingStorage?: RecordingStoragePort;
   recorder?: MeetingRecorderPort;
+  intelligence?: MeetingIntelligencePort;
   now?: () => string;
   configurationError?: boolean;
   startupError?: boolean;
@@ -45,7 +48,7 @@ function isUnauthorized(error: unknown): boolean {
   return error instanceof AuthApiError ? error.status === 401 : typeof error === "object" && error !== null && "status" in error && error.status === 401;
 }
 
-export function App({ repository, auth, catalog, synchronizer, recordingStorage, recorder, now, configurationError = false, startupError = false, onStartupRetry }: Props) {
+export function App({ repository, auth, catalog, synchronizer, recordingStorage, recorder, intelligence, now, configurationError = false, startupError = false, onStartupRetry }: Props) {
   const resolvedSynchronizer = useMemo(() => {
     if (synchronizer) return synchronizer;
     if (repository && catalog) return new CatalogSync(repository, catalog);
@@ -57,7 +60,7 @@ export function App({ repository, auth, catalog, synchronizer, recordingStorage,
   if (configurationError || !repository || !auth) {
     return <ConfigurationPanel />;
   }
-  return <SessionApp repository={repository} auth={auth} synchronizer={resolvedSynchronizer} recordingStorage={recordingStorage} recorder={recorder} now={now ?? defaultNow} />;
+  return <SessionApp repository={repository} auth={auth} synchronizer={resolvedSynchronizer} recordingStorage={recordingStorage} recorder={recorder} intelligence={intelligence} now={now ?? defaultNow} />;
 }
 
 function ConfigurationPanel() {
@@ -74,10 +77,11 @@ type SessionProps = {
   synchronizer: CatalogSynchronizer;
   recordingStorage: RecordingStoragePort | undefined;
   recorder: MeetingRecorderPort | undefined;
+  intelligence: MeetingIntelligencePort | undefined;
   now: () => string;
 };
 
-function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder, now }: SessionProps) {
+function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder, intelligence, now }: SessionProps) {
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [gate, setGate] = useState<Gate>("loading");
   const [deviceExpiresAt, setDeviceExpiresAt] = useState<string | null>(null);
@@ -442,13 +446,14 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder
   if (gate === "logout-error") return <main className="login-page"><section className="login-panel"><h1>无法安全退出</h1><p>本地访问权限尚未清除。</p><button className="primary-button" onClick={() => void logout()}>重试退出</button></section></main>;
   if (gate === "login" || gate === "offline-lock") return <LoginPage onLogin={login} offline={gate === "offline-lock"} />;
   if (gate === "error") return <main className="login-page"><section className="login-panel"><h1>无法验证访问权限</h1><button className="primary-button" onClick={() => void authorize()}>重试</button></section></main>;
-  return <CatalogRoutes repository={repository} recordingStorage={recordingStorage} recorder={recorder} refresh={guardedRefresh} scheduleRefresh={guardedScheduledRefresh} now={now} online={online} onLogout={() => void logout()} onRecorderChange={registerRecorder} />;
+  return <CatalogRoutes repository={repository} recordingStorage={recordingStorage} recorder={recorder} intelligence={intelligence} refresh={guardedRefresh} scheduleRefresh={guardedScheduledRefresh} now={now} online={online} onLogout={() => void logout()} onRecorderChange={registerRecorder} />;
 }
 
-function CatalogRoutes({ repository, recordingStorage, recorder, refresh, scheduleRefresh, now, online, onLogout, onRecorderChange }: {
+function CatalogRoutes({ repository, recordingStorage, recorder, intelligence, refresh, scheduleRefresh, now, online, onLogout, onRecorderChange }: {
   repository: MeetingCatalogRepository;
   recordingStorage: RecordingStoragePort | undefined;
   recorder: MeetingRecorderPort | undefined;
+  intelligence: MeetingIntelligencePort | undefined;
   refresh: () => Promise<SyncResult>;
   scheduleRefresh: () => Promise<SyncResult>;
   now: () => string;
@@ -480,5 +485,5 @@ function CatalogRoutes({ repository, recordingStorage, recorder, refresh, schedu
       void recording.worker.run(recording.userId).catch(() => undefined);
     }
   }, [online, recording]);
-  return <BrowserRouter basename={normalizeBasePath(import.meta.env.BASE_URL)}><Routes><Route path="/meetings/:id" element={<MeetingWorkspacePage repository={repository} recorder={recording.recorder} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} />} /><Route path="*" element={<MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} onLogout={onLogout} />} /></Routes></BrowserRouter>;
+  return <BrowserRouter basename={normalizeBasePath(import.meta.env.BASE_URL)}><Routes><Route path="/settings/ai" element={intelligence ? <AiSettingsPage api={intelligence as never} /> : <MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} onLogout={onLogout} />} /><Route path="/meetings/:id" element={<MeetingWorkspacePage repository={repository} recorder={recording.recorder} {...(intelligence ? { intelligence } : {})} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} />} /><Route path="*" element={<MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} onLogout={onLogout} />} /></Routes></BrowserRouter>;
 }
