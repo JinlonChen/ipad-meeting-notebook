@@ -219,6 +219,10 @@ export class MeetingRecordingRepository {
     return sessions.map((session) => RecordingSessionSchema.parse(session));
   }
 
+  async hasActiveRecording(): Promise<boolean> {
+    return (await this.database.recordingSessions.where("state").equals("recording").count()) > 0;
+  }
+
   private async finish(meetingIdInput: string, endedAtInput: string, expectedState: "recording" | "recoverable"): Promise<RecordingSession> {
     const meetingId = MeetingIdSchema.parse(meetingIdInput);
     const endedAt = canonicalTimestamp(endedAtInput);
