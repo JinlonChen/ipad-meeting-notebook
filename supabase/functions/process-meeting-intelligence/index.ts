@@ -18,7 +18,14 @@ const ALLOWED_FAILURE_CODES = new Set([
   "EMPTY_TRANSCRIPTION",
 ]);
 
-type Credentials = { base_url: string; asr_model: string; chat_model: string; api_key: string };
+type Credentials = {
+  transcription_base_url: string;
+  transcription_model: string;
+  transcription_api_key: string;
+  summary_base_url: string;
+  summary_model: string;
+  summary_api_key: string;
+};
 type AudioChunk = { remote_path: string; sequence: number; mime_type: string };
 
 function jsonResponse(body: Record<string, unknown>, status: number): Response {
@@ -115,7 +122,7 @@ Deno.serve(async (request) => {
 
     const [{ data: meeting, error: meetingError }, { data: credentials, error: credentialError }, { data: chunks, error: chunksError }] = await Promise.all([
       service.from("meetings").select("id").eq("user_id", userId).eq("id", meetingId).maybeSingle(),
-      service.from("ai_provider_credentials").select("base_url,asr_model,chat_model,api_key").eq("user_id", userId).maybeSingle(),
+      service.from("ai_provider_credentials").select("transcription_base_url,transcription_model,transcription_api_key,summary_base_url,summary_model,summary_api_key").eq("user_id", userId).maybeSingle(),
       service.from("meeting_audio_chunks").select("remote_path,sequence,mime_type").eq("user_id", userId).eq("meeting_id", meetingId).order("sequence"),
     ]);
     if (meetingError || !meeting) throw requestError("MEETING_NOT_FOUND", 404);
@@ -137,8 +144,8 @@ Deno.serve(async (request) => {
     const config = credentials as Credentials;
     const result = await processMeetingIntelligence({
       meetingId,
-      asrModel: config.asr_model,
-      chatModel: config.chat_model,
+      transcriptionModel: config.transcription_model,
+      summaryModel: config.summary_model,
       mimeType,
       audio,
       durationMs: audioChunks.length * 10_000,
@@ -148,16 +155,16 @@ Deno.serve(async (request) => {
         form.set("model", model);
         form.set("response_format", "verbose_json");
         form.set("file", inputAudio, fileName(mimeType));
-        return providerJson(await fetch(endpoint(config.base_url, "audio/transcriptions"), {
+        return providerJson(await fetch(endpoint(config.transcription_base_url, "audio/transcriptions"), {
           method: "POST",
-          headers: { Authorization: `Bearer ${config.api_key}` },
+          headers: { Authorization: `Bearer ${config.transcription_api_key}` },
           body: form,
         }), "TRANSCRIPTION_FAILED");
       },
       summarize: async ({ model, transcript }) => {
-        const response = await providerJson(await fetch(endpoint(config.base_url, "chat/completions"), {
+        const response = await providerJson(await fetch(endpoint(config.summary_base_url, "chat/completions"), {
           method: "POST",
-          headers: { Authorization: `Bearer ${config.api_key}`, "Content-Type": "application/json" },
+          headers: { Authorization: `Bearer ${config.summary_api_key}`, "Content-Type": "application/json" },
           body: JSON.stringify({
             model,
             temperature: 0.1,
@@ -188,7 +195,7 @@ Deno.serve(async (request) => {
       confidence: segment.confidence,
     })));
     if (segmentError) throw requestError("PROCESSING_FAILED", 500);
-    const provider = new URL(config.base_url).host;
+    const provider = new URL(config.summary_base_url).host;
     const { error: minutesError } = await service.from("meeting_minutes").upsert({
       user_id: userId,
       meeting_id: meetingId,
@@ -198,7 +205,7 @@ Deno.serve(async (request) => {
       risks: result.minutes.risks,
       actions: result.minutes.actions,
       provider,
-      model: config.chat_model,
+      model: config.summary_model,
       generated_at: new Date().toISOString(),
     });
     if (minutesError) throw requestError("PROCESSING_FAILED", 500);

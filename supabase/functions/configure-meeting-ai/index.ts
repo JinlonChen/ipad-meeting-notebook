@@ -37,19 +37,23 @@ Deno.serve(async (request) => {
   const body: unknown = await request.json().catch(() => null);
   if (!body || typeof body !== "object" || Array.isArray(body)) return response({ error: "invalid_request" }, 400);
   const input = body as Record<string, unknown>;
-  const baseUrl = validBaseUrl(input.baseUrl);
-  const asrModel = requiredText(input.asrModel, 200);
-  const chatModel = requiredText(input.chatModel, 200);
-  const apiKey = requiredText(input.apiKey, 4_096);
-  if (!baseUrl || !asrModel || !chatModel || !apiKey) return response({ error: "invalid_request" }, 400);
+  const transcriptionBaseUrl = validBaseUrl(input.transcriptionBaseUrl);
+  const transcriptionModel = requiredText(input.transcriptionModel, 200);
+  const transcriptionApiKey = requiredText(input.transcriptionApiKey, 4_096);
+  const summaryBaseUrl = validBaseUrl(input.summaryBaseUrl);
+  const summaryModel = requiredText(input.summaryModel, 200);
+  const summaryApiKey = requiredText(input.summaryApiKey, 4_096);
+  if (!transcriptionBaseUrl || !transcriptionModel || !transcriptionApiKey || !summaryBaseUrl || !summaryModel || !summaryApiKey) return response({ error: "invalid_request" }, 400);
 
   const service = createClient(supabaseUrl, serviceRoleKey, { auth: { autoRefreshToken: false, persistSession: false } });
   const { error } = await service.from("ai_provider_credentials").upsert({
     user_id: data.user.id,
-    base_url: baseUrl,
-    asr_model: asrModel,
-    chat_model: chatModel,
-    api_key: apiKey,
+    transcription_base_url: transcriptionBaseUrl,
+    transcription_model: transcriptionModel,
+    transcription_api_key: transcriptionApiKey,
+    summary_base_url: summaryBaseUrl,
+    summary_model: summaryModel,
+    summary_api_key: summaryApiKey,
     updated_at: new Date().toISOString(),
   });
   if (error) return response({ error: "configuration_failed" }, 500);

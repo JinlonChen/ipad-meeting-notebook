@@ -75,7 +75,7 @@ function normalizeTranscript(response, meetingId, durationMs) {
 }
 
 /**
- * @param {{ meetingId: string, asrModel: string, chatModel: string, mimeType: string, audio: Blob, durationMs: number }} input
+ * @param {{ meetingId: string, transcriptionModel: string, summaryModel: string, mimeType: string, audio: Blob, durationMs: number }} input
  * @param {{ transcribe: (input: { model: string, mimeType: string, audio: Blob }) => Promise<{ text: string, segments?: Array<{ text: string, start: number, end: number, avg_logprob?: number }> }>, summarize: (input: { model: string, transcript: string }) => Promise<{ summary: string, topics: Array<{ text: string, evidencePositions: number[] }>, decisions: Array<{ text: string, evidencePositions: number[] }>, risks: Array<{ text: string, evidencePositions: number[] }>, actions: Array<{ text: string, owner: string | null, dueDate: string | null, evidencePositions: number[] }> }> }} provider
  */
 export async function processMeetingIntelligence(input, provider) {
@@ -83,13 +83,13 @@ export async function processMeetingIntelligence(input, provider) {
     throw failure("INVALID_PROCESSING_INPUT");
   }
   const transcription = await provider.transcribe({
-    model: text(input.asrModel, "INVALID_PROCESSING_INPUT"),
+    model: text(input.transcriptionModel, "INVALID_PROCESSING_INPUT"),
     mimeType: text(input.mimeType, "INVALID_PROCESSING_INPUT"),
     audio: input.audio,
   });
   const transcript = normalizeTranscript(transcription, input.meetingId, input.durationMs);
   const summary = await provider.summarize({
-    model: text(input.chatModel, "INVALID_PROCESSING_INPUT"),
+    model: text(input.summaryModel, "INVALID_PROCESSING_INPUT"),
     transcript: transcript.map((segment) => `[${segment.position}] ${segment.text}`).join("\n"),
   });
   if (!summary || typeof summary !== "object") throw failure("INVALID_MINUTES_RESPONSE");

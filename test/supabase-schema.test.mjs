@@ -9,6 +9,7 @@ const migrationPath = resolve(root, "supabase/migrations/202608220001_meeting_ca
 const noteMigrationPath = resolve(root, "supabase/migrations/202608230002_meeting_notes.sql");
 const audioMigrationPath = resolve(root, "supabase/migrations/202608240001_meeting_audio.sql");
 const intelligenceMigrationPath = resolve(root, "supabase/migrations/202608240003_meeting_intelligence.sql");
+const splitIntelligenceMigrationPath = resolve(root, "supabase/migrations/202608240004_split_ai_provider_credentials.sql");
 const catalogTestPath = resolve(root, "supabase/tests/meeting_catalog.sql");
 const audioTestPath = resolve(root, "supabase/tests/meeting_audio.sql");
 
@@ -16,6 +17,7 @@ let sql;
 let noteSql;
 let audioSql;
 let intelligenceSql;
+let splitIntelligenceSql;
 let catalogTestSql;
 let audioTestSql;
 test.before(async () => {
@@ -23,6 +25,7 @@ test.before(async () => {
   noteSql = await readFile(noteMigrationPath, "utf8");
   audioSql = await readFile(audioMigrationPath, "utf8");
   intelligenceSql = await readFile(intelligenceMigrationPath, "utf8");
+  splitIntelligenceSql = await readFile(splitIntelligenceMigrationPath, "utf8");
   catalogTestSql = await readFile(catalogTestPath, "utf8");
   audioTestSql = await readFile(audioTestPath, "utf8");
 });
@@ -203,8 +206,11 @@ test("meeting intelligence stores generated results by meeting owner", () => {
 });
 
 test("AI provider keys are write-only to the client and configured state is a boolean RPC", () => {
-  const source = normalizedIntelligenceSql();
+  const source = `${normalizedIntelligenceSql()} ${splitIntelligenceSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase()}`;
   assert.match(source, /create table public\.ai_provider_credentials/);
+  for (const column of ["transcription_base_url", "transcription_model", "transcription_api_key", "summary_base_url", "summary_model", "summary_api_key"]) {
+    assert.match(source, new RegExp(`\\b${column}\\b`));
+  }
   assert.match(source, /alter table public\.ai_provider_credentials enable row level security/);
   assert.match(source, /revoke all on public\.ai_provider_credentials from public, anon, authenticated/);
   assert.doesNotMatch(source, /create policy [^;]+ on public\.ai_provider_credentials for select to authenticated/);

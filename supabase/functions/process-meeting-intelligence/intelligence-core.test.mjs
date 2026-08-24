@@ -8,8 +8,8 @@ const meetingId = "00000000-0000-4000-8000-000000000001";
 test("turns provider transcription and position evidence into durable meeting intelligence", async () => {
   const result = await processMeetingIntelligence({
     meetingId,
-    asrModel: "whisper-1",
-    chatModel: "gpt-4.1-mini",
+    transcriptionModel: "whisper-1",
+    summaryModel: "gpt-4.1-mini",
     mimeType: "audio/webm",
     audio: new Blob(["meeting audio"], { type: "audio/webm" }),
     durationMs: 12_000,
@@ -45,8 +45,8 @@ test("turns provider transcription and position evidence into durable meeting in
 test("rejects a provider summary that cites transcript positions that do not exist", async () => {
   await assert.rejects(() => processMeetingIntelligence({
     meetingId,
-    asrModel: "whisper-1",
-    chatModel: "gpt-4.1-mini",
+    transcriptionModel: "whisper-1",
+    summaryModel: "gpt-4.1-mini",
     mimeType: "audio/webm",
     audio: new Blob(["meeting audio"], { type: "audio/webm" }),
     durationMs: 12_000,

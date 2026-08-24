@@ -4,7 +4,14 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "../supabase/types.js";
 import type { MeetingIntelligencePort, MeetingIntelligenceSnapshot } from "./MeetingIntelligencePanel.js";
 
-export type AiProviderConfiguration = { baseUrl: string; asrModel: string; chatModel: string; apiKey: string };
+export type AiProviderConfiguration = {
+  transcriptionBaseUrl: string;
+  transcriptionModel: string;
+  transcriptionApiKey: string;
+  summaryBaseUrl: string;
+  summaryModel: string;
+  summaryApiKey: string;
+};
 
 function failed(): Error { return new Error("INTELLIGENCE_REQUEST_FAILED"); }
 
@@ -18,12 +25,12 @@ export class SupabaseMeetingIntelligenceApi implements MeetingIntelligencePort {
   }
 
   async configure(input: AiProviderConfiguration): Promise<void> {
-    const { error } = await this.client.functions.invoke("configure-meeting-ai", { body: input });
+    const { error } = await this.client.functions.invoke("configure-meeting-ai-v2", { body: input });
     if (error) throw failed();
   }
 
   async process(meetingId: string): Promise<void> {
-    const { error } = await this.client.functions.invoke("process-meeting-intelligence", { body: { meetingId } });
+    const { error } = await this.client.functions.invoke("process-meeting-intelligence-v2", { body: { meetingId } });
     if (error) throw failed();
   }
 

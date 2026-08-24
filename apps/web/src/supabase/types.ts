@@ -87,6 +87,21 @@ export type MeetingMinutesRow = {
   generated_at: string;
 };
 
+export type AiProviderCredentialsRow = {
+  user_id: string;
+  base_url: string | null;
+  asr_model: string | null;
+  chat_model: string | null;
+  api_key: string | null;
+  transcription_base_url: string;
+  transcription_model: string;
+  transcription_api_key: string;
+  summary_base_url: string;
+  summary_model: string;
+  summary_api_key: string;
+  updated_at: string;
+};
+
 export type ApplyCatalogMutationArgs = {
   p_operation_id: string;
   p_kind: string;
@@ -180,6 +195,12 @@ export type Database = {
         Row: MeetingMinutesRow;
         Insert: MeetingMinutesRow;
         Update: Partial<MeetingMinutesRow>;
+        Relationships: [];
+      };
+      ai_provider_credentials: {
+        Row: AiProviderCredentialsRow;
+        Insert: AiProviderCredentialsRow;
+        Update: Partial<AiProviderCredentialsRow>;
         Relationships: [];
       };
     };
