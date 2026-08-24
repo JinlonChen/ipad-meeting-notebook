@@ -2,6 +2,7 @@ import { Mic, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 export type MeetingRecorderPort = {
+  hasActiveRecording(): boolean;
   prepare(meetingId: string): Promise<"idle" | "recording" | "recoverable">;
   start(meetingId: string): Promise<void>;
   stop(meetingId: string): Promise<void>;

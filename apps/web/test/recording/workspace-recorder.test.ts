@@ -38,6 +38,20 @@ test("does not recover a live recording when the same workspace is reopened", as
   expect(recording.recoverInterruptedSessions).toHaveBeenCalledOnce();
 });
 
+test("reports only a controller owned by the current page as active", async () => {
+  const recording = repository();
+  const workspace = new WorkspaceRecorder(recording, () => ({
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+  }), () => "2026-08-24T00:00:00.000Z");
+
+  expect(workspace.hasActiveRecording()).toBe(false);
+  await workspace.start("meeting");
+  expect(workspace.hasActiveRecording()).toBe(true);
+  await workspace.stop("meeting");
+  expect(workspace.hasActiveRecording()).toBe(false);
+});
+
 test("starts capture and aborts an empty session when microphone startup fails", async () => {
   const recording = repository();
   const start = vi.fn().mockRejectedValue(new DOMException("denied", "NotAllowedError"));
@@ -94,4 +108,44 @@ test("clears the live controller when capture is interrupted", async () => {
 
   expect(stop).not.toHaveBeenCalled();
   expect(recording.completeRecovery).toHaveBeenCalledWith("meeting", "2026-08-24T00:10:00.000Z");
+});
+
+test("clears the live controller when interrupted-session persistence fails", async () => {
+  const recording = repository();
+  recording.recoverInterruptedSessions.mockRejectedValueOnce(new Error("indexeddb-write-failed"));
+  let interrupt: () => Promise<void> = async () => undefined;
+  const workspace = new WorkspaceRecorder(recording, (options) => {
+    interrupt = options.onInterrupted;
+    return { start: vi.fn().mockResolvedValue(undefined), stop: vi.fn().mockResolvedValue(undefined) };
+  }, () => "2026-08-24T00:10:00.000Z");
+  const changed = vi.fn();
+  workspace.subscribe(changed);
+  await workspace.start("meeting");
+
+  await expect(interrupt()).resolves.toBeUndefined();
+
+  expect(workspace.hasActiveRecording()).toBe(false);
+  expect(changed).toHaveBeenCalledWith("meeting", "recoverable");
+});
+
+test("retries the durable stop after the controller has already stopped", async () => {
+  const recording = repository();
+  recording.stop.mockRejectedValueOnce(new Error("indexeddb-write-failed")).mockResolvedValueOnce(undefined);
+  const controllerStop = vi.fn().mockResolvedValue(undefined);
+  const workspace = new WorkspaceRecorder(recording, () => ({
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: controllerStop,
+  }), () => "2026-08-24T00:10:00.000Z");
+  await workspace.start("meeting");
+
+  await expect(workspace.stop("meeting")).rejects.toThrow("indexeddb-write-failed");
+  expect(workspace.hasActiveRecording()).toBe(false);
+  recording.session.mockResolvedValue({ state: "recording" });
+
+  await expect(workspace.stop("meeting")).resolves.toBeUndefined();
+
+  expect(controllerStop).toHaveBeenCalledOnce();
+  expect(recording.stop).toHaveBeenCalledTimes(2);
+  expect(recording.stop).toHaveBeenLastCalledWith("meeting", "2026-08-24T00:10:00.000Z");
+  expect(recording.completeRecovery).not.toHaveBeenCalled();
 });

@@ -98,6 +98,17 @@ describe("MeetingRecordingRepository", () => {
     });
   });
 
+  test("reports whether a recording is currently active", async () => {
+    const { repository } = createRepository();
+    await expect(repository.hasActiveRecording()).resolves.toBe(false);
+
+    await repository.start(meetingA, start);
+    await expect(repository.hasActiveRecording()).resolves.toBe(true);
+
+    await repository.stop(meetingA, "2026-08-24T00:01:00.000Z");
+    await expect(repository.hasActiveRecording()).resolves.toBe(false);
+  });
+
   test("allows a new recording after a saved session and continues chunk sequencing", async () => {
     const { repository } = createRepository();
     await repository.start(meetingA, start);
