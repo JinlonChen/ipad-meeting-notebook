@@ -49,8 +49,8 @@
 - Test: `apps/web/test/recording/media.test.ts`
 - Test: `apps/web/test/recording/controller.test.ts`
 
-- [ ] **Step 1: Write failing MIME-selection tests** preferring `audio/webm;codecs=opus`, then `audio/mp4`, then supported browser fallback; reject when MediaRecorder is unavailable.
-- [ ] **Step 2: Implement** pure `selectRecordingMimeType()` and verify green.
+- [x] **Step 1: Write failing MIME-selection tests** preferring `audio/webm;codecs=opus`, then `audio/mp4`, then supported browser fallback; reject when MediaRecorder is unavailable.
+- [x] **Step 2: Implement** pure `selectRecordingMimeType()` and verify green.
 - [ ] **Step 3: Write failing controller tests** with fake media/wake-lock ports proving `getUserMedia({audio:true})`, `MediaRecorder.start(10_000)`, immediate durable chunk callback, timer updates, and track cleanup.
 - [ ] **Step 4: Implement** `RecordingController` with injected ports, serialized chunk writes, and a stop that awaits the final `dataavailable` write.
 - [ ] **Step 5: Write failing interruption tests** for `visibilitychange`, recorder errors, and wake-lock release; implement explicit interrupted state and reacquire wake lock only while visible.
