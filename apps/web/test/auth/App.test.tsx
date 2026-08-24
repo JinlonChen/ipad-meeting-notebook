@@ -7,6 +7,7 @@ import { App } from "../../src/app/App.js";
 import { AuthApiError, AuthNetworkError, type AuthApi, type AuthSessionChange } from "../../src/auth/api.js";
 import { MeetingCatalogRepository } from "../../src/meetings/repository.js";
 import { CatalogSync, type MeetingCatalogApi } from "../../src/meetings/sync.js";
+import { MeetingRecordingRepository } from "../../src/recording/repository.js";
 
 const now = "2026-08-21T00:00:00.000Z";
 const expiry = "2026-09-21T00:00:00.000Z";
@@ -46,6 +47,22 @@ afterEach(async () => {
 });
 
 describe("App session gate", () => {
+  test("uploads pending local audio after the authenticated catalog opens", async () => {
+    const catalog = repository();
+    await catalog.activateUser(userA);
+    const meeting = await catalog.create("待上传录音", null, now);
+    const recordings = new MeetingRecordingRepository(catalog.recordingDatabase());
+    await recordings.start(meeting.id, now);
+    const pending = await recordings.appendChunk(meeting.id, new Blob(["audio"], { type: "audio/webm" }), 0, 10_000, now);
+    const uploadChunk = vi.fn().mockResolvedValue({ remotePath: `${userA}/${meeting.id}/0.webm` });
+
+    render(<App repository={catalog} auth={api()} synchronizer={synchronizer()} recordingStorage={{ uploadChunk }} now={() => now} />);
+
+    await screen.findByRole("heading", { name: "会议本" });
+    await waitFor(() => expect(uploadChunk).toHaveBeenCalledWith(userA, expect.objectContaining({ id: pending.id })));
+    await waitFor(async () => expect((await recordings.listChunks(meeting.id))[0]).toMatchObject({ uploadState: "uploaded" }));
+  });
+
   test("opens an authenticated meeting route in the real notes workspace", async () => {
     const catalog = repository();
     const meeting = await catalog.create("路由会议", null, now);

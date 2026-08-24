@@ -82,12 +82,12 @@
 - Test: `supabase/tests/meeting_audio.sql`
 - Modify: `test/supabase-schema.test.mjs`
 
-- [ ] **Step 1: Write failing adapter tests** proving deterministic paths `<user>/<meeting>/<sequence>.<ext>`, authenticated actor matching, no overwrite with different hashes, retry-safe same-hash acknowledgement, and network-error preservation of local chunks.
-- [ ] **Step 2: Implement** `SupabaseRecordingStorage` with upload/list/remove boundaries and no service-role key in the browser.
-- [ ] **Step 3: Write failing SQL contract tests** for a private `meeting-audio` bucket, owner-path policies, user-scoped chunk metadata, uniqueness on meeting/sequence, and no anon access.
-- [ ] **Step 4: Implement migration and generated TypeScript row types.**
-- [ ] **Step 5: Add an upload worker** that retries pending chunks when online, records attempts/errors, and deletes no local blob before durable remote acknowledgement.
-- [ ] **Step 6: Run storage, schema, scan, and full web tests; commit.**
+- [x] **Step 1: Write failing adapter tests** proving deterministic paths `<user>/<meeting>/<sequence>.<ext>`, authenticated actor matching, no overwrite with different hashes, retry-safe same-hash acknowledgement, and network-error preservation of local chunks.
+- [x] **Step 2: Implement** `SupabaseRecordingStorage` with upload/list/remove boundaries and no service-role key in the browser.
+- [x] **Step 3: Write failing SQL contract tests** for a private `meeting-audio` bucket, owner-path policies, user-scoped chunk metadata, uniqueness on meeting/sequence, and no anon access.
+- [x] **Step 4: Implement migration and generated TypeScript row types.**
+- [x] **Step 5: Add an upload worker** that retries pending chunks when online, records attempts/errors, and deletes no local blob before durable remote acknowledgement.
+- [x] **Step 6: Run storage, schema, scan, and full web tests; commit.**
 
 ### Task 6: Recovery, cloud cleanup, E2E, deployment, and real iPad acceptance
 

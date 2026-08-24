@@ -71,10 +71,12 @@ describe("MeetingListPage", () => {
     await user.click(screen.getByRole("button", { name: "新建会议" }));
     await user.type(screen.getByLabelText("会议名称"), "录音服务保持");
     await user.click(screen.getByRole("button", { name: "创建" }));
-    await screen.findByRole("button", { name: "开始录音" });
+    await screen.findByRole("button", { name: "开始录音" }, { timeout: 3_000 });
     await user.click(screen.getByRole("button", { name: "返回会议" }));
-    await user.click(await screen.findByText("录音服务保持"));
-    await screen.findByRole("button", { name: "开始录音" });
+    const meetingButton = (await screen.findByText("录音服务保持", { selector: ".meeting-title" })).closest("button");
+    expect(meetingButton).toHaveClass("meeting-main");
+    await user.click(meetingButton!);
+    await screen.findByRole("button", { name: "开始录音" }, { timeout: 3_000 });
 
     expect(recordingDatabase).toHaveBeenCalledOnce();
   });

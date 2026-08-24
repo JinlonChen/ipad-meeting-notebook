@@ -9,6 +9,8 @@ import { MeetingWorkspacePage } from "../meetings/MeetingWorkspacePage.js";
 import { MeetingCatalogRepository } from "../meetings/repository.js";
 import { CatalogSync, type MeetingCatalogApi, type SyncResult } from "../meetings/sync.js";
 import { createBrowserWorkspaceRecorder } from "../recording/browser-recorder.js";
+import { MeetingRecordingRepository } from "../recording/repository.js";
+import { RecordingUploadWorker, type RecordingStoragePort } from "../recording/storage.js";
 import { normalizeBasePath } from "./base-path.js";
 
 const defaultNow = () => new Date().toISOString();
@@ -23,6 +25,7 @@ type Props = {
   auth?: AuthApi;
   catalog?: MeetingCatalogApi;
   synchronizer?: CatalogSynchronizer;
+  recordingStorage?: RecordingStoragePort;
   now?: () => string;
   configurationError?: boolean;
   startupError?: boolean;
@@ -40,7 +43,7 @@ function isUnauthorized(error: unknown): boolean {
   return error instanceof AuthApiError ? error.status === 401 : typeof error === "object" && error !== null && "status" in error && error.status === 401;
 }
 
-export function App({ repository, auth, catalog, synchronizer, now, configurationError = false, startupError = false, onStartupRetry }: Props) {
+export function App({ repository, auth, catalog, synchronizer, recordingStorage, now, configurationError = false, startupError = false, onStartupRetry }: Props) {
   const resolvedSynchronizer = useMemo(() => {
     if (synchronizer) return synchronizer;
     if (repository && catalog) return new CatalogSync(repository, catalog);
@@ -52,7 +55,7 @@ export function App({ repository, auth, catalog, synchronizer, now, configuratio
   if (configurationError || !repository || !auth) {
     return <ConfigurationPanel />;
   }
-  return <SessionApp repository={repository} auth={auth} synchronizer={resolvedSynchronizer} now={now ?? defaultNow} />;
+  return <SessionApp repository={repository} auth={auth} synchronizer={resolvedSynchronizer} recordingStorage={recordingStorage} now={now ?? defaultNow} />;
 }
 
 function ConfigurationPanel() {
@@ -67,10 +70,11 @@ type SessionProps = {
   repository: MeetingCatalogRepository;
   auth: AuthApi;
   synchronizer: CatalogSynchronizer;
+  recordingStorage: RecordingStoragePort | undefined;
   now: () => string;
 };
 
-function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
+function SessionApp({ repository, auth, synchronizer, recordingStorage, now }: SessionProps) {
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [gate, setGate] = useState<Gate>("loading");
   const [deviceExpiresAt, setDeviceExpiresAt] = useState<string | null>(null);
@@ -350,17 +354,37 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
   if (gate === "logout-error") return <main className="login-page"><section className="login-panel"><h1>无法安全退出</h1><p>本地访问权限尚未清除。</p><button className="primary-button" onClick={() => void logout()}>重试退出</button></section></main>;
   if (gate === "login" || gate === "offline-lock") return <LoginPage onLogin={login} offline={gate === "offline-lock"} />;
   if (gate === "error") return <main className="login-page"><section className="login-panel"><h1>无法验证访问权限</h1><button className="primary-button" onClick={() => void authorize()}>重试</button></section></main>;
-  return <CatalogRoutes repository={repository} refresh={guardedRefresh} scheduleRefresh={guardedScheduledRefresh} now={now} online={online} onLogout={() => void logout()} />;
+  return <CatalogRoutes repository={repository} recordingStorage={recordingStorage} refresh={guardedRefresh} scheduleRefresh={guardedScheduledRefresh} now={now} online={online} onLogout={() => void logout()} />;
 }
 
-function CatalogRoutes({ repository, refresh, scheduleRefresh, now, online, onLogout }: {
+function CatalogRoutes({ repository, recordingStorage, refresh, scheduleRefresh, now, online, onLogout }: {
   repository: MeetingCatalogRepository;
+  recordingStorage: RecordingStoragePort | undefined;
   refresh: () => Promise<SyncResult>;
   scheduleRefresh: () => Promise<SyncResult>;
   now: () => string;
   online: boolean;
   onLogout: () => void;
 }) {
-  const [recorder] = useState(() => createBrowserWorkspaceRecorder(repository.recordingDatabase(), now));
-  return <BrowserRouter basename={normalizeBasePath(import.meta.env.BASE_URL)}><Routes><Route path="/meetings/:id" element={<MeetingWorkspacePage repository={repository} recorder={recorder} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} />} /><Route path="*" element={<MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} onLogout={onLogout} />} /></Routes></BrowserRouter>;
+  const onlineRef = useRef(online);
+  onlineRef.current = online;
+  const [recording] = useState(() => {
+    const userId = repository.currentUserId();
+    const local = new MeetingRecordingRepository(repository.recordingDatabase());
+    const worker = userId && recordingStorage ? new RecordingUploadWorker(local, recordingStorage, now) : null;
+    const scheduleUpload = () => {
+      if (onlineRef.current && userId && worker) void worker.run(userId).catch(() => undefined);
+    };
+    return {
+      userId,
+      worker,
+      recorder: createBrowserWorkspaceRecorder(repository.recordingDatabase(), now, scheduleUpload),
+    };
+  });
+  useEffect(() => {
+    if (online && recording.userId && recording.worker) {
+      void recording.worker.run(recording.userId).catch(() => undefined);
+    }
+  }, [online, recording]);
+  return <BrowserRouter basename={normalizeBasePath(import.meta.env.BASE_URL)}><Routes><Route path="/meetings/:id" element={<MeetingWorkspacePage repository={repository} recorder={recording.recorder} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} />} /><Route path="*" element={<MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} onLogout={onLogout} />} /></Routes></BrowserRouter>;
 }

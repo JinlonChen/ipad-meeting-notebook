@@ -48,6 +48,22 @@ test("starts capture and aborts an empty session when microphone startup fails",
   expect(recording.abortFailedStart).toHaveBeenCalledWith("meeting");
 });
 
+test("schedules upload only after a captured chunk is durably appended", async () => {
+  const recording = repository();
+  const uploaded = vi.fn();
+  let persist: (_blob: Blob, _start: number, _end: number) => Promise<void> = async () => undefined;
+  const workspace = new WorkspaceRecorder(recording, (options) => {
+    persist = options.persistChunk;
+    return { start: vi.fn().mockResolvedValue(undefined), stop: vi.fn().mockResolvedValue(undefined) };
+  }, () => "2026-08-24T00:00:10.000Z", uploaded);
+  await workspace.start("meeting");
+
+  await persist(new Blob(["audio"]), 0, 10_000);
+
+  expect(recording.appendChunk).toHaveBeenCalledOnce();
+  expect(uploaded).toHaveBeenCalledOnce();
+});
+
 test("stops live capture and completes an already recoverable meeting", async () => {
   const recording = repository();
   const stop = vi.fn().mockResolvedValue(undefined);

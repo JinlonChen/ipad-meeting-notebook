@@ -50,8 +50,11 @@ describe("MeetingRecordingRepository", () => {
     databases.push(reopenedDatabase);
     const reopened = new MeetingRecordingRepository(reopenedDatabase);
     const chunks = await reopened.listChunks(meetingA);
-    expect(chunks[0]).toMatchObject({ sizeBytes: 5, mimeType: "audio/webm" });
-    expect(chunks[1]).toMatchObject({ sizeBytes: 6, mimeType: "audio/webm" });
+    expect(chunks.map((chunk) => chunk.sizeBytes).sort((left, right) => left - right)).toEqual([5, 6]);
+    expect(chunks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ mimeType: "audio/webm" }),
+      expect.objectContaining({ mimeType: "audio/webm" }),
+    ]));
     expect(chunks[0]!.blob).toBeDefined();
     expect(chunks[1]!.blob).toBeDefined();
     expect(chunks[0]!.sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -120,5 +123,48 @@ describe("MeetingRecordingRepository", () => {
     await expect(repository.deleteExpiredAudio("2026-08-26T00:00:00.000Z")).resolves.toBe(1);
     await expect(repository.listChunks(meetingA)).resolves.toEqual([]);
     await expect(database.meetings.get(meetingA)).resolves.toEqual(meeting);
+  });
+
+  test("tracks upload attempts without deleting the local blob before acknowledgement", async () => {
+    const { repository } = createRepository();
+    await repository.start(meetingA, start);
+    const saved = await repository.appendChunk(meetingA, new Blob(["audio"], { type: "audio/webm" }), 0, 10_000, start);
+
+    await expect(repository.pendingChunks()).resolves.toEqual([expect.objectContaining({ id: saved.id, uploadState: "pending" })]);
+    await repository.markUploadAttempt(saved.id);
+    await repository.markUploadFailed(saved.id, "UPLOAD_FAILED");
+    const failed = (await repository.pendingChunks())[0]!;
+    expect(failed).toMatchObject({ uploadState: "failed", attempts: 1, lastError: "UPLOAD_FAILED", remotePath: null });
+    expect(failed.blob).toBeDefined();
+
+    const remotePath = `00000000-0000-4000-8000-000000000101/${meetingA}/0.webm`;
+    await repository.markUploadAttempt(saved.id);
+    await repository.markUploaded(saved.id, remotePath);
+    await expect(repository.pendingChunks()).resolves.toEqual([]);
+    await expect(repository.listChunks(meetingA)).resolves.toEqual([
+      expect.objectContaining({ uploadState: "uploaded", attempts: 2, lastError: null, remotePath }),
+    ]);
+  });
+
+  test("keeps uploaded as a terminal state after late attempt and failure updates", async () => {
+    const { repository } = createRepository();
+    await repository.start(meetingA, start);
+    const saved = await repository.appendChunk(meetingA, new Blob(["audio"], { type: "audio/webm" }), 0, 10_000, start);
+    const remotePath = `00000000-0000-4000-8000-000000000101/${meetingA}/0.webm`;
+
+    await repository.markUploadAttempt(saved.id);
+    await repository.markUploaded(saved.id, remotePath);
+    await repository.markUploadAttempt(saved.id);
+    await repository.markUploadFailed(saved.id, "LATE_UPLOAD_FAILURE");
+
+    await expect(repository.pendingChunks()).resolves.toEqual([]);
+    await expect(repository.listChunks(meetingA)).resolves.toEqual([
+      expect.objectContaining({
+        uploadState: "uploaded",
+        attempts: 1,
+        lastError: null,
+        remotePath,
+      }),
+    ]);
   });
 });

@@ -27,6 +27,7 @@ export class WorkspaceRecorder implements MeetingRecorderPort {
     private readonly repository: RecordingRepositoryPort,
     private readonly createController: ControllerFactory,
     private readonly now: () => string,
+    private readonly onChunkPersisted: () => void = () => undefined,
   ) {}
 
   subscribe(listener: (meetingId: string, state: "idle" | "recoverable") => void): () => void {
@@ -60,6 +61,7 @@ export class WorkspaceRecorder implements MeetingRecorderPort {
       meetingId,
       persistChunk: async (blob, startedOffsetMs, endedOffsetMs) => {
         await this.repository.appendChunk(meetingId, blob, startedOffsetMs, endedOffsetMs, this.now());
+        this.onChunkPersisted();
       },
       onInterrupted: async () => {
         await this.repository.recoverInterruptedSessions();

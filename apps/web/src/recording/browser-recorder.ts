@@ -6,7 +6,11 @@ import { WorkspaceRecorder } from "./workspace-recorder.js";
 
 type BrowserWakeLock = EventTarget & { release(): Promise<void> };
 
-export function createBrowserWorkspaceRecorder(database: MeetingCatalogDatabase, now: () => string): WorkspaceRecorder {
+export function createBrowserWorkspaceRecorder(
+  database: MeetingCatalogDatabase,
+  now: () => string,
+  onChunkPersisted: () => void = () => undefined,
+): WorkspaceRecorder {
   const repository = new MeetingRecordingRepository(database);
   return new WorkspaceRecorder(repository, ({ persistChunk, onInterrupted }) => {
     const Recorder = globalThis.MediaRecorder;
@@ -30,5 +34,5 @@ export function createBrowserWorkspaceRecorder(database: MeetingCatalogDatabase,
         },
       },
     });
-  }, now);
+  }, now, onChunkPersisted);
 }

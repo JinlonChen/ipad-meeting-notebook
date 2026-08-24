@@ -10,6 +10,9 @@ import { type LocalAudioChunk, MeetingCatalogDatabase } from "../meetings/local-
 const MeetingIdSchema = z.uuid();
 const IsoDateTimeSchema = z.iso.datetime();
 const OffsetSchema = z.int().nonnegative();
+const ChunkIdSchema = z.uuid();
+const RemotePathSchema = z.string().trim().min(1).max(1024);
+const UploadErrorSchema = z.string().max(500);
 const RETENTION_MS = 48 * 60 * 60 * 1_000;
 
 export class ActiveRecordingExistsError extends Error {
@@ -121,6 +124,56 @@ export class MeetingRecordingRepository {
     const meetingId = MeetingIdSchema.parse(meetingIdInput);
     const chunks = await this.database.audioChunks.where("meetingId").equals(meetingId).toArray();
     return chunks.sort((left, right) => left.sequence - right.sequence);
+  }
+
+  async pendingChunks(): Promise<LocalAudioChunk[]> {
+    const chunks = await this.database.audioChunks.where("uploadState").anyOf("pending", "failed").toArray();
+    return chunks.sort((left, right) => left.capturedAt.localeCompare(right.capturedAt)
+      || left.meetingId.localeCompare(right.meetingId)
+      || left.sequence - right.sequence);
+  }
+
+  async markUploadAttempt(idInput: string): Promise<void> {
+    const id = ChunkIdSchema.parse(idInput);
+    await this.updateChunk(id, (chunk) => chunk.uploadState === "uploaded" ? chunk : ({
+      ...chunk,
+      uploadState: "pending",
+      attempts: chunk.attempts + 1,
+      lastError: null,
+      remotePath: null,
+    }));
+  }
+
+  async markUploadFailed(idInput: string, errorInput: string): Promise<void> {
+    const id = ChunkIdSchema.parse(idInput);
+    const error = UploadErrorSchema.parse(errorInput);
+    await this.updateChunk(id, (chunk) => chunk.uploadState === "uploaded" ? chunk : ({
+      ...chunk,
+      uploadState: "failed",
+      lastError: error,
+      remotePath: null,
+    }));
+  }
+
+  async markUploaded(idInput: string, remotePathInput: string): Promise<void> {
+    const id = ChunkIdSchema.parse(idInput);
+    const remotePath = RemotePathSchema.parse(remotePathInput);
+    await this.updateChunk(id, (chunk) => ({
+      ...chunk,
+      uploadState: "uploaded",
+      lastError: null,
+      remotePath,
+    }));
+  }
+
+  private async updateChunk(id: string, update: (chunk: LocalAudioChunk) => LocalAudioChunk): Promise<void> {
+    await this.database.transaction("rw", this.database.audioChunks, async () => {
+      const current = await this.database.audioChunks.get(id);
+      if (!current) throw new Error("AUDIO_CHUNK_NOT_FOUND");
+      const next = update(current);
+      const { blob, ...metadata } = next;
+      await this.database.audioChunks.put({ ...AudioChunkMetadataSchema.parse(metadata), blob });
+    });
   }
 
   async abortFailedStart(meetingIdInput: string): Promise<"discarded" | "recoverable"> {
