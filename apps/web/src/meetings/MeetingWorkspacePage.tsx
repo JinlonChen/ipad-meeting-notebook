@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { MeetingCatalogRepository } from "./repository.js";
+import { MeetingRecordingControls, type MeetingRecorderPort } from "../recording/MeetingRecordingControls.js";
 import type { SyncResult } from "./sync.js";
 import { type NoteSaveState, useMeetingNote } from "./useMeetingNote.js";
 
@@ -12,6 +13,7 @@ type Props = {
   refresh: () => Promise<SyncResult>;
   scheduleRefresh?: () => Promise<SyncResult>;
   online: boolean;
+  recorder: MeetingRecorderPort;
   now?: () => string;
 };
 
@@ -54,7 +56,7 @@ function saveStateText(state: NoteSaveState): string {
   return "已保存到本机";
 }
 
-export function MeetingWorkspacePage({ repository, refresh, scheduleRefresh = refresh, online, now = () => new Date().toISOString() }: Props) {
+export function MeetingWorkspacePage({ repository, refresh, scheduleRefresh = refresh, online, recorder, now = () => new Date().toISOString() }: Props) {
   const { id = "" } = useParams();
   const navigate = useNavigate();
   const [loadState, setLoadState] = useState<LoadState>({ kind: "loading" });
@@ -106,7 +108,7 @@ export function MeetingWorkspacePage({ repository, refresh, scheduleRefresh = re
   if (loadState.kind === "missing") return <WorkspaceMessage title="找不到会议" onBack={returnImmediately} />;
   if (loadState.kind === "trashed") return <WorkspaceMessage title="会议已移至废纸篓" onBack={returnImmediately} />;
   if (loadState.kind === "error") return <WorkspaceMessage title="无法载入会议" onBack={returnImmediately} />;
-  return <MeetingEditor meeting={loadState.meeting} folders={loadState.folders} noteSyncState={loadState.noteSyncState} repository={repository} scheduleRefresh={scheduleRefresh} online={online} now={now} />;
+  return <MeetingEditor meeting={loadState.meeting} folders={loadState.folders} noteSyncState={loadState.noteSyncState} repository={repository} recorder={recorder} scheduleRefresh={scheduleRefresh} online={online} now={now} />;
 }
 
 function WorkspaceMessage({ title, status, onBack }: { title: string; status?: string; onBack: () => void }) {
@@ -124,12 +126,13 @@ type EditorProps = {
   folders: Folder[];
   noteSyncState: Awaited<ReturnType<MeetingCatalogRepository["meetingNoteSyncState"]>>;
   repository: MeetingCatalogRepository;
+  recorder: MeetingRecorderPort;
   scheduleRefresh: () => Promise<SyncResult>;
   online: boolean;
   now: () => string;
 };
 
-function MeetingEditor({ meeting, folders, noteSyncState, repository, scheduleRefresh, online, now }: EditorProps) {
+function MeetingEditor({ meeting, folders, noteSyncState, repository, recorder, scheduleRefresh, online, now }: EditorProps) {
   const navigate = useNavigate();
   const [returning, setReturning] = useState(false);
   const note = useMeetingNote({ meetingId: meeting.id, initialNote: meeting.note, initialSyncState: noteSyncState, repository, scheduleRefresh, online, now });
@@ -162,6 +165,7 @@ function MeetingEditor({ meeting, folders, noteSyncState, repository, scheduleRe
       <span>{folderName}</span>
       <time dateTime={meeting.updatedAt}>更新于 {updatedTime(meeting.updatedAt)}</time>
     </section>
+    <MeetingRecordingControls meetingId={meeting.id} recorder={recorder} online={online} />
     <label className="note-editor">
       <span>会议笔记</span>
       <textarea aria-label="会议笔记" value={note.draft} onChange={(event) => note.setDraft(event.target.value)} onBlur={() => void note.flush()} />

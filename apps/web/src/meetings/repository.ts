@@ -179,6 +179,10 @@ export class MeetingCatalogRepository {
     return this.activeUserId;
   }
 
+  recordingDatabase(): MeetingCatalogDatabase {
+    return this.db;
+  }
+
   async deleteDatabase(): Promise<void> {
     await this.activationQueue;
     for (const database of [this.bootstrapDb, ...this.userDatabases.values()]) database.close();

@@ -36,6 +36,20 @@ export type CatalogMutationReplayRow = {
   created_at: string;
 };
 
+export type MeetingAudioChunkRow = {
+  user_id: string;
+  meeting_id: string;
+  sequence: number;
+  bucket_id: "meeting-audio";
+  remote_path: string;
+  sha256: string;
+  size_bytes: number;
+  mime_type: string;
+  captured_at: string;
+  expires_at: string;
+  created_at: string;
+};
+
 export type ApplyCatalogMutationArgs = {
   p_operation_id: string;
   p_kind: string;
@@ -95,6 +109,23 @@ export type Database = {
         Insert: Omit<CatalogMutationReplayRow, "created_at"> & { created_at?: string };
         Update: Partial<CatalogMutationReplayRow>;
         Relationships: [];
+      };
+      meeting_audio_chunks: {
+        Row: MeetingAudioChunkRow;
+        Insert: Omit<MeetingAudioChunkRow, "bucket_id" | "created_at"> & {
+          bucket_id?: "meeting-audio";
+          created_at?: string;
+        };
+        Update: Partial<MeetingAudioChunkRow>;
+        Relationships: [
+          {
+            foreignKeyName: "meeting_audio_chunks_user_id_meeting_id_fkey";
+            columns: ["user_id", "meeting_id"];
+            isOneToOne: false;
+            referencedRelation: "meetings";
+            referencedColumns: ["user_id", "id"];
+          },
+        ];
       };
     };
     Views: { [_ in never]: never };

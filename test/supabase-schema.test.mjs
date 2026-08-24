@@ -7,15 +7,21 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const migrationPath = resolve(root, "supabase/migrations/202608220001_meeting_catalog.sql");
 const noteMigrationPath = resolve(root, "supabase/migrations/202608230002_meeting_notes.sql");
+const audioMigrationPath = resolve(root, "supabase/migrations/202608240001_meeting_audio.sql");
 const catalogTestPath = resolve(root, "supabase/tests/meeting_catalog.sql");
+const audioTestPath = resolve(root, "supabase/tests/meeting_audio.sql");
 
 let sql;
 let noteSql;
+let audioSql;
 let catalogTestSql;
+let audioTestSql;
 test.before(async () => {
   sql = await readFile(migrationPath, "utf8");
   noteSql = await readFile(noteMigrationPath, "utf8");
+  audioSql = await readFile(audioMigrationPath, "utf8");
   catalogTestSql = await readFile(catalogTestPath, "utf8");
+  audioTestSql = await readFile(audioTestPath, "utf8");
 });
 
 function normalizedSql() {
@@ -28,6 +34,14 @@ function normalizedNoteSql() {
 
 function normalizedCatalogTestSql() {
   return catalogTestSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizedAudioSql() {
+  return audioSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizedAudioTestSql() {
+  return audioTestSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
 }
 
 test("catalog tables enable row level security", () => {
@@ -125,4 +139,45 @@ test("database note contracts exercise anon permissions and the column check dir
   assert.match(source, /reset role[^;]*; select lives_ok\([^;]+update public\.meetings set note = repeat\('[^']+', 200000\)/);
   assert.match(source, /select throws_ok\([^;]+update public\.meetings set note = repeat\('[^']+', 200001\)[^;]+23514/);
   assert.match(source, /set local role authenticated/);
+});
+
+test("meeting audio uses a private bounded bucket and user-owned metadata", () => {
+  const source = normalizedAudioSql();
+  assert.match(source, /insert into storage\.buckets \(id, name, public, file_size_limit, allowed_mime_types\)[^;]+values \( 'meeting-audio', 'meeting-audio', false, 104857600/);
+  assert.match(source, /create table public\.meeting_audio_chunks/);
+  assert.match(source, /primary key \(user_id, meeting_id, sequence\)/);
+  assert.match(source, /foreign key \(user_id, meeting_id\) references public\.meetings\(user_id, id\) on delete cascade/);
+  assert.match(source, /unique \(bucket_id, remote_path\)/);
+  assert.match(source, /alter table public\.meeting_audio_chunks enable row level security/);
+  assert.match(source, /revoke all on public\.meeting_audio_chunks from (?:anon|public, anon)/);
+});
+
+test("meeting audio retention is bounded by server time and insert grants exclude server columns", () => {
+  const source = normalizedAudioSql();
+  assert.match(source, /constraint meeting_audio_chunks_expires_within_retention check \(expires_at <= created_at \+ interval '48 hours'\)/);
+  assert.match(source, /revoke insert, update, delete on public\.meeting_audio_chunks from authenticated/);
+  assert.match(source, /grant insert \( user_id, meeting_id, sequence, remote_path, sha256, size_bytes, mime_type, captured_at, expires_at \) on public\.meeting_audio_chunks to authenticated/);
+  assert.doesNotMatch(source, /grant select, insert on public\.meeting_audio_chunks to authenticated/);
+});
+
+test("meeting audio policies isolate metadata and storage object paths", () => {
+  const source = normalizedAudioSql();
+  assert.match(source, /create policy meeting_audio_chunks_owner_select on public\.meeting_audio_chunks for select to authenticated using \(auth\.uid\(\) = user_id\)/);
+  assert.match(source, /create policy meeting_audio_chunks_owner_insert on public\.meeting_audio_chunks for insert to authenticated with check \( auth\.uid\(\) = user_id/);
+  assert.match(source, /create policy meeting_audio_objects_owner_select on storage\.objects for select to authenticated using \( bucket_id = 'meeting-audio'/);
+  assert.match(source, /create policy meeting_audio_objects_owner_insert on storage\.objects for insert to authenticated with check \( bucket_id = 'meeting-audio'/);
+  assert.match(source, /\(storage\.foldername\(name\)\)\[1\] = auth\.uid\(\)::text/);
+  assert.doesNotMatch(source, /create policy [^;]+ on storage\.objects for update/);
+});
+
+test("meeting audio pgTAP covers privacy, ownership, uniqueness, and anon denial", () => {
+  const source = normalizedAudioTestSql();
+  assert.match(source, /select is\(\(select public from storage\.buckets where id = 'meeting-audio'\), false/);
+  assert.match(source, /set local role anon/);
+  assert.match(source, /has_table_privilege\('anon', 'public\.meeting_audio_chunks', 'select'\), false/);
+  assert.match(source, /set local role authenticated/);
+  assert.match(source, /second user cannot read first user audio metadata/);
+  assert.match(source, /duplicate meeting sequence is rejected/);
+  assert.match(source, /now\(\) \+ interval '49 hours'[^;]+23514[^;]+owner cannot extend audio metadata expiry beyond 48 hours/);
+  assert.match(source, /expires_at, created_at[^;]+now\(\) \+ interval '10 years'[^;]+42501[^;]+owner cannot forge metadata creation time/);
 });

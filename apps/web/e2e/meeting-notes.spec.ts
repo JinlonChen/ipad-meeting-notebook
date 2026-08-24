@@ -45,6 +45,7 @@ async function expectWorkspaceLayout(page: Page, testInfo: TestInfo, width: numb
   const title = topbar.getByRole("heading");
   const status = page.locator(".workspace-save-state");
   const metadata = page.locator(".workspace-meta");
+  const recording = page.locator(".recording-controls");
   const editor = page.locator(".note-editor");
   const textarea = page.getByRole("textbox", { name: "会议笔记" });
 
@@ -63,12 +64,14 @@ async function expectWorkspaceLayout(page: Page, testInfo: TestInfo, width: numb
       title: rect(".workspace-topbar h1"),
       status: rect(".workspace-save-state"),
       metadata: rect(".workspace-meta"),
+      recording: rect(".recording-controls"),
       editor: rect(".note-editor"),
       textarea: rect(".note-editor textarea"),
       saveStateFits: saveState.scrollWidth <= saveState.clientWidth,
       saveStateText: saveState.textContent ?? "",
       saveStateOverflow: getComputedStyle(saveState).textOverflow,
       titleFits: heading.scrollWidth <= heading.clientWidth,
+      recordingFits: document.querySelector<HTMLElement>(".recording-controls")!.scrollWidth <= document.documentElement.clientWidth,
     };
   });
 
@@ -78,11 +81,13 @@ async function expectWorkspaceLayout(page: Page, testInfo: TestInfo, width: numb
   expect(layout.saveStateText).not.toMatch(/\.{3,}|…/);
   expect(layout.saveStateOverflow).not.toBe("ellipsis");
   expect(layout.titleFits).toBe(true);
+  expect(layout.recordingFits).toBe(true);
   expect(layout.back.width).toBe(34);
   expect(layout.back.height).toBe(34);
   expect(layout.textarea.height).toBeGreaterThanOrEqual(360);
   expect(layout.topbar.bottom).toBeLessThanOrEqual(layout.metadata.top);
-  expect(layout.metadata.bottom).toBeLessThanOrEqual(layout.editor.top);
+  expect(layout.metadata.bottom).toBeLessThanOrEqual(layout.recording.top);
+  expect(layout.recording.bottom).toBeLessThanOrEqual(layout.editor.top);
   expect(layout.editor.top).toBeLessThan(layout.textarea.top);
 
   const overlaps = (a: typeof layout.back, b: typeof layout.back) =>
@@ -96,6 +101,8 @@ async function expectWorkspaceLayout(page: Page, testInfo: TestInfo, width: numb
   await expect(title).toBeVisible();
   await expect(status).toBeVisible();
   await expect(metadata).toBeVisible();
+  await expect(recording).toBeVisible();
+  await expect(page.getByRole("button", { name: "开始录音" })).toBeVisible();
   await expect(editor).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath(`meeting-notes-layout-${width}x${height}.png`), fullPage: true });
 }

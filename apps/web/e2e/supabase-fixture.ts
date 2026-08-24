@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { expect, type Page } from "@playwright/test";
 
 export const supabaseOrigin = "http://127.0.0.1:54321";
@@ -50,6 +52,29 @@ export type SupabaseFixtureState = {
   noteMutations: MeetingNoteMutation[];
   noteReplays: Map<string, NoteReplay>;
   noteMutationBarrier: PendingNoteMutationBarrier | null;
+  audioChunks: RemoteAudioChunk[];
+  audioObjects: Map<string, RemoteAudioObject>;
+  audioObjectUploads: string[];
+};
+
+export type RemoteAudioChunk = {
+  user_id: string;
+  meeting_id: string;
+  sequence: number;
+  bucket_id: "meeting-audio";
+  remote_path: string;
+  sha256: string;
+  size_bytes: number;
+  mime_type: string;
+  captured_at: string;
+  expires_at: string;
+  created_at: string;
+};
+
+export type RemoteAudioObject = {
+  path: string;
+  sha256: string | null;
+  size: number;
 };
 
 export type NoteMutationBarrier = {
@@ -107,8 +132,106 @@ function ownedMeeting(meeting: RemoteMeeting): RemoteMeeting & { user_id: string
   return { ...meeting, user_id: userId };
 }
 
+function multipartParts(contentType: string | undefined, body: Buffer): Map<string, Buffer> {
+  const boundary = contentType?.match(/boundary=(?:"([^"]+)"|([^;]+))/i)?.slice(1).find(Boolean)?.trim();
+  if (!boundary || boundary.includes("\r") || boundary.includes("\n")) return new Map();
+  const source = body.toString("latin1");
+  const delimiter = `--${boundary}`;
+  const parts = new Map<string, Buffer>();
+  if (!source.startsWith(`${delimiter}\r\n`)) return parts;
+  let cursor = delimiter.length + 2;
+  let closed = false;
+  while (!closed) {
+    const headersEnd = source.indexOf("\r\n\r\n", cursor);
+    if (headersEnd < cursor) return new Map();
+    const fieldName = source.slice(cursor, headersEnd).match(/name="([^"]*)"/i)?.[1];
+    if (fieldName === undefined || parts.has(fieldName)) return new Map();
+    const dataStart = headersEnd + 4;
+    let searchFrom = dataStart;
+    let dataEnd = -1;
+    let nextCursor = -1;
+    while (true) {
+      const candidate = source.indexOf(`\r\n${delimiter}`, searchFrom);
+      if (candidate < 0) return new Map();
+      const suffix = candidate + 2 + delimiter.length;
+      if (source.startsWith("\r\n", suffix)) {
+        dataEnd = candidate;
+        nextCursor = suffix + 2;
+        break;
+      }
+      if (source.startsWith("--", suffix)) {
+        const closingEnd = suffix + 2;
+        if (closingEnd === source.length || (source.startsWith("\r\n", closingEnd) && closingEnd + 2 === source.length)) {
+          dataEnd = candidate;
+          closed = true;
+          break;
+        }
+      }
+      searchFrom = candidate + 2;
+    }
+    parts.set(fieldName, body.subarray(dataStart, dataEnd));
+    if (!closed) cursor = nextCursor;
+  }
+  return parts;
+}
+
+function storageUpload(request: { headers(): Record<string, string>; postDataBuffer(): Buffer | null }): {
+  sha256: string;
+  size: number;
+} | null {
+  const headers = request.headers();
+  const body = request.postDataBuffer();
+  if (!body) return null;
+  const parts = multipartParts(headers["content-type"], body);
+  const metadataPart = parts.get("metadata");
+  const filePart = parts.get("");
+  if (!metadataPart || !filePart) return null;
+  try {
+    const metadata = JSON.parse(metadataPart.toString("utf8")) as { sha256?: unknown };
+    if (typeof metadata.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(metadata.sha256)) return null;
+    if (createHash("sha256").update(filePart).digest("hex") !== metadata.sha256) return null;
+    return { sha256: metadata.sha256, size: filePart.byteLength };
+  } catch {
+    return null;
+  }
+}
+
+function parseAudioChunkInsert(value: unknown, state: SupabaseFixtureState): Omit<RemoteAudioChunk, "bucket_id" | "created_at"> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const body = value as Record<string, unknown>;
+  const keys = [
+    "user_id", "meeting_id", "sequence", "remote_path", "sha256", "size_bytes", "mime_type", "captured_at", "expires_at",
+  ];
+  if (Object.keys(body).length !== keys.length || keys.some((key) => !Object.prototype.hasOwnProperty.call(body, key))) return null;
+  if (!isUuid(body.user_id) || !isUuid(body.meeting_id)) return null;
+  if (!Number.isInteger(body.sequence) || (body.sequence as number) < 0) return null;
+  if (typeof body.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(body.sha256)) return null;
+  if (!Number.isInteger(body.size_bytes) || (body.size_bytes as number) <= 0) return null;
+  if (typeof body.mime_type !== "string" || body.mime_type.length === 0 || body.mime_type.length > 255) return null;
+  if (typeof body.captured_at !== "string" || typeof body.expires_at !== "string") return null;
+  const capturedAt = Date.parse(body.captured_at);
+  const expiresAt = Date.parse(body.expires_at);
+  if (!Number.isFinite(capturedAt) || !Number.isFinite(expiresAt) || expiresAt <= capturedAt) return null;
+  if (!state.meetings.some((meeting) => meeting.id === body.meeting_id)) return null;
+  const normalizedMime = body.mime_type.toLowerCase().split(";", 1)[0]?.trim();
+  const extension = normalizedMime === "audio/webm" ? "webm" : normalizedMime === "audio/mp4" ? "m4a" : "bin";
+  const expectedPath = `${body.user_id}/${body.meeting_id}/${body.sequence}.${extension}`;
+  if (body.remote_path !== expectedPath) return null;
+  const object = state.audioObjects.get(expectedPath);
+  if (!object || object.sha256 !== body.sha256 || object.size !== body.size_bytes) return null;
+  return body as Omit<RemoteAudioChunk, "bucket_id" | "created_at">;
+}
+
 export function createSupabaseFixtureState(meetings: RemoteMeeting[] = []): SupabaseFixtureState {
-  return { meetings, noteMutations: [], noteReplays: new Map(), noteMutationBarrier: null };
+  return {
+    meetings,
+    noteMutations: [],
+    noteReplays: new Map(),
+    noteMutationBarrier: null,
+    audioChunks: [],
+    audioObjects: new Map(),
+    audioObjectUploads: [],
+  };
 }
 
 export function holdNextNoteMutation(state: SupabaseFixtureState): NoteMutationBarrier {
@@ -243,6 +366,100 @@ export async function installSupabaseRoutes(page: Page, input: RemoteMeeting[] |
     }
     if (url.pathname === "/rest/v1/folders") {
       await route.fulfill({ contentType: "application/json", body: "[]" });
+      return;
+    }
+    if (url.pathname === "/rest/v1/meeting_audio_chunks" && request.method() === "GET") {
+      const filter = (name: string) => url.searchParams.get(name)?.replace(/^eq\./, "") ?? null;
+      const sequence = Number(filter("sequence"));
+      const row = state.audioChunks.find((candidate) => candidate.user_id === filter("user_id")
+        && candidate.meeting_id === filter("meeting_id") && candidate.sequence === sequence);
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(row ? [row] : []),
+      });
+      return;
+    }
+    if (url.pathname === "/rest/v1/meeting_audio_chunks" && request.method() === "POST") {
+      let rawBody: unknown;
+      try {
+        rawBody = request.postDataJSON();
+      } catch {
+        rawBody = null;
+      }
+      const claimedUserId = typeof rawBody === "object" && rawBody !== null && !Array.isArray(rawBody)
+        ? (rawBody as Record<string, unknown>).user_id
+        : null;
+      if (!/^Bearer\s+\S+$/i.test(request.headers().authorization ?? "") || claimedUserId !== userId) {
+        await route.fulfill({ status: 401, contentType: "application/json", body: JSON.stringify({ code: "42501", message: "Unauthorized" }) });
+        return;
+      }
+      const body = parseAudioChunkInsert(rawBody, state);
+      if (!body) {
+        await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ code: "22023", message: "Invalid audio metadata" }) });
+        return;
+      }
+      const conflict = state.audioChunks.some((candidate) => candidate.user_id === body.user_id
+        && candidate.meeting_id === body.meeting_id && candidate.sequence === body.sequence);
+      if (conflict) {
+        await route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({ code: "23505", message: "duplicate key value violates unique constraint" }),
+        });
+        return;
+      }
+      const row: RemoteAudioChunk = {
+        ...body,
+        bucket_id: "meeting-audio",
+        created_at: new Date().toISOString(),
+      };
+      state.audioChunks.push(row);
+      await route.fulfill({ status: 201, body: "" });
+      return;
+    }
+    if (url.pathname === "/storage/v1/object/list/meeting-audio" && request.method() === "POST") {
+      const body = request.postDataJSON() as { prefix?: string; search?: string };
+      const prefix = body.prefix ? `${body.prefix.replace(/\/$/, "")}/` : "";
+      const objects = Array.from(state.audioObjects.values())
+        .filter((object) => object.path.startsWith(prefix))
+        .filter((object) => !body.search || object.path.slice(prefix.length) === body.search)
+        .map((object) => ({
+          id: object.path,
+          name: object.path.slice(prefix.length),
+          created_at: new Date(0).toISOString(),
+          updated_at: new Date(0).toISOString(),
+          last_accessed_at: new Date(0).toISOString(),
+          metadata: { sha256: object.sha256, size: object.size },
+        }));
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify(objects) });
+      return;
+    }
+    const objectPrefix = "/storage/v1/object/meeting-audio/";
+    if (url.pathname.startsWith(objectPrefix) && request.method() === "POST") {
+      const path = decodeURIComponent(url.pathname.slice(objectPrefix.length));
+      if (state.audioObjects.has(path)) {
+        await route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({ statusCode: "409", error: "Duplicate", message: "The resource already exists" }),
+        });
+        return;
+      }
+      const upload = storageUpload(request);
+      if (!upload) {
+        await route.fulfill({
+          status: 400,
+          contentType: "application/json",
+          body: JSON.stringify({ statusCode: "400", error: "Invalid multipart upload", message: "Missing audio metadata or file" }),
+        });
+        return;
+      }
+      state.audioObjects.set(path, { path, sha256: upload.sha256, size: upload.size });
+      state.audioObjectUploads.push(path);
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ Id: path, Key: `meeting-audio/${path}` }),
+      });
       return;
     }
     if (url.pathname === "/rest/v1/meetings") {

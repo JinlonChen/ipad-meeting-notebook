@@ -6,6 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { MeetingCatalogRepository } from "../../src/meetings/repository.js";
 import { MeetingListPage } from "../../src/meetings/MeetingListPage.js";
 import { MeetingWorkspacePage } from "../../src/meetings/MeetingWorkspacePage.js";
+import { createBrowserWorkspaceRecorder } from "../../src/recording/browser-recorder.js";
 import "../../src/app/styles.css";
 
 const now = "2026-08-21T00:00:00.000Z";
@@ -26,9 +27,10 @@ function deferred<T>() {
 
 function renderPage(repository = catalog(), initialEntries = ["/meetings"]) {
   const refresh = async () => ({ state: "idle" as const });
+  const recorder = createBrowserWorkspaceRecorder(repository.recordingDatabase(), () => now);
   render(<MemoryRouter initialEntries={initialEntries}><Routes>
     <Route path="/meetings" element={<MeetingListPage repository={repository} refresh={refresh} now={() => now} online />} />
-    <Route path="/meetings/:id" element={<MeetingWorkspacePage repository={repository} refresh={refresh} now={() => now} online />} />
+    <Route path="/meetings/:id" element={<MeetingWorkspacePage repository={repository} recorder={recorder} refresh={refresh} now={() => now} online />} />
   </Routes></MemoryRouter>);
   return repository;
 }
@@ -59,6 +61,26 @@ afterEach(async () => {
 });
 
 describe("MeetingListPage", () => {
+  test("keeps one recording service across list and workspace navigation", async () => {
+    const user = userEvent.setup();
+    const repository = catalog();
+    const recordingDatabase = vi.spyOn(repository, "recordingDatabase");
+    renderPage(repository);
+    await screen.findByText("还没有会议");
+
+    await user.click(screen.getByRole("button", { name: "新建会议" }));
+    await user.type(screen.getByLabelText("会议名称"), "录音服务保持");
+    await user.click(screen.getByRole("button", { name: "创建" }));
+    await screen.findByRole("button", { name: "开始录音" }, { timeout: 3_000 });
+    await user.click(screen.getByRole("button", { name: "返回会议" }));
+    const meetingButton = (await screen.findByText("录音服务保持", { selector: ".meeting-title" })).closest("button");
+    expect(meetingButton).toHaveClass("meeting-main");
+    await user.click(meetingButton!);
+    await screen.findByRole("button", { name: "开始录音" }, { timeout: 3_000 });
+
+    expect(recordingDatabase).toHaveBeenCalledOnce();
+  });
+
   test("uses portrait drawer mode at 744x1133 and landscape rail mode at 1133x744", async () => {
     Object.defineProperties(window, { innerWidth: { configurable: true, value: 744 }, innerHeight: { configurable: true, value: 1133 } });
     const portrait = render(<MemoryRouter><MeetingListPage repository={catalog()} refresh={async () => ({ state: "idle" })} now={() => now} online={false} /></MemoryRouter>);
@@ -241,9 +263,10 @@ describe("MeetingListPage", () => {
     const automatic = deferred<{ state: "idle" }>();
     const refresh = vi.fn().mockResolvedValue({ state: "idle" as const });
     const scheduleRefresh = vi.fn(() => automatic.promise);
+    const recorder = createBrowserWorkspaceRecorder(repository.recordingDatabase(), () => now);
     render(<MemoryRouter initialEntries={["/meetings"]}><Routes>
       <Route path="/meetings" element={<MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={() => now} online />} />
-      <Route path="/meetings/:id" element={<MeetingWorkspacePage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={() => now} online />} />
+      <Route path="/meetings/:id" element={<MeetingWorkspacePage repository={repository} recorder={recorder} refresh={refresh} scheduleRefresh={scheduleRefresh} now={() => now} online />} />
     </Routes></MemoryRouter>);
     await screen.findByText("还没有会议");
     const delayedList = deferred<Awaited<ReturnType<MeetingCatalogRepository["list"]>>>();

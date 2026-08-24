@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from "dexie";
-import type { Folder, Meeting } from "@meeting/contracts";
+import type { AudioChunkMetadata, Folder, Meeting, RecordingSession } from "@meeting/contracts";
 
 export type OutboxKind =
   | "folder.create"
@@ -30,11 +30,15 @@ export type DeviceAccess = {
 
 type Setting = { key: string; value: unknown };
 
+export type LocalAudioChunk = AudioChunkMetadata & { blob: Blob };
+
 export class MeetingCatalogDatabase extends Dexie {
   declare meetings: EntityTable<Meeting, "id">;
   declare folders: EntityTable<Folder, "id">;
   declare outbox: EntityTable<OutboxOperation, "sequence">;
   declare settings: EntityTable<Setting, "key">;
+  declare recordingSessions: EntityTable<RecordingSession, "meetingId">;
+  declare audioChunks: EntityTable<LocalAudioChunk, "id">;
 
   constructor(name = "meeting-catalog") {
     super(name);
@@ -61,6 +65,14 @@ export class MeetingCatalogDatabase extends Dexie {
       await transaction.table<Meeting>("meetings").toCollection().modify((meeting) => {
         if (typeof meeting.note !== "string") meeting.note = "";
       });
+    });
+    this.version(4).stores({
+      meetings: "id,updatedAt,status,folderId,title",
+      folders: "id,name,updatedAt",
+      outbox: "++sequence,id,entityId,kind,createdAt",
+      settings: "key",
+      recordingSessions: "meetingId,state,startedAt,expiresAt",
+      audioChunks: "id,[meetingId+sequence],meetingId,uploadState,expiresAt",
     });
   }
 }

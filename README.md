@@ -1,8 +1,8 @@
 # iPad 会议本
 
-这是面向个人使用的 iPad 会议本 PWA。当前版本提供邮箱密码登录、会议与分类目录、本地离线修改、联网自动同步和安装到 iPad 主屏幕。
+这是面向个人使用的 iPad 会议本 PWA。当前版本提供邮箱密码登录、会议与分类目录、永久会议笔记、本地离线修改、联网自动同步，以及可恢复的会议录音。
 
-当前阶段不包含或实现录音、转写、AI 总结、手写和会议正文编辑。会议详情页目前只是占位页；不要把目录中的“录音中”等状态理解为录音功能已经可用。
+会议录音按 10 秒分片先写入 iPad 本机，断网时继续保存，联网后上传到私有 Supabase Storage；异常关闭后可以结束并保存已录分片。原始录音在本机和云端统一保留 48 小时。当前阶段尚未实现转写、说话人区分、AI 总结、手写和录音播放。
 
 ## 本地运行
 
@@ -36,9 +36,12 @@ npm run test:e2e
 
 ## 初始化 Supabase
 
-迁移必须按 `supabase/migrations` 中文件名的时间顺序执行。目前只有第一项：
+迁移必须按 `supabase/migrations` 中文件名的时间顺序执行：
 
 1. `supabase/migrations/202608220001_meeting_catalog.sql`
+2. `supabase/migrations/202608230002_meeting_notes.sql`
+3. `supabase/migrations/202608240001_meeting_audio.sql`
+4. `supabase/migrations/202608240002_audio_cleanup.sql`
 
 推荐使用 Supabase CLI 应用迁移：
 
@@ -56,7 +59,7 @@ npx supabase db push
 node --test test/supabase-schema.test.mjs
 ```
 
-真实 pgTAP 检查需要 Docker 和本地 Supabase 服务：
+有 Docker 时可在本地执行完整 pgTAP：
 
 ```bash
 npx supabase start
@@ -64,7 +67,26 @@ npx supabase db reset
 npx supabase test db
 ```
 
-只有 `supabase/tests/meeting_catalog.sql` 全部通过后才继续发布。若本机不能运行 Docker，必须在能够运行 Supabase CLI 的环境完成这项真实 pgTAP 门禁，不能用 Node 合同检查代替它。
+没有 Docker 时，连接远端测试项目并在事务中执行 pgTAP 文件；测试会在末尾回滚，不保留测试数据：
+
+```bash
+npx supabase test db --linked
+# 若当前 CLI 仍错误要求 Docker：
+npx supabase db query --linked --file supabase/tests/meeting_audio.sql
+npx supabase db query --linked --file supabase/tests/audio_cleanup.sql
+```
+
+只有目录、笔记、录音和清理测试全部通过后才继续发布。Node 合同检查不能代替真实数据库中的 RLS、权限和保留规则检查。
+
+## 部署录音清理
+
+部署私有清理函数：
+
+```bash
+npx supabase functions deploy cleanup-expired-audio
+```
+
+在 Supabase Dashboard 中启用 Cron、`pg_net` 和 Vault。将项目的服务端 secret key 存入 Vault，并创建每 15 分钟调用一次 `cleanup-expired-audio` 的 Edge Function 任务。函数关闭旧版网关 JWT 校验，但会在函数内部逐字比对平台注入的服务端密钥；无密钥或错误密钥必须返回 `401`。服务端 secret key 不得进入 GitHub、前端环境变量、浏览器包、文档或 Cron 命令正文。
 
 ## 创建并确认邮箱用户
 
@@ -102,8 +124,8 @@ npx supabase test db
 
 首次安装和首次登录必须联网。离线可用依赖浏览器已缓存应用，清理 Safari 网站数据会清除本地会议目录和待同步修改。
 
-## 已确认的后续数据规则
+## 数据保留规则
 
-后续实现录音后，原始录音在云端和 iPad 本地统一只保留 48 小时，然后自动删除。若 48 小时到期时 PWA 已关闭，本地清理会在下次启动时补做；服务端清理不能依赖 PWA 是否打开。
+原始录音在云端和 iPad 本地统一只保留 48 小时，然后自动删除。若 48 小时到期时 PWA 已关闭，本地清理会在下次启动时补做；服务端每 15 分钟独立清理一次，不依赖 PWA 是否打开。
 
-会议笔记、完整转写和 AI 总结将永久保存，除非使用者主动删除。以上是后续阶段的数据保留目标，当前版本尚未实现录音、转写、AI 总结或这些内容的永久存储。
+会议笔记永久保存，除非使用者主动删除。完整转写和 AI 总结后续实现后也将永久保存；当前版本尚未实现转写和 AI 总结。

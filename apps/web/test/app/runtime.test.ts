@@ -9,6 +9,7 @@ function dependencies(overrides: Partial<RuntimeDependencies> = {}): RuntimeDepe
   const auth = {} as ReturnType<RuntimeDependencies["createAuth"]>;
   const catalog = {} as ReturnType<RuntimeDependencies["createCatalog"]>;
   const synchronizer = {} as ReturnType<RuntimeDependencies["createSynchronizer"]>;
+  const recordingStorage = {} as ReturnType<RuntimeDependencies["createRecordingStorage"]>;
   return {
     readConfig: vi.fn().mockReturnValue({ url: "https://project.supabase.co", anonKey: "public-value" }),
     createClient: vi.fn().mockReturnValue(client),
@@ -16,6 +17,7 @@ function dependencies(overrides: Partial<RuntimeDependencies> = {}): RuntimeDepe
     createAuth: vi.fn().mockReturnValue(auth),
     createCatalog: vi.fn().mockReturnValue(catalog),
     createSynchronizer: vi.fn().mockReturnValue(synchronizer),
+    createRecordingStorage: vi.fn().mockReturnValue(recordingStorage),
     ...overrides,
   };
 }
@@ -28,11 +30,13 @@ describe("composeProductionApp", () => {
 
     expect(deps.createAuth).toHaveBeenCalledWith(client);
     expect(deps.createCatalog).toHaveBeenCalledWith(client);
+    expect(deps.createRecordingStorage).toHaveBeenCalledWith(client);
     expect(result).toMatchObject({
       repository: vi.mocked(deps.createRepository).mock.results[0]!.value,
       auth: vi.mocked(deps.createAuth).mock.results[0]!.value,
       catalog: vi.mocked(deps.createCatalog).mock.results[0]!.value,
       synchronizer: vi.mocked(deps.createSynchronizer).mock.results[0]!.value,
+      recordingStorage: vi.mocked(deps.createRecordingStorage).mock.results[0]!.value,
     });
   });
 
