@@ -1,4 +1,4 @@
-import type { Folder, Meeting } from "@meeting/contracts";
+import type { Folder, Meeting, Minutes, TranscriptSegment } from "@meeting/contracts";
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
@@ -48,6 +48,43 @@ export type MeetingAudioChunkRow = {
   captured_at: string;
   expires_at: string;
   created_at: string;
+};
+
+export type MeetingIntelligenceJobRow = {
+  user_id: string;
+  meeting_id: string;
+  status: "queued" | "processing" | "ready" | "failed";
+  error_code: string | null;
+  requested_at: string;
+  completed_at: string | null;
+};
+
+export type MeetingTranscriptSegmentRow = {
+  user_id: string;
+  id: TranscriptSegment["id"];
+  meeting_id: TranscriptSegment["meetingId"];
+  position: number;
+  text: string;
+  started_offset_ms: number;
+  ended_offset_ms: number;
+  speaker: string | null;
+  source: TranscriptSegment["source"];
+  confidence: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type MeetingMinutesRow = {
+  user_id: string;
+  meeting_id: string;
+  summary: Minutes["summary"];
+  topics: Minutes["topics"];
+  decisions: Minutes["decisions"];
+  risks: Minutes["risks"];
+  actions: Minutes["actions"];
+  provider: string;
+  model: string;
+  generated_at: string;
 };
 
 export type ApplyCatalogMutationArgs = {
@@ -127,6 +164,24 @@ export type Database = {
           },
         ];
       };
+      meeting_intelligence_jobs: {
+        Row: MeetingIntelligenceJobRow;
+        Insert: MeetingIntelligenceJobRow;
+        Update: Partial<MeetingIntelligenceJobRow>;
+        Relationships: [];
+      };
+      meeting_transcript_segments: {
+        Row: MeetingTranscriptSegmentRow;
+        Insert: MeetingTranscriptSegmentRow;
+        Update: Partial<MeetingTranscriptSegmentRow>;
+        Relationships: [];
+      };
+      meeting_minutes: {
+        Row: MeetingMinutesRow;
+        Insert: MeetingMinutesRow;
+        Update: Partial<MeetingMinutesRow>;
+        Relationships: [];
+      };
     };
     Views: { [_ in never]: never };
     Functions: {
@@ -141,6 +196,10 @@ export type Database = {
       get_catalog_snapshot: {
         Args: { p_expected_user_id: string };
         Returns: CatalogSnapshotResult;
+      };
+      ai_provider_configured: {
+        Args: Record<string, never>;
+        Returns: boolean;
       };
     };
     Enums: { [_ in never]: never };

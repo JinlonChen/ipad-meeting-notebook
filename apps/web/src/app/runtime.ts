@@ -3,6 +3,7 @@ import { MeetingCatalogSupabaseApi } from "../meetings/api.js";
 import { MeetingCatalogRepository } from "../meetings/repository.js";
 import { CatalogSync } from "../meetings/sync.js";
 import { createSupabaseRecordingStorage } from "../recording/storage.js";
+import { createSupabaseMeetingIntelligenceApi } from "../intelligence/api.js";
 import {
   createMeetingSupabaseClient,
   readSupabaseConfig,
@@ -18,6 +19,7 @@ export type RuntimeDependencies = {
   createCatalog: (client: ReturnType<typeof createMeetingSupabaseClient>) => MeetingCatalogSupabaseApi;
   createSynchronizer: (repository: MeetingCatalogRepository, catalog: MeetingCatalogSupabaseApi) => CatalogSync;
   createRecordingStorage: typeof createSupabaseRecordingStorage;
+  createIntelligence: typeof createSupabaseMeetingIntelligenceApi;
 };
 
 const defaultDependencies: RuntimeDependencies = {
@@ -28,6 +30,7 @@ const defaultDependencies: RuntimeDependencies = {
   createCatalog: (client) => new MeetingCatalogSupabaseApi(client),
   createSynchronizer: (repository, catalog) => new CatalogSync(repository, catalog),
   createRecordingStorage: createSupabaseRecordingStorage,
+  createIntelligence: createSupabaseMeetingIntelligenceApi,
 };
 
 export function composeProductionApp(environment: SupabaseEnvironment, dependencies: RuntimeDependencies = defaultDependencies) {
@@ -47,7 +50,8 @@ export function composeProductionApp(environment: SupabaseEnvironment, dependenc
     const catalog = dependencies.createCatalog(client);
     const synchronizer = dependencies.createSynchronizer(repository, catalog);
     const recordingStorage = dependencies.createRecordingStorage(client);
-    return { repository, auth, catalog, synchronizer, recordingStorage };
+    const intelligence = dependencies.createIntelligence(client);
+    return { repository, auth, catalog, synchronizer, recordingStorage, intelligence };
   } catch {
     return { startupError: true as const };
   }
