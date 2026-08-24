@@ -8,6 +8,7 @@ import { AuthApiError, AuthNetworkError, type AuthApi, type AuthSessionChange } 
 import { MeetingCatalogRepository } from "../../src/meetings/repository.js";
 import { CatalogSync, type MeetingCatalogApi } from "../../src/meetings/sync.js";
 import { MeetingRecordingRepository } from "../../src/recording/repository.js";
+import { WorkspaceRecorder } from "../../src/recording/workspace-recorder.js";
 
 const now = "2026-08-21T00:00:00.000Z";
 const expiry = "2026-09-21T00:00:00.000Z";
@@ -40,6 +41,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
   window.history.replaceState({}, "", "/");
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -315,7 +317,7 @@ describe("App session gate", () => {
     expect(auth.me).not.toHaveBeenCalled();
     expect(sync.refresh).not.toHaveBeenCalled();
 
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     act(() => window.dispatchEvent(new Event("offline")));
     currentNow = new Date(initialExpiry);
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
@@ -353,7 +355,7 @@ describe("App session gate", () => {
     });
     expect(refreshDeviceAccess).toHaveBeenCalledWith(userA, "2026-08-21T00:00:30.000Z");
 
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     act(() => window.dispatchEvent(new Event("offline")));
     currentNow = new Date(initialExpiry);
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
@@ -762,7 +764,7 @@ describe("App session gate", () => {
     render(<App repository={catalog} auth={api({ me: vi.fn().mockResolvedValue({ id: userA, sessionExpiresAt: expiresAt }) })} synchronizer={synchronizer()} now={() => currentNow.toISOString()} />);
     await screen.findByRole("heading", { name: "会议本" });
 
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     act(() => window.dispatchEvent(new Event("offline")));
     currentNow = new Date(expiresAt);
     await act(async () => {
@@ -771,6 +773,284 @@ describe("App session gate", () => {
 
     expect(screen.getByRole("heading", { name: "离线解锁需要登录" })).toBeVisible();
     expect(screen.queryByRole("heading", { name: "会议本" })).not.toBeInTheDocument();
+  });
+
+  test("does not defer an expired offline lock for a stale persisted recording", async () => {
+    let currentNow = new Date("2026-08-21T00:00:00.000Z");
+    const expiresAt = "2026-08-21T00:00:01.000Z";
+    const catalog = repository();
+    await catalog.activateUser(userA);
+    const recordings = new MeetingRecordingRepository(catalog.recordingDatabase());
+    const meetingId = "00000000-0000-4000-8000-000000000001";
+    await recordings.start(meetingId, currentNow.toISOString());
+    render(<App repository={catalog} auth={api({ me: vi.fn().mockResolvedValue({ id: userA, sessionExpiresAt: expiresAt }) })} synchronizer={synchronizer()} now={() => currentNow.toISOString()} />);
+    await screen.findByRole("heading", { name: "会议本" });
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    act(() => window.dispatchEvent(new Event("offline")));
+    currentNow = new Date(expiresAt);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(screen.getByRole("heading", { name: "离线解锁需要登录" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "会议本" })).not.toBeInTheDocument();
+  });
+
+  test("defers an expired offline lock until the live recording stops", async () => {
+    let currentNow = new Date("2026-08-21T00:00:00.000Z");
+    const expiresAt = "2026-08-21T00:00:01.000Z";
+    const catalog = repository();
+    await catalog.activateUser(userA);
+    const recordings = new MeetingRecordingRepository(catalog.recordingDatabase());
+    const recorder = new WorkspaceRecorder(recordings, () => ({
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    }), () => currentNow.toISOString());
+    const meetingId = "00000000-0000-4000-8000-000000000001";
+    await recorder.start(meetingId);
+    render(<App repository={catalog} auth={api({ me: vi.fn().mockResolvedValue({ id: userA, sessionExpiresAt: expiresAt }) })} synchronizer={synchronizer()} recorder={recorder} now={() => currentNow.toISOString()} />);
+    await screen.findByRole("heading", { name: "会议本" });
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    act(() => window.dispatchEvent(new Event("offline")));
+    currentNow = new Date(expiresAt);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(screen.getByRole("heading", { name: "会议本" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "离线解锁需要登录" })).not.toBeInTheDocument();
+
+    await recorder.stop(meetingId);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(screen.getByRole("heading", { name: "离线解锁需要登录" })).toBeVisible();
+  });
+
+  test("fails closed when checking the active recording at offline expiry fails", async () => {
+    let currentNow = new Date("2026-08-21T00:00:00.000Z");
+    const expiresAt = "2026-08-21T00:00:01.000Z";
+    const catalog = repository();
+    await catalog.activateUser(userA);
+    const recordings = new MeetingRecordingRepository(catalog.recordingDatabase());
+    const recorder = new WorkspaceRecorder(recordings, () => ({
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    }), () => currentNow.toISOString());
+    const meetingId = "00000000-0000-4000-8000-000000000001";
+    await recorder.start(meetingId);
+    vi.spyOn(MeetingRecordingRepository.prototype, "hasActiveRecording").mockRejectedValueOnce(new Error("private-indexeddb-detail"));
+    render(<App repository={catalog} auth={api({ me: vi.fn().mockResolvedValue({ id: userA, sessionExpiresAt: expiresAt }) })} synchronizer={synchronizer()} recorder={recorder} now={() => currentNow.toISOString()} />);
+    await screen.findByRole("heading", { name: "会议本" });
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    act(() => window.dispatchEvent(new Event("offline")));
+    currentNow = new Date(expiresAt);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(screen.getByRole("heading", { name: "无法验证访问权限" })).toBeVisible();
+    expect(document.body).not.toHaveTextContent("private-indexeddb-detail");
+    expect(screen.queryByRole("heading", { name: "会议本" })).not.toBeInTheDocument();
+  });
+
+  test("keeps a live recording open when revalidation still has no network after expiry", async () => {
+    let currentNow = new Date("2026-08-21T00:00:00.000Z");
+    const expiresAt = "2026-08-21T01:00:00.000Z";
+    const catalog = repository();
+    await catalog.activateUser(userA);
+    const recordings = new MeetingRecordingRepository(catalog.recordingDatabase());
+    const recorder = new WorkspaceRecorder(recordings, () => ({
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    }), () => currentNow.toISOString());
+    const meetingId = "00000000-0000-4000-8000-000000000001";
+    await recorder.start(meetingId);
+    const auth = api({
+      me: vi.fn()
+        .mockResolvedValueOnce({ id: userA, sessionExpiresAt: expiresAt })
+        .mockRejectedValue(new AuthNetworkError()),
+    });
+    const accessChecked = deferred<void>();
+    const validDeviceAccess = catalog.validDeviceAccess.bind(catalog);
+    vi.spyOn(catalog, "validDeviceAccess").mockImplementation(async (value) => {
+      const access = await validDeviceAccess(value);
+      accessChecked.resolve();
+      return access;
+    });
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} recorder={recorder} now={() => currentNow.toISOString()} />);
+    await screen.findByRole("heading", { name: "会议本" });
+
+    act(() => window.dispatchEvent(new Event("offline")));
+    currentNow = new Date(expiresAt);
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+      await accessChecked.promise;
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("heading", { name: "会议本" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "离线解锁需要登录" })).not.toBeInTheDocument();
+  });
+
+  test("fails closed when offline device access cannot be read", async () => {
+    const catalog = repository();
+    vi.spyOn(catalog, "validDeviceAccess").mockRejectedValueOnce(new Error("private-indexeddb-detail"));
+
+    render(<App repository={catalog} auth={api({ me: vi.fn().mockRejectedValue(new AuthNetworkError()) })} synchronizer={synchronizer()} now={() => now} />);
+
+    expect(await screen.findByRole("heading", { name: "无法验证访问权限" })).toBeVisible();
+    expect(document.body).not.toHaveTextContent("private-indexeddb-detail");
+    expect(screen.queryByRole("heading", { name: "会议本" })).not.toBeInTheDocument();
+  });
+
+  test("waits for an overlapping same-user token refresh before applying an expired offline lock", async () => {
+    let currentNow = new Date("2026-08-21T00:00:00.000Z");
+    const expiresAt = "2026-08-21T00:00:01.000Z";
+    const refreshedExpiry = "2026-08-21T01:00:00.000Z";
+    const catalog = repository();
+    await catalog.activateUser(userA);
+    const recordings = new MeetingRecordingRepository(catalog.recordingDatabase());
+    const recorder = new WorkspaceRecorder(recordings, () => ({
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    }), () => currentNow.toISOString());
+    const meetingId = "00000000-0000-4000-8000-000000000001";
+    await recorder.start(meetingId);
+    let authListener!: (change: AuthSessionChange) => void;
+    const auth = api({
+      me: vi.fn().mockResolvedValue({ id: userA, sessionExpiresAt: expiresAt }),
+      onSessionChange: vi.fn().mockImplementation((listener) => {
+        authListener = listener;
+        return () => undefined;
+      }),
+    });
+    const refreshAccess = deferred<{ userId: string; authorizedAt: string; expiresAt: string } | null>();
+    vi.spyOn(catalog, "refreshDeviceAccess").mockImplementationOnce(() => refreshAccess.promise);
+    const recordingCheck = deferred<boolean>();
+    const hasActiveRecording = vi.spyOn(MeetingRecordingRepository.prototype, "hasActiveRecording").mockImplementationOnce(() => recordingCheck.promise);
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} recorder={recorder} now={() => currentNow.toISOString()} />);
+    await screen.findByRole("heading", { name: "会议本" });
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    act(() => window.dispatchEvent(new Event("offline")));
+    currentNow = new Date(expiresAt);
+    act(() => { vi.advanceTimersByTime(1_000); });
+    expect(hasActiveRecording).toHaveBeenCalledOnce();
+
+    act(() => authListener({ event: "token_refreshed", userId: userA, sessionExpiresAt: refreshedExpiry }));
+    recordingCheck.resolve(false);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.getByRole("heading", { name: "会议本" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "离线解锁需要登录" })).not.toBeInTheDocument();
+
+    refreshAccess.resolve({ userId: userA, authorizedAt: currentNow.toISOString(), expiresAt: refreshedExpiry });
+    await act(async () => { await Promise.resolve(); });
+    vi.useRealTimers();
+
+    expect(screen.getByRole("heading", { name: "会议本" })).toBeVisible();
+  });
+
+  test("uses a completed same-user token refresh before an older expiry check resumes", async () => {
+    let currentNow = new Date("2026-08-21T00:00:00.000Z");
+    const expiresAt = "2026-08-21T00:00:01.000Z";
+    const refreshedExpiry = "2026-08-21T01:00:00.000Z";
+    const catalog = repository();
+    await catalog.activateUser(userA);
+    const recordings = new MeetingRecordingRepository(catalog.recordingDatabase());
+    const recorder = new WorkspaceRecorder(recordings, () => ({
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    }), () => currentNow.toISOString());
+    const meetingId = "00000000-0000-4000-8000-000000000001";
+    await recorder.start(meetingId);
+    let authListener!: (change: AuthSessionChange) => void;
+    const auth = api({
+      me: vi.fn().mockResolvedValue({ id: userA, sessionExpiresAt: expiresAt }),
+      onSessionChange: vi.fn().mockImplementation((listener) => {
+        authListener = listener;
+        return () => undefined;
+      }),
+    });
+    vi.spyOn(catalog, "refreshDeviceAccess").mockResolvedValueOnce({
+      userId: userA,
+      authorizedAt: currentNow.toISOString(),
+      expiresAt: refreshedExpiry,
+    });
+    const recordingCheck = deferred<boolean>();
+    const hasActiveRecording = vi.spyOn(MeetingRecordingRepository.prototype, "hasActiveRecording").mockImplementationOnce(() => recordingCheck.promise);
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} recorder={recorder} now={() => currentNow.toISOString()} />);
+    await screen.findByRole("heading", { name: "会议本" });
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    act(() => window.dispatchEvent(new Event("offline")));
+    currentNow = new Date(expiresAt);
+    act(() => { vi.advanceTimersByTime(1_000); });
+    expect(hasActiveRecording).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      authListener({ event: "token_refreshed", userId: userA, sessionExpiresAt: refreshedExpiry });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      recordingCheck.resolve(false);
+      await Promise.resolve();
+    });
+    vi.useRealTimers();
+
+    expect(screen.getByRole("heading", { name: "会议本" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "离线解锁需要登录" })).not.toBeInTheDocument();
+  });
+
+  test("lets successful revalidation win over an overlapping expiry check", async () => {
+    let currentNow = new Date("2026-08-21T00:00:00.000Z");
+    const expiresAt = "2026-08-21T00:00:01.000Z";
+    const refreshedExpiry = "2026-08-21T01:00:00.000Z";
+    const catalog = repository();
+    await catalog.activateUser(userA);
+    const recordings = new MeetingRecordingRepository(catalog.recordingDatabase());
+    const recorder = new WorkspaceRecorder(recordings, () => ({
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    }), () => currentNow.toISOString());
+    const meetingId = "00000000-0000-4000-8000-000000000001";
+    await recorder.start(meetingId);
+    const onlineSession = deferred<{ id: string; sessionExpiresAt: string }>();
+    const auth = api({
+      me: vi.fn()
+        .mockResolvedValueOnce({ id: userA, sessionExpiresAt: expiresAt })
+        .mockImplementationOnce(() => onlineSession.promise),
+    });
+    const recordingCheck = deferred<boolean>();
+    const hasActiveRecording = vi.spyOn(MeetingRecordingRepository.prototype, "hasActiveRecording").mockImplementationOnce(() => recordingCheck.promise);
+    render(<App repository={catalog} auth={auth} synchronizer={synchronizer()} recorder={recorder} now={() => currentNow.toISOString()} />);
+    await screen.findByRole("heading", { name: "会议本" });
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    act(() => window.dispatchEvent(new Event("offline")));
+    currentNow = new Date(expiresAt);
+    act(() => { vi.advanceTimersByTime(1_000); });
+    expect(hasActiveRecording).toHaveBeenCalledOnce();
+
+    act(() => window.dispatchEvent(new Event("online")));
+    expect(auth.me).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      recordingCheck.resolve(false);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      onlineSession.resolve({ id: userA, sessionExpiresAt: refreshedExpiry });
+      await Promise.resolve();
+    });
+    vi.useRealTimers();
+
+    expect(await screen.findByRole("heading", { name: "会议本" })).toBeVisible();
+    await expect(catalog.validDeviceAccess(currentNow.toISOString())).resolves.toMatchObject({ expiresAt: refreshedExpiry });
   });
 
   test("does not unlock local catalog for HTTP or malformed session failures", async () => {
