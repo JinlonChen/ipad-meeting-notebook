@@ -17,6 +17,7 @@ export type RecordingControllerDependencies = {
   persistChunk(blob: Blob, startedOffsetMs: number, endedOffsetMs: number): Promise<void>;
   nowMilliseconds(): number;
   visibility?: VisibilityPort;
+  onInterrupted?: () => Promise<void>;
 };
 
 export class RecordingController {
@@ -91,6 +92,7 @@ export class RecordingController {
   private async interrupt(): Promise<void> {
     if (this.currentStatus !== "recording") return;
     await this.halt("interrupted");
+    await this.dependencies.onInterrupted?.();
   }
 
   private async halt(finalStatus: RecordingControllerStatus): Promise<void> {

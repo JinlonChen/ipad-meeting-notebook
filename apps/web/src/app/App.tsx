@@ -8,6 +8,7 @@ import { MeetingListPage } from "../meetings/MeetingListPage.js";
 import { MeetingWorkspacePage } from "../meetings/MeetingWorkspacePage.js";
 import { MeetingCatalogRepository } from "../meetings/repository.js";
 import { CatalogSync, type MeetingCatalogApi, type SyncResult } from "../meetings/sync.js";
+import { createBrowserWorkspaceRecorder } from "../recording/browser-recorder.js";
 import { normalizeBasePath } from "./base-path.js";
 
 const defaultNow = () => new Date().toISOString();
@@ -349,5 +350,17 @@ function SessionApp({ repository, auth, synchronizer, now }: SessionProps) {
   if (gate === "logout-error") return <main className="login-page"><section className="login-panel"><h1>无法安全退出</h1><p>本地访问权限尚未清除。</p><button className="primary-button" onClick={() => void logout()}>重试退出</button></section></main>;
   if (gate === "login" || gate === "offline-lock") return <LoginPage onLogin={login} offline={gate === "offline-lock"} />;
   if (gate === "error") return <main className="login-page"><section className="login-panel"><h1>无法验证访问权限</h1><button className="primary-button" onClick={() => void authorize()}>重试</button></section></main>;
-  return <BrowserRouter basename={normalizeBasePath(import.meta.env.BASE_URL)}><Routes><Route path="/meetings/:id" element={<MeetingWorkspacePage repository={repository} refresh={guardedRefresh} scheduleRefresh={guardedScheduledRefresh} now={now} online={online} />} /><Route path="*" element={<MeetingListPage repository={repository} refresh={guardedRefresh} scheduleRefresh={guardedScheduledRefresh} now={now} online={online} onLogout={() => void logout()} />} /></Routes></BrowserRouter>;
+  return <CatalogRoutes repository={repository} refresh={guardedRefresh} scheduleRefresh={guardedScheduledRefresh} now={now} online={online} onLogout={() => void logout()} />;
+}
+
+function CatalogRoutes({ repository, refresh, scheduleRefresh, now, online, onLogout }: {
+  repository: MeetingCatalogRepository;
+  refresh: () => Promise<SyncResult>;
+  scheduleRefresh: () => Promise<SyncResult>;
+  now: () => string;
+  online: boolean;
+  onLogout: () => void;
+}) {
+  const [recorder] = useState(() => createBrowserWorkspaceRecorder(repository.recordingDatabase(), now));
+  return <BrowserRouter basename={normalizeBasePath(import.meta.env.BASE_URL)}><Routes><Route path="/meetings/:id" element={<MeetingWorkspacePage repository={repository} recorder={recorder} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} />} /><Route path="*" element={<MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} onLogout={onLogout} />} /></Routes></BrowserRouter>;
 }

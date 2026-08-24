@@ -67,6 +67,18 @@ describe("MeetingRecordingRepository", () => {
     await expect(repository.session(meetingA)).resolves.toMatchObject({ nextSequence: 0, elapsedMs: 0 });
   });
 
+  test("discards a failed empty start but preserves a session that already captured audio", async () => {
+    const { repository } = createRepository();
+    await repository.start(meetingA, start);
+    await expect(repository.abortFailedStart(meetingA)).resolves.toBe("discarded");
+    await expect(repository.session(meetingA)).resolves.toBeNull();
+
+    await repository.start(meetingA, start);
+    await repository.appendChunk(meetingA, new Blob(["audio"], { type: "audio/webm" }), 0, 10_000, start);
+    await expect(repository.abortFailedStart(meetingA)).resolves.toBe("recoverable");
+    await expect(repository.session(meetingA)).resolves.toMatchObject({ state: "recoverable", nextSequence: 1 });
+  });
+
   test("marks an unclosed recording recoverable without inventing an end time", async () => {
     const { repository } = createRepository();
     await repository.start(meetingA, start);

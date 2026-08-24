@@ -6,6 +6,7 @@ import { MeetingNoteOperationSchema, type Meeting } from "@meeting/contracts";
 import { MeetingWorkspacePage } from "../../src/meetings/MeetingWorkspacePage.js";
 import { MeetingCatalogRepository } from "../../src/meetings/repository.js";
 import type { SyncResult } from "../../src/meetings/sync.js";
+import { createBrowserWorkspaceRecorder } from "../../src/recording/browser-recorder.js";
 import "../../src/app/styles.css";
 
 const now = "2026-08-21T00:00:00.000Z";
@@ -76,11 +77,12 @@ function workspace(
   refresh: () => Promise<SyncResult>,
   scheduleRefresh: () => Promise<SyncResult>,
 ) {
+  const recorder = createBrowserWorkspaceRecorder(repository.recordingDatabase(), () => later);
   return <MemoryRouter initialEntries={[`/meetings/${id}`]}>
     <Routes>
       <Route
         path="/meetings/:id"
-        element={<MeetingWorkspacePage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} online={online} now={() => later} />}
+        element={<MeetingWorkspacePage repository={repository} recorder={recorder} refresh={refresh} scheduleRefresh={scheduleRefresh} online={online} now={() => later} />}
       />
       <Route path="/meetings" element={<main><h1>会议列表</h1></main>} />
     </Routes>

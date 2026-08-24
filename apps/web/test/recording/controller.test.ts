@@ -96,17 +96,20 @@ describe("RecordingController", () => {
 
   test("marks a recorder error as interrupted", async () => {
     const recorder = new FakeRecorder();
+    const onInterrupted = vi.fn().mockResolvedValue(undefined);
     const controller = new RecordingController({
       getUserMedia: async () => ({ getTracks: () => [] } as unknown as MediaStream),
       createRecorder: () => recorder as unknown as MediaRecorder,
       requestWakeLock: async () => null,
       persistChunk: async () => undefined,
       nowMilliseconds: () => 0,
+      onInterrupted,
     });
     await controller.start();
 
     recorder.dispatchEvent(new Event("error"));
     await vi.waitFor(() => expect(controller.status()).toBe("interrupted"));
+    await vi.waitFor(() => expect(onInterrupted).toHaveBeenCalledOnce());
   });
 
   test("reacquires a released wake lock only while visible", async () => {

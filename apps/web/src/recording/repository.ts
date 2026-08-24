@@ -123,6 +123,21 @@ export class MeetingRecordingRepository {
     return chunks.sort((left, right) => left.sequence - right.sequence);
   }
 
+  async abortFailedStart(meetingIdInput: string): Promise<"discarded" | "recoverable"> {
+    const meetingId = MeetingIdSchema.parse(meetingIdInput);
+    return this.database.transaction("rw", this.database.recordingSessions, this.database.audioChunks, async () => {
+      const session = await this.database.recordingSessions.get(meetingId);
+      if (!session || session.state !== "recording") throw new Error("RECORDING_NOT_ACTIVE");
+      const chunks = await this.database.audioChunks.where("meetingId").equals(meetingId).count();
+      if (chunks === 0) {
+        await this.database.recordingSessions.delete(meetingId);
+        return "discarded";
+      }
+      await this.database.recordingSessions.put(RecordingSessionSchema.parse({ ...session, state: "recoverable" }));
+      return "recoverable";
+    });
+  }
+
   async recoverInterruptedSessions(): Promise<number> {
     return this.database.transaction("rw", this.database.recordingSessions, async () => {
       const active = await this.database.recordingSessions.where("state").equals("recording").toArray();

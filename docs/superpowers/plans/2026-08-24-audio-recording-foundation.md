@@ -65,12 +65,12 @@
 - Modify: `apps/web/src/app/styles.css`
 - Test: `apps/web/test/meetings/MeetingWorkspacePage.test.tsx`
 
-- [ ] **Step 1: Write failing UI tests** for a microphone start button, permission denial, recording timer, stop confirmation, local-save status, offline state, and recoverable-session banner.
-- [ ] **Step 2: Run the focused test** and confirm the controls are absent.
-- [ ] **Step 3: Add compact icon-led controls** with stable dimensions, visible recording indicator, timer, storage/upload text, and the fixed warning that recording requires the app to stay foreground and awake.
-- [ ] **Step 4: Wire controller/repository dependencies** through production composition; do not put browser API calls directly in React.
-- [ ] **Step 5: Add portrait/landscape/320px tests** and ensure controls and note editor do not overlap.
-- [ ] **Step 6: Run focused tests, typecheck, and commit.**
+- [x] **Step 1: Write failing UI tests** for a microphone start button, permission denial, recording timer, stop confirmation, local-save status, offline state, and recoverable-session banner.
+- [x] **Step 2: Run the focused test** and confirm the controls are absent.
+- [x] **Step 3: Add compact icon-led controls** with stable dimensions, visible recording indicator, timer, storage/upload text, and the fixed warning that recording requires the app to stay foreground and awake.
+- [x] **Step 4: Wire controller/repository dependencies** through production composition; do not put browser API calls directly in React.
+- [x] **Step 5: Add portrait/landscape/320px tests** and ensure controls and note editor do not overlap.
+- [x] **Step 6: Run focused tests, typecheck, and commit.**
 
 ### Task 5: Upload authenticated chunks to private Supabase Storage
 
