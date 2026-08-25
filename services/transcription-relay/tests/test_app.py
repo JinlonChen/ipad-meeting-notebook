@@ -34,11 +34,12 @@ class FakeBackend:
 
 
 class FakeProvider:
-    def __init__(self):
+    def __init__(self, include_second_final=False):
         import asyncio
         self.events = asyncio.Queue()
         self.audio = []
         self.stopped = False
+        self.include_second_final = include_second_final
 
     async def start(self):
         await self.events.put({"type": "ready"})
@@ -50,18 +51,19 @@ class FakeProvider:
         self.audio.append(chunk)
         await self.events.put({"type": "partial", "text": "正在讨论"})
         await self.events.put({"type": "final", "item_id": "item-1", "text": "形成结论"})
-        await self.events.put({"type": "final", "item_id": "item-2", "text": "新增结论"})
+        if self.include_second_final:
+            await self.events.put({"type": "final", "item_id": "item-2", "text": "新增结论"})
 
     async def stop(self):
         self.stopped = True
 
 
-def harness(backend=None):
+def harness(backend=None, include_second_final=False):
     backend = backend or FakeBackend()
     providers = []
 
     def provider_factory(_key):
-        provider = FakeProvider()
+        provider = FakeProvider(include_second_final=include_second_final)
         providers.append(provider)
         return provider
 
@@ -157,7 +159,7 @@ def test_duplicate_provider_final_does_not_consume_the_next_position():
                 return {**segment, "position": 2, "text": "已有分段"}
             return segment
 
-    client, backend, _ = harness(DuplicateBackend())
+    client, backend, _ = harness(DuplicateBackend(), include_second_final=True)
     with client.websocket_connect(
         f"/v1/realtime-transcription?meetingId={MEETING_ID}",
         headers={"origin": "https://jinlonchen.github.io"},
