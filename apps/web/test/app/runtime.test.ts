@@ -33,7 +33,7 @@ describe("composeProductionApp", () => {
     expect(deps.createAuth).toHaveBeenCalledWith(client);
     expect(deps.createCatalog).toHaveBeenCalledWith(client);
     expect(deps.createRecordingStorage).toHaveBeenCalledWith(client);
-    expect(deps.createIntelligence).toHaveBeenCalledWith(client);
+    expect(deps.createIntelligence).toHaveBeenCalledWith(client, "https://project.supabase.co");
     expect(result).toMatchObject({
       repository: vi.mocked(deps.createRepository).mock.results[0]!.value,
       auth: vi.mocked(deps.createAuth).mock.results[0]!.value,

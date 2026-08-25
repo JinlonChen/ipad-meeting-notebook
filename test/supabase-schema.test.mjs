@@ -10,6 +10,7 @@ const noteMigrationPath = resolve(root, "supabase/migrations/202608230002_meetin
 const audioMigrationPath = resolve(root, "supabase/migrations/202608240001_meeting_audio.sql");
 const intelligenceMigrationPath = resolve(root, "supabase/migrations/202608240003_meeting_intelligence.sql");
 const splitIntelligenceMigrationPath = resolve(root, "supabase/migrations/202608240004_split_ai_provider_credentials.sql");
+const realtimeAsrMigrationPath = resolve(root, "supabase/migrations/202608250001_realtime_asr_config.sql");
 const catalogTestPath = resolve(root, "supabase/tests/meeting_catalog.sql");
 const audioTestPath = resolve(root, "supabase/tests/meeting_audio.sql");
 
@@ -18,6 +19,7 @@ let noteSql;
 let audioSql;
 let intelligenceSql;
 let splitIntelligenceSql;
+let realtimeAsrSql;
 let catalogTestSql;
 let audioTestSql;
 test.before(async () => {
@@ -26,6 +28,7 @@ test.before(async () => {
   audioSql = await readFile(audioMigrationPath, "utf8");
   intelligenceSql = await readFile(intelligenceMigrationPath, "utf8");
   splitIntelligenceSql = await readFile(splitIntelligenceMigrationPath, "utf8");
+  realtimeAsrSql = await readFile(realtimeAsrMigrationPath, "utf8");
   catalogTestSql = await readFile(catalogTestPath, "utf8");
   audioTestSql = await readFile(audioTestPath, "utf8");
 });
@@ -217,4 +220,23 @@ test("AI provider keys are write-only to the client and configured state is a bo
   assert.match(source, /create or replace function public\.ai_provider_configured\(\) returns boolean language sql stable security definer set search_path = pg_catalog, public/);
   assert.match(source, /revoke all on function public\.ai_provider_configured\(\) from public, anon/);
   assert.match(source, /grant execute on function public\.ai_provider_configured\(\) to authenticated/);
+});
+
+test("realtime ASR migration preserves saved keys while fixing the endpoint and model", () => {
+  const source = realtimeAsrSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
+  assert.match(source, /update public\.ai_provider_credentials set transcription_base_url = 'wss:\/\/llm-gctiyfgr4e625ujt\.cn-beijing\.maas\.aliyuncs\.com\/api-ws\/v1\/realtime', transcription_model = 'qwen3-asr-flash-realtime'/);
+  assert.doesNotMatch(source, /transcription_api_key\s*=/);
+  assert.match(source, /check \(transcription_base_url ~ '\^wss:\/\/\[\^\[:space:\]\]\+\$'\)/);
+});
+
+test("AI edge functions answer browser CORS preflight requests", async () => {
+  for (const file of [
+    "supabase/functions/configure-meeting-ai/index.ts",
+    "supabase/functions/process-meeting-intelligence/index.ts",
+  ]) {
+    const source = await readFile(resolve(root, file), "utf8");
+    assert.match(source, /request\.method === ["']OPTIONS["']/);
+    assert.match(source, /Access-Control-Allow-Origin/);
+    assert.match(source, /Access-Control-Allow-Headers/);
+  }
 });

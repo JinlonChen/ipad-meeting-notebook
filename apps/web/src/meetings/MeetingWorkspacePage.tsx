@@ -169,7 +169,7 @@ function MeetingEditor({ meeting, folders, noteSyncState, repository, recorder, 
       <time dateTime={meeting.updatedAt}>更新于 {updatedTime(meeting.updatedAt)}</time>
     </section>
     <MeetingRecordingControls meetingId={meeting.id} recorder={recorder} online={online} />
-    {intelligence && <MeetingIntelligencePanel api={intelligence} meetingId={meeting.id} online={online} />}
+    {intelligence && <MeetingIntelligencePanel api={intelligence} meetingId={meeting.id} online={online} recorder={recorder} />}
     <label className="note-editor">
       <span>会议笔记</span>
       <textarea aria-label="会议笔记" value={note.draft} onChange={(event) => note.setDraft(event.target.value)} onBlur={() => void note.flush()} />

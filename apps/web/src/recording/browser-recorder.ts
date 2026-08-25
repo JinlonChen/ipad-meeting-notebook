@@ -3,6 +3,7 @@ import { RecordingController } from "./controller.js";
 import { selectRecordingMimeType } from "./media.js";
 import { MeetingRecordingRepository } from "./repository.js";
 import { WorkspaceRecorder } from "./workspace-recorder.js";
+import type { RealtimeTranscriptionSession, RealtimeTranscriptionUpdate } from "../transcription/browser-session.js";
 
 type BrowserWakeLock = EventTarget & { release(): Promise<void> };
 
@@ -10,9 +11,10 @@ export function createBrowserWorkspaceRecorder(
   database: MeetingCatalogDatabase,
   now: () => string,
   onChunkPersisted: () => void = () => undefined,
+  createTranscription?: (meetingId: string, onUpdate: (update: RealtimeTranscriptionUpdate) => void) => RealtimeTranscriptionSession,
 ): WorkspaceRecorder {
   const repository = new MeetingRecordingRepository(database);
-  return new WorkspaceRecorder(repository, ({ persistChunk, onInterrupted }) => {
+  return new WorkspaceRecorder(repository, ({ meetingId, persistChunk, onInterrupted, onTranscription }) => {
     const Recorder = globalThis.MediaRecorder;
     const mimeType = selectRecordingMimeType(Recorder);
     return new RecordingController({
@@ -33,6 +35,7 @@ export function createBrowserWorkspaceRecorder(
           return () => document.removeEventListener("visibilitychange", listener);
         },
       },
+      ...(createTranscription ? { transcription: createTranscription(meetingId, onTranscription) } : {}),
     });
   }, now, onChunkPersisted);
 }

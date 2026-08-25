@@ -50,7 +50,7 @@ export function composeProductionApp(environment: SupabaseEnvironment, dependenc
     const catalog = dependencies.createCatalog(client);
     const synchronizer = dependencies.createSynchronizer(repository, catalog);
     const recordingStorage = dependencies.createRecordingStorage(client);
-    const intelligence = dependencies.createIntelligence(client);
+    const intelligence = dependencies.createIntelligence(client, config.url);
     return { repository, auth, catalog, synchronizer, recordingStorage, intelligence };
   } catch {
     return { startupError: true as const };

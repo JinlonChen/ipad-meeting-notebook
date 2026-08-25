@@ -77,4 +77,20 @@ describe("MeetingRecordingControls", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("上次录音已中断");
     expect(screen.getByRole("button", { name: "结束并保存录音" })).toBeVisible();
   });
+
+  test("shows realtime transcription status beside the recording timer", async () => {
+    let report: (meetingId: string, snapshot: { status: "streaming"; partial: string; revision: number }) => void = () => undefined;
+    const recorder = port({
+      transcriptionState: vi.fn().mockReturnValue({ status: "connecting", partial: "", revision: 0 }),
+      subscribeTranscription: vi.fn((listener) => { report = listener; return () => undefined; }),
+    });
+    render(<MeetingRecordingControls meetingId="00000000-0000-4000-8000-000000000001" recorder={recorder} online />);
+    await act(async () => Promise.resolve());
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "开始录音" })); });
+
+    expect(screen.getByText("正在连接实时转写")).toBeVisible();
+    act(() => report("00000000-0000-4000-8000-000000000001", { status: "streaming", partial: "", revision: 0 }));
+    expect(screen.getByText("实时转写中")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("录音中 00:00");
+  });
 });

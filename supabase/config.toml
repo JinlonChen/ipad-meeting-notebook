@@ -14,3 +14,6 @@ enable_signup = false
 
 [functions.cleanup-expired-audio]
 verify_jwt = false
+
+[functions.realtime-transcription]
+verify_jwt = false

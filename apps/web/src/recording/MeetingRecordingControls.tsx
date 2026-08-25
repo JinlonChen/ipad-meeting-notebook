@@ -1,5 +1,6 @@
 import { Mic, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import type { RealtimeTranscriptionSnapshot } from "../transcription/browser-session.js";
 
 export type MeetingRecorderPort = {
   hasActiveRecording(): boolean;
@@ -7,6 +8,8 @@ export type MeetingRecorderPort = {
   start(meetingId: string): Promise<void>;
   stop(meetingId: string): Promise<void>;
   subscribe(listener: (meetingId: string, state: "idle" | "recoverable") => void): () => void;
+  transcriptionState?(meetingId: string): RealtimeTranscriptionSnapshot;
+  subscribeTranscription?(listener: (meetingId: string, snapshot: RealtimeTranscriptionSnapshot) => void): () => void;
 };
 
 type UiState = "loading" | "idle" | "starting" | "recording" | "stopping" | "recoverable";
@@ -23,6 +26,14 @@ function microphoneError(error: unknown): string {
   return "无法开始录音，请重试";
 }
 
+function transcriptionLabel(snapshot: RealtimeTranscriptionSnapshot, online: boolean): string {
+  if (!online || snapshot.status === "paused") return "实时转写已暂停";
+  if (snapshot.status === "connecting") return "正在连接实时转写";
+  if (snapshot.status === "streaming") return "实时转写中";
+  if (snapshot.status === "failed") return "实时转写连接失败";
+  return "";
+}
+
 export function MeetingRecordingControls({ meetingId, recorder, online }: {
   meetingId: string;
   recorder: MeetingRecorderPort;
@@ -31,6 +42,7 @@ export function MeetingRecordingControls({ meetingId, recorder, online }: {
   const [state, setState] = useState<UiState>("loading");
   const [seconds, setSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [transcription, setTranscription] = useState<RealtimeTranscriptionSnapshot>(() => recorder.transcriptionState?.(meetingId) ?? { status: "idle", partial: "", revision: 0 });
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -45,6 +57,10 @@ export function MeetingRecordingControls({ meetingId, recorder, online }: {
 
   useEffect(() => recorder.subscribe((changedMeetingId, nextState) => {
     if (mounted.current && changedMeetingId === meetingId) setState(nextState);
+  }), [meetingId, recorder]);
+
+  useEffect(() => recorder.subscribeTranscription?.((changedMeetingId, snapshot) => {
+    if (mounted.current && changedMeetingId === meetingId) setTranscription(snapshot);
   }), [meetingId, recorder]);
 
   useEffect(() => {
@@ -87,6 +103,7 @@ export function MeetingRecordingControls({ meetingId, recorder, online }: {
       </span>
     </div>
     {!online && state === "recording" && <span className="recording-network">录音分片将保存到本机，联网后上传</span>}
+    {state === "recording" && transcriptionLabel(transcription, online) && <span className="recording-network" aria-live="polite">{transcriptionLabel(transcription, online)}</span>}
     <span className="recording-limit">请保持会议本在前台；锁屏或切换应用会中断录音</span>
     {state === "recoverable" && <span className="recording-warning" role="alert">上次录音已中断，已保存的分片仍在本机</span>}
     {error && <span className="recording-warning" role="alert">{error}</span>}

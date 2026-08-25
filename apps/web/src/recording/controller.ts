@@ -18,6 +18,10 @@ export type RecordingControllerDependencies = {
   nowMilliseconds(): number;
   visibility?: VisibilityPort;
   onInterrupted?: () => Promise<void>;
+  transcription?: {
+    start(stream: MediaStream): Promise<void>;
+    stop(): Promise<void>;
+  };
 };
 
 export class RecordingController {
@@ -73,6 +77,7 @@ export class RecordingController {
       await this.acquireWakeLock();
       recorder.start(10_000);
       this.currentStatus = "recording";
+      await this.dependencies.transcription?.start(stream).catch(() => undefined);
     } catch (error) {
       for (const track of stream.getTracks()) track.stop();
       this.stream = null;
@@ -107,6 +112,7 @@ export class RecordingController {
     if (recorder.state !== "inactive") recorder.stop();
     await stopped;
     await this.flush();
+    await this.dependencies.transcription?.stop().catch(() => undefined);
     for (const track of this.stream?.getTracks() ?? []) track.stop();
     const wakeLock = this.wakeLock;
     this.wakeLock = null;

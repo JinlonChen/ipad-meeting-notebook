@@ -49,6 +49,53 @@ describe("RecordingController", () => {
     expect(releaseWakeLock).toHaveBeenCalledOnce();
   });
 
+  test("shares the microphone stream with realtime transcription and stops it before tracks", async () => {
+    const recorder = new FakeRecorder();
+    const order: string[] = [];
+    const stream = { getTracks: () => [{ stop: () => order.push("track") }] } as unknown as MediaStream;
+    const transcription = {
+      start: vi.fn().mockImplementation(async (received: MediaStream) => {
+        expect(received).toBe(stream);
+        order.push("transcription-start");
+      }),
+      stop: vi.fn().mockImplementation(async () => { order.push("transcription-stop"); }),
+    };
+    const controller = new RecordingController({
+      getUserMedia: async () => stream,
+      createRecorder: () => recorder as unknown as MediaRecorder,
+      requestWakeLock: async () => null,
+      persistChunk: async () => undefined,
+      nowMilliseconds: () => 0,
+      transcription,
+    });
+
+    await controller.start();
+    await controller.stop();
+
+    expect(transcription.start).toHaveBeenCalledOnce();
+    expect(transcription.stop).toHaveBeenCalledOnce();
+    expect(order).toEqual(["transcription-start", "transcription-stop", "track"]);
+  });
+
+  test("keeps durable recording active when realtime transcription cannot start", async () => {
+    const recorder = new FakeRecorder();
+    const controller = new RecordingController({
+      getUserMedia: async () => ({ getTracks: () => [] } as unknown as MediaStream),
+      createRecorder: () => recorder as unknown as MediaRecorder,
+      requestWakeLock: async () => null,
+      persistChunk: async () => undefined,
+      nowMilliseconds: () => 0,
+      transcription: {
+        start: vi.fn().mockRejectedValue(new Error("ASR_OFFLINE")),
+        stop: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+
+    await expect(controller.start()).resolves.toBeUndefined();
+    expect(controller.status()).toBe("recording");
+    expect(recorder.start).toHaveBeenCalledWith(10_000);
+  });
+
   test("waits for the final dataavailable write before stop resolves", async () => {
     const recorder = new FakeRecorder();
     const persistChunk = vi.fn().mockResolvedValue(undefined);
