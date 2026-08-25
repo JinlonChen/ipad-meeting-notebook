@@ -60,12 +60,27 @@ describe("readSupabaseConfig", () => {
   });
 
   test.each([
+    ["missing", undefined],
+    ["insecure", "http://relay.example.com"],
+    ["non-root path", "https://relay.example.com/functions"],
+    ["malformed", "not a URL"],
+  ])("keeps the meeting notebook available when the relay URL is %s", (_name, relayUrl) => {
+    expect(readSupabaseConfig({
+      VITE_SUPABASE_URL: "https://project.supabase.co",
+      VITE_SUPABASE_ANON_KEY: anonKey,
+      ...(relayUrl ? { VITE_TRANSCRIPTION_RELAY_URL: relayUrl } : {}),
+    })).toEqual({
+      url: "https://project.supabase.co",
+      anonKey,
+      transcriptionRelayUrl: "https://project.supabase.co",
+    });
+  });
+
+  test.each([
     ["missing URL", { VITE_SUPABASE_ANON_KEY: anonKey, VITE_TRANSCRIPTION_RELAY_URL: "https://relay.example.com" }],
     ["blank URL", { VITE_SUPABASE_URL: "  ", VITE_SUPABASE_ANON_KEY: anonKey, VITE_TRANSCRIPTION_RELAY_URL: "https://relay.example.com" }],
     ["missing anonymous key", { VITE_SUPABASE_URL: "https://project.supabase.co", VITE_TRANSCRIPTION_RELAY_URL: "https://relay.example.com" }],
     ["blank anonymous key", { VITE_SUPABASE_URL: "https://project.supabase.co", VITE_SUPABASE_ANON_KEY: "  ", VITE_TRANSCRIPTION_RELAY_URL: "https://relay.example.com" }],
-    ["missing relay URL", { VITE_SUPABASE_URL: "https://project.supabase.co", VITE_SUPABASE_ANON_KEY: anonKey }],
-    ["insecure relay URL", { VITE_SUPABASE_URL: "https://project.supabase.co", VITE_SUPABASE_ANON_KEY: anonKey, VITE_TRANSCRIPTION_RELAY_URL: "http://relay.example.com" }],
     ["malformed URL", { VITE_SUPABASE_URL: "not a URL", VITE_SUPABASE_ANON_KEY: anonKey }],
     ["unsupported URL protocol", { VITE_SUPABASE_URL: "ftp://localhost", VITE_SUPABASE_ANON_KEY: anonKey }],
     ["production HTTP URL", { VITE_SUPABASE_URL: "http://project.supabase.co", VITE_SUPABASE_ANON_KEY: anonKey }],
@@ -82,9 +97,7 @@ describe("readSupabaseConfig", () => {
       : undefined;
     const completeEnvironment = {
       ...environment,
-      ...(_name === "missing relay URL" ? {} : {
-        VITE_TRANSCRIPTION_RELAY_URL: relayUrl ?? "https://relay.example.com",
-      }),
+      VITE_TRANSCRIPTION_RELAY_URL: relayUrl ?? "https://relay.example.com",
     };
     expectSafeConfigurationError(completeEnvironment);
   });
