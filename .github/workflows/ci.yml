@@ -26,14 +26,25 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Use Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install dependencies
         run: npm ci
+
+      - name: Install relay dependencies
+        run: pip install -r services/transcription-relay/requirements-dev.txt
 
       - name: Typecheck
         run: npm run typecheck
 
       - name: Run full test suite
         run: npm test
+
+      - name: Test transcription relay
+        run: PYTHONPATH=services/transcription-relay pytest -q services/transcription-relay/tests
 
       - name: Validate Supabase schema contract
         run: node --test test/supabase-schema.test.mjs

@@ -5,11 +5,13 @@ import type { Database } from "./types.js";
 export type SupabaseEnvironment = {
   VITE_SUPABASE_URL?: string;
   VITE_SUPABASE_ANON_KEY?: string;
+  VITE_TRANSCRIPTION_RELAY_URL?: string;
 };
 
 type SupabaseConfig = {
   url: string;
   anonKey: string;
+  transcriptionRelayUrl: string;
 };
 
 export class SupabaseConfigurationError extends Error {
@@ -24,11 +26,14 @@ const localHttpHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
 export function readSupabaseConfig(environment: SupabaseEnvironment): SupabaseConfig {
   const url = environment.VITE_SUPABASE_URL?.trim();
   const anonKey = environment.VITE_SUPABASE_ANON_KEY?.trim();
-  if (!url || !anonKey) throw new SupabaseConfigurationError();
+  const transcriptionRelayUrl = environment.VITE_TRANSCRIPTION_RELAY_URL?.trim();
+  if (!url || !anonKey || !transcriptionRelayUrl) throw new SupabaseConfigurationError();
 
   let parsedUrl: URL;
+  let parsedRelayUrl: URL;
   try {
     parsedUrl = new URL(url);
+    parsedRelayUrl = new URL(transcriptionRelayUrl);
   } catch {
     throw new SupabaseConfigurationError();
   }
@@ -42,7 +47,19 @@ export function readSupabaseConfig(environment: SupabaseEnvironment): SupabaseCo
     throw new SupabaseConfigurationError();
   }
 
-  return { url: parsedUrl.origin, anonKey };
+  const relayIsSecure = parsedRelayUrl.protocol === "https:" || parsedRelayUrl.protocol === "wss:";
+  const relayIsLocal = (parsedRelayUrl.protocol === "http:" || parsedRelayUrl.protocol === "ws:")
+    && localHttpHosts.has(parsedRelayUrl.hostname);
+  if (
+    (!relayIsSecure && !relayIsLocal)
+    || parsedRelayUrl.username
+    || parsedRelayUrl.password
+    || parsedRelayUrl.pathname !== "/"
+    || parsedRelayUrl.search
+    || parsedRelayUrl.hash
+  ) throw new SupabaseConfigurationError();
+
+  return { url: parsedUrl.origin, anonKey, transcriptionRelayUrl: parsedRelayUrl.origin };
 }
 
 export function createMeetingSupabaseClient(config: SupabaseConfig): SupabaseClient<Database> {

@@ -6,7 +6,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
 };
 const JSON_HEADERS = { ...CORS_HEADERS, "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" };
-const REALTIME_BASE_URL = "wss://llm-gctiyfgr4e625ujt.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime";
+const REALTIME_BASE_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime";
 const REALTIME_MODEL = "qwen3-asr-flash-realtime";
 
 function response(body: Record<string, unknown>, status: number): Response {

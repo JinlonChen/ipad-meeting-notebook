@@ -38,9 +38,11 @@ describe("readSupabaseConfig", () => {
     expect(readSupabaseConfig({
       VITE_SUPABASE_URL: "  https://project.supabase.co  ",
       VITE_SUPABASE_ANON_KEY: `  ${anonKey}  `,
+      VITE_TRANSCRIPTION_RELAY_URL: "  https://relay.example.com  ",
     })).toEqual({
       url: "https://project.supabase.co",
       anonKey,
+      transcriptionRelayUrl: "https://relay.example.com",
     });
   });
 
@@ -53,14 +55,17 @@ describe("readSupabaseConfig", () => {
     expect(readSupabaseConfig({
       VITE_SUPABASE_URL: `  ${url}  `,
       VITE_SUPABASE_ANON_KEY: anonKey,
-    })).toEqual({ url: canonicalUrl, anonKey });
+      VITE_TRANSCRIPTION_RELAY_URL: "https://relay.example.com",
+    })).toEqual({ url: canonicalUrl, anonKey, transcriptionRelayUrl: "https://relay.example.com" });
   });
 
   test.each([
-    ["missing URL", { VITE_SUPABASE_ANON_KEY: anonKey }],
-    ["blank URL", { VITE_SUPABASE_URL: "  ", VITE_SUPABASE_ANON_KEY: anonKey }],
-    ["missing anonymous key", { VITE_SUPABASE_URL: "https://project.supabase.co" }],
-    ["blank anonymous key", { VITE_SUPABASE_URL: "https://project.supabase.co", VITE_SUPABASE_ANON_KEY: "  " }],
+    ["missing URL", { VITE_SUPABASE_ANON_KEY: anonKey, VITE_TRANSCRIPTION_RELAY_URL: "https://relay.example.com" }],
+    ["blank URL", { VITE_SUPABASE_URL: "  ", VITE_SUPABASE_ANON_KEY: anonKey, VITE_TRANSCRIPTION_RELAY_URL: "https://relay.example.com" }],
+    ["missing anonymous key", { VITE_SUPABASE_URL: "https://project.supabase.co", VITE_TRANSCRIPTION_RELAY_URL: "https://relay.example.com" }],
+    ["blank anonymous key", { VITE_SUPABASE_URL: "https://project.supabase.co", VITE_SUPABASE_ANON_KEY: "  ", VITE_TRANSCRIPTION_RELAY_URL: "https://relay.example.com" }],
+    ["missing relay URL", { VITE_SUPABASE_URL: "https://project.supabase.co", VITE_SUPABASE_ANON_KEY: anonKey }],
+    ["insecure relay URL", { VITE_SUPABASE_URL: "https://project.supabase.co", VITE_SUPABASE_ANON_KEY: anonKey, VITE_TRANSCRIPTION_RELAY_URL: "http://relay.example.com" }],
     ["malformed URL", { VITE_SUPABASE_URL: "not a URL", VITE_SUPABASE_ANON_KEY: anonKey }],
     ["unsupported URL protocol", { VITE_SUPABASE_URL: "ftp://localhost", VITE_SUPABASE_ANON_KEY: anonKey }],
     ["production HTTP URL", { VITE_SUPABASE_URL: "http://project.supabase.co", VITE_SUPABASE_ANON_KEY: anonKey }],
@@ -72,7 +77,16 @@ describe("readSupabaseConfig", () => {
     ["query", { VITE_SUPABASE_URL: "https://project.supabase.co?project=other", VITE_SUPABASE_ANON_KEY: anonKey }],
     ["hash", { VITE_SUPABASE_URL: "https://project.supabase.co#credentials", VITE_SUPABASE_ANON_KEY: anonKey }],
   ])("rejects a %s with a fixed safe error", (_name, environment) => {
-    expectSafeConfigurationError(environment);
+    const relayUrl = "VITE_TRANSCRIPTION_RELAY_URL" in environment
+      ? environment.VITE_TRANSCRIPTION_RELAY_URL
+      : undefined;
+    const completeEnvironment = {
+      ...environment,
+      ...(_name === "missing relay URL" ? {} : {
+        VITE_TRANSCRIPTION_RELAY_URL: relayUrl ?? "https://relay.example.com",
+      }),
+    };
+    expectSafeConfigurationError(completeEnvironment);
   });
 
   test.each([
@@ -83,7 +97,8 @@ describe("readSupabaseConfig", () => {
     expect(readSupabaseConfig({
       VITE_SUPABASE_URL: url,
       VITE_SUPABASE_ANON_KEY: anonKey,
-    })).toEqual({ url, anonKey });
+      VITE_TRANSCRIPTION_RELAY_URL: "http://localhost:8000",
+    })).toEqual({ url, anonKey, transcriptionRelayUrl: "http://localhost:8000" });
   });
 });
 
@@ -99,6 +114,7 @@ describe("createMeetingSupabaseClient", () => {
     const client = createMeetingSupabaseClient({
       url: "https://project.supabase.co",
       anonKey,
+      transcriptionRelayUrl: "https://relay.example.com",
     });
 
     expect(client).toBe(expectedClient);

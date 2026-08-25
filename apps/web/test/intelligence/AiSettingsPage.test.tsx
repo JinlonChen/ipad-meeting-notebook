@@ -11,7 +11,7 @@ describe("AiSettingsPage", () => {
     const configure = vi.fn().mockResolvedValue(undefined);
     render(<MemoryRouter><AiSettingsPage api={{ configure }} /></MemoryRouter>);
 
-    expect(screen.getByLabelText("转写接口地址")).toHaveValue("wss://llm-gctiyfgr4e625ujt.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime");
+    expect(screen.getByLabelText("转写接口地址")).toHaveValue("wss://dashscope.aliyuncs.com/api-ws/v1/realtime");
     expect(screen.getByLabelText("转写模型")).toHaveValue("qwen3-asr-flash-realtime");
     await user.type(screen.getByLabelText("转写 API Key"), "asr-key");
     await user.type(screen.getByLabelText("总结接口地址"), "https://summary.example.com/v1");
@@ -20,7 +20,7 @@ describe("AiSettingsPage", () => {
     await user.click(screen.getByRole("button", { name: "保存 AI 配置" }));
 
     expect(configure).toHaveBeenCalledWith({
-      transcriptionBaseUrl: "wss://llm-gctiyfgr4e625ujt.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime",
+      transcriptionBaseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
       transcriptionModel: "qwen3-asr-flash-realtime",
       transcriptionApiKey: "asr-key",
       summaryBaseUrl: "https://summary.example.com/v1",

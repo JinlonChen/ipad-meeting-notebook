@@ -24,7 +24,11 @@ test("CI checks every production and database boundary on Node 22", async () => 
   assert.match(workflow, /pull_request:/);
   assert.match(workflow, /push:\s*\n\s*branches:\s*\[main\]/);
   assert.match(workflow, /node-version:\s*["']?22["']?/);
+  assert.match(workflow, /actions\/setup-python@v5/);
+  assert.match(workflow, /python-version:\s*["']?3\.12["']?/);
   assert.match(workflow, /npm ci/);
+  assert.match(workflow, /pip install -r services\/transcription-relay\/requirements-dev\.txt/);
+  assert.match(workflow, /PYTHONPATH=services\/transcription-relay pytest -q services\/transcription-relay\/tests/);
   assert.match(workflow, /npm run typecheck/);
   assert.match(workflow, /npm test(?:\s|$)/m);
   assert.match(workflow, /node --test test\/supabase-schema\.test\.mjs/);
@@ -50,6 +54,8 @@ test("Pages deployment is main-only, least-privileged, and gated by a complete v
   assert.match(deploy, /permissions:[\s\S]*id-token:\s*write/);
   for (const command of [
     "npm ci",
+    "pip install -r services/transcription-relay/requirements-dev.txt",
+    "PYTHONPATH=services/transcription-relay pytest -q services/transcription-relay/tests",
     "npm run typecheck",
     "npm test",
     "node --test test/supabase-schema.test.mjs",
@@ -72,7 +78,7 @@ test("Pages deployment is main-only, least-privileged, and gated by a complete v
   assert.ok(build !== -1 && scan > build && upload > scan, "configured build must be scanned before upload");
 });
 
-test("Pages build receives only public Supabase web configuration and its repository base path", async () => {
+test("Pages build receives only public browser configuration and its repository base path", async () => {
   const workflow = await read(".github/workflows/deploy-pages.yml");
   const dotReferences = [...workflow.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((match) => match[1]);
   const bracketReferences = [...workflow.matchAll(/secrets\[([^\]]+)\]/g)].map((match) => {
@@ -84,6 +90,7 @@ test("Pages build receives only public Supabase web configuration and its reposi
   assert.deepEqual([...new Set(secretReferences)].sort(), ["VITE_SUPABASE_ANON_KEY", "VITE_SUPABASE_URL"]);
   assert.match(workflow, /VITE_SUPABASE_URL:\s*\$\{\{\s*secrets\.VITE_SUPABASE_URL\s*\}\}/);
   assert.match(workflow, /VITE_SUPABASE_ANON_KEY:\s*\$\{\{\s*secrets\.VITE_SUPABASE_ANON_KEY\s*\}\}/);
+  assert.match(workflow, /VITE_TRANSCRIPTION_RELAY_URL:\s*\$\{\{\s*vars\.VITE_TRANSCRIPTION_RELAY_URL\s*\}\}/);
   assert.match(workflow, /VITE_BASE_PATH:\s*\/\$\{\{\s*github\.event\.repository\.name\s*\}\}\//);
 });
 
@@ -112,9 +119,10 @@ test("environment example exposes only placeholder public browser variables", as
     .filter((line) => line && !line.startsWith("#"))
     .map((line) => line.split("=", 1)[0]);
 
-  assert.deepEqual(names, ["VITE_SUPABASE_URL", "VITE_SUPABASE_ANON_KEY", "VITE_BASE_PATH"]);
+  assert.deepEqual(names, ["VITE_SUPABASE_URL", "VITE_SUPABASE_ANON_KEY", "VITE_TRANSCRIPTION_RELAY_URL", "VITE_BASE_PATH"]);
   assert.match(environment, /VITE_SUPABASE_URL=https:\/\/YOUR_PROJECT_REF\.supabase\.co/);
   assert.match(environment, /VITE_SUPABASE_ANON_KEY=YOUR_PUBLIC_ANON_KEY/);
+  assert.match(environment, /VITE_TRANSCRIPTION_RELAY_URL=https:\/\/YOUR_RELAY_HOST/);
   assert.match(environment, /VITE_BASE_PATH=\//);
 });
 
@@ -132,6 +140,9 @@ test("operator guide covers local setup, safe provisioning, Pages, and iPad offl
     "npx supabase test db",
     "VITE_SUPABASE_URL",
     "VITE_SUPABASE_ANON_KEY",
+    "VITE_TRANSCRIPTION_RELAY_URL",
+    "services/transcription-relay/requirements-dev.txt",
+    "render.yaml",
     "GitHub Actions",
     "添加到主屏幕",
     "关闭 Wi-Fi",
@@ -145,6 +156,7 @@ test("operator guide covers local setup, safe provisioning, Pages, and iPad offl
   assert.match(readme, /原始录音.*云端.*iPad.*48 小时/s);
   assert.match(readme, /PWA.*关闭.*下次启动.*清理/s);
   assert.match(readme, /会议笔记.*完整转写.*AI 总结.*永久保存/s);
-  assert.match(readme, /当前版本.*可恢复的会议录音/s);
-  assert.match(readme, /当前阶段.*尚未实现.*转写.*AI.*手写/s);
+  assert.match(readme, /当前版本.*实时转写.*AI 总结.*可恢复的会议录音/s);
+  assert.match(readme, /实时转写.*阿里.*官方.*SDK/s);
+  assert.match(readme, /手写.*说话人区分.*尚未实现/s);
 });

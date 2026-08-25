@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: ipad-meeting-transcription
+    runtime: docker
+    dockerContext: .
+    dockerfilePath: ./services/transcription-relay/Dockerfile
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false

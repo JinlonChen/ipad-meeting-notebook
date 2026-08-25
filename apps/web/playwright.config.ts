@@ -30,6 +30,7 @@ export default defineConfig({
         E2E_BUILD_OUT_DIR: "dist/e2e-root",
         VITE_SUPABASE_URL: "http://127.0.0.1:54321",
         VITE_SUPABASE_ANON_KEY: "e2e-public-anon-key",
+        VITE_TRANSCRIPTION_RELAY_URL: "http://127.0.0.1:8000",
       },
     },
     {
@@ -41,6 +42,7 @@ export default defineConfig({
         VITE_BASE_PATH: "/ipad-meeting-notebook/",
         VITE_SUPABASE_URL: "http://127.0.0.1:54321",
         VITE_SUPABASE_ANON_KEY: "e2e-public-anon-key",
+        VITE_TRANSCRIPTION_RELAY_URL: "http://127.0.0.1:8000",
       },
     },
   ],

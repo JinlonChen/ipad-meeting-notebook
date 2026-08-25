@@ -12,7 +12,11 @@ function dependencies(overrides: Partial<RuntimeDependencies> = {}): RuntimeDepe
   const recordingStorage = {} as ReturnType<RuntimeDependencies["createRecordingStorage"]>;
   const intelligence = {} as ReturnType<RuntimeDependencies["createIntelligence"]>;
   return {
-    readConfig: vi.fn().mockReturnValue({ url: "https://project.supabase.co", anonKey: "public-value" }),
+    readConfig: vi.fn().mockReturnValue({
+      url: "https://project.supabase.co",
+      anonKey: "public-value",
+      transcriptionRelayUrl: "https://relay.example.com",
+    }),
     createClient: vi.fn().mockReturnValue(client),
     createRepository: vi.fn().mockReturnValue(repository),
     createAuth: vi.fn().mockReturnValue(auth),
@@ -27,13 +31,17 @@ function dependencies(overrides: Partial<RuntimeDependencies> = {}): RuntimeDepe
 describe("composeProductionApp", () => {
   test("uses one Supabase client for auth and catalog", () => {
     const deps = dependencies();
-    const result = composeProductionApp({ VITE_SUPABASE_URL: "https://project.supabase.co", VITE_SUPABASE_ANON_KEY: "public-value" }, deps);
+    const result = composeProductionApp({
+      VITE_SUPABASE_URL: "https://project.supabase.co",
+      VITE_SUPABASE_ANON_KEY: "public-value",
+      VITE_TRANSCRIPTION_RELAY_URL: "https://relay.example.com",
+    }, deps);
     const client = vi.mocked(deps.createClient).mock.results[0]!.value;
 
     expect(deps.createAuth).toHaveBeenCalledWith(client);
     expect(deps.createCatalog).toHaveBeenCalledWith(client);
     expect(deps.createRecordingStorage).toHaveBeenCalledWith(client);
-    expect(deps.createIntelligence).toHaveBeenCalledWith(client, "https://project.supabase.co");
+    expect(deps.createIntelligence).toHaveBeenCalledWith(client, "https://relay.example.com");
     expect(result).toMatchObject({
       repository: vi.mocked(deps.createRepository).mock.results[0]!.value,
       auth: vi.mocked(deps.createAuth).mock.results[0]!.value,

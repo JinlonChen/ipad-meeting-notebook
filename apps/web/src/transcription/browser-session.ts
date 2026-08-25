@@ -25,7 +25,7 @@ type NetworkPort = {
 };
 
 type Dependencies = {
-  supabaseUrl: string;
+  relayUrl: string;
   meetingId: string;
   accessToken(): Promise<string | null>;
   createSocket?(url: string): WebSocket;
@@ -47,11 +47,11 @@ const defaultNetwork: NetworkPort = {
   },
 };
 
-function relayUrl(supabaseUrl: string, meetingId: string, accessToken: string): string {
-  const url = new URL("/functions/v1/realtime-transcription", supabaseUrl);
-  url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
+function relayUrl(baseUrl: string, meetingId: string): string {
+  const url = new URL("/v1/realtime-transcription", baseUrl);
+  if (url.protocol === "http:") url.protocol = "ws:";
+  if (url.protocol === "https:") url.protocol = "wss:";
   url.searchParams.set("meetingId", meetingId);
-  url.searchParams.set("access_token", accessToken);
   return url.toString();
 }
 
@@ -126,8 +126,13 @@ export class BrowserRealtimeTranscriptionSession implements RealtimeTranscriptio
       throw new Error("AUTH_REQUIRED");
     }
     if (this.stopped) return;
-    const socket = (this.dependencies.createSocket ?? ((url: string) => new WebSocket(url)))(relayUrl(this.dependencies.supabaseUrl, this.dependencies.meetingId, token));
+    const socket = (this.dependencies.createSocket ?? ((url: string) => new WebSocket(url)))(relayUrl(this.dependencies.relayUrl, this.dependencies.meetingId));
     this.socket = socket;
+    socket.addEventListener("open", () => {
+      if (this.socket === socket && !this.stopped) {
+        socket.send(JSON.stringify({ type: "authenticate", accessToken: token }));
+      }
+    });
     socket.addEventListener("message", (event) => this.handleMessage(event.data));
     socket.addEventListener("close", () => {
       if (this.socket !== socket) return;
