@@ -27,13 +27,11 @@ export function readSupabaseConfig(environment: SupabaseEnvironment): SupabaseCo
   const url = environment.VITE_SUPABASE_URL?.trim();
   const anonKey = environment.VITE_SUPABASE_ANON_KEY?.trim();
   const transcriptionRelayUrl = environment.VITE_TRANSCRIPTION_RELAY_URL?.trim();
-  if (!url || !anonKey || !transcriptionRelayUrl) throw new SupabaseConfigurationError();
+  if (!url || !anonKey) throw new SupabaseConfigurationError();
 
   let parsedUrl: URL;
-  let parsedRelayUrl: URL;
   try {
     parsedUrl = new URL(url);
-    parsedRelayUrl = new URL(transcriptionRelayUrl);
   } catch {
     throw new SupabaseConfigurationError();
   }
@@ -47,19 +45,34 @@ export function readSupabaseConfig(environment: SupabaseEnvironment): SupabaseCo
     throw new SupabaseConfigurationError();
   }
 
-  const relayIsSecure = parsedRelayUrl.protocol === "https:" || parsedRelayUrl.protocol === "wss:";
-  const relayIsLocal = (parsedRelayUrl.protocol === "http:" || parsedRelayUrl.protocol === "ws:")
-    && localHttpHosts.has(parsedRelayUrl.hostname);
-  if (
-    (!relayIsSecure && !relayIsLocal)
-    || parsedRelayUrl.username
-    || parsedRelayUrl.password
-    || parsedRelayUrl.pathname !== "/"
-    || parsedRelayUrl.search
-    || parsedRelayUrl.hash
-  ) throw new SupabaseConfigurationError();
+  let parsedRelayUrl: URL | undefined;
+  try {
+    parsedRelayUrl = transcriptionRelayUrl ? new URL(transcriptionRelayUrl) : undefined;
+  } catch {
+    parsedRelayUrl = undefined;
+  }
+  const relayIsSecure = parsedRelayUrl
+    ? parsedRelayUrl.protocol === "https:" || parsedRelayUrl.protocol === "wss:"
+    : false;
+  const relayIsLocal = parsedRelayUrl
+    ? (parsedRelayUrl.protocol === "http:" || parsedRelayUrl.protocol === "ws:")
+      && localHttpHosts.has(parsedRelayUrl.hostname)
+    : false;
+  const resolvedRelayUrl = parsedRelayUrl
+    && (relayIsSecure || relayIsLocal)
+    && !parsedRelayUrl.username
+    && !parsedRelayUrl.password
+    && parsedRelayUrl.pathname === "/"
+    && !parsedRelayUrl.search
+    && !parsedRelayUrl.hash
+    ? parsedRelayUrl.origin
+    : parsedUrl.origin;
 
-  return { url: parsedUrl.origin, anonKey, transcriptionRelayUrl: parsedRelayUrl.origin };
+  return {
+    url: parsedUrl.origin,
+    anonKey,
+    transcriptionRelayUrl: resolvedRelayUrl,
+  };
 }
 
 export function createMeetingSupabaseClient(config: SupabaseConfig): SupabaseClient<Database> {
