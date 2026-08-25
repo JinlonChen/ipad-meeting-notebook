@@ -50,7 +50,7 @@ describe("BrowserRealtimeTranscriptionSession", () => {
     const updates: RealtimeTranscriptionUpdate[] = [];
     let socketUrl = "";
     const session = new BrowserRealtimeTranscriptionSession({
-      supabaseUrl: "https://project.supabase.co",
+      relayUrl: "https://relay.example.com",
       meetingId: "00000000-0000-4000-8000-000000000001",
       accessToken: async () => "header.payload.signature",
       createSocket: (url) => { socketUrl = url; return socket as unknown as WebSocket; },
@@ -60,10 +60,12 @@ describe("BrowserRealtimeTranscriptionSession", () => {
 
     await session.start({} as MediaStream);
     expect(audio.context.resume).toHaveBeenCalledOnce();
-    expect(socketUrl).toBe("wss://project.supabase.co/functions/v1/realtime-transcription?meetingId=00000000-0000-4000-8000-000000000001&access_token=header.payload.signature");
+    expect(socketUrl).toBe("wss://relay.example.com/v1/realtime-transcription?meetingId=00000000-0000-4000-8000-000000000001");
     expect(updates).toContainEqual({ type: "status", status: "connecting" });
+    expect(socket.send).not.toHaveBeenCalled();
 
     socket.open();
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ type: "authenticate", accessToken: "header.payload.signature" }));
     socket.message({ type: "ready" });
     audio.emit(new Float32Array([1, 1, 1, -1, -1, -1]));
 
@@ -77,7 +79,7 @@ describe("BrowserRealtimeTranscriptionSession", () => {
     const socket = new FakeSocket();
     const updates: RealtimeTranscriptionUpdate[] = [];
     const session = new BrowserRealtimeTranscriptionSession({
-      supabaseUrl: "https://project.supabase.co",
+      relayUrl: "https://relay.example.com",
       meetingId: "00000000-0000-4000-8000-000000000001",
       accessToken: async () => "token",
       createSocket: () => socket as unknown as WebSocket,
@@ -99,7 +101,7 @@ describe("BrowserRealtimeTranscriptionSession", () => {
     let offline: () => void = () => undefined;
     const unsubscribe = vi.fn();
     const session = new BrowserRealtimeTranscriptionSession({
-      supabaseUrl: "https://project.supabase.co",
+      relayUrl: "https://relay.example.com",
       meetingId: "00000000-0000-4000-8000-000000000001",
       accessToken: async () => "token",
       createSocket: () => socket as unknown as WebSocket,

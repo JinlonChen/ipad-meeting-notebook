@@ -16,7 +16,7 @@ Alibaba's browser-compatible WebRTC protocol does not support the realtime ASR m
 
 ## Architecture
 
-Add `apps/transcription-relay`, a Python 3.12 FastAPI service deployed as a Render web service. It owns only realtime transport and transcript persistence. It never stores audio.
+Add `services/transcription-relay`, a Python 3.12 FastAPI service deployed as a Render web service. It owns only realtime transport and transcript persistence. It never stores audio.
 
 The browser connects to:
 
@@ -36,7 +36,7 @@ The relay then:
 2. Confirms that the authenticated user owns the requested meeting.
 3. Reads that user's saved `transcription_api_key` with the Supabase service role.
 4. Reads the latest transcript position for reconnect continuity.
-5. Starts `dashscope.audio.qwen_omni.OmniRealtimeConversation` with model `qwen3-asr-flash-realtime`, the user's API key, and the existing Beijing workspace WebSocket URL.
+5. Starts `dashscope.audio.qwen_omni.OmniRealtimeConversation` with model `qwen3-asr-flash-realtime`, the user's API key, and the verified public endpoint `wss://dashscope.aliyuncs.com/api-ws/v1/realtime`.
 6. Sends a Chinese PCM16, 16 kHz, server-VAD session configuration.
 7. Replies `{ "type": "ready" }` only after Alibaba reports `session.updated`.
 

@@ -11,6 +11,7 @@ const audioMigrationPath = resolve(root, "supabase/migrations/202608240001_meeti
 const intelligenceMigrationPath = resolve(root, "supabase/migrations/202608240003_meeting_intelligence.sql");
 const splitIntelligenceMigrationPath = resolve(root, "supabase/migrations/202608240004_split_ai_provider_credentials.sql");
 const realtimeAsrMigrationPath = resolve(root, "supabase/migrations/202608250001_realtime_asr_config.sql");
+const publicRealtimeAsrMigrationPath = resolve(root, "supabase/migrations/202608250002_public_realtime_asr_endpoint.sql");
 const catalogTestPath = resolve(root, "supabase/tests/meeting_catalog.sql");
 const audioTestPath = resolve(root, "supabase/tests/meeting_audio.sql");
 
@@ -20,6 +21,7 @@ let audioSql;
 let intelligenceSql;
 let splitIntelligenceSql;
 let realtimeAsrSql;
+let publicRealtimeAsrSql;
 let catalogTestSql;
 let audioTestSql;
 test.before(async () => {
@@ -29,6 +31,7 @@ test.before(async () => {
   intelligenceSql = await readFile(intelligenceMigrationPath, "utf8");
   splitIntelligenceSql = await readFile(splitIntelligenceMigrationPath, "utf8");
   realtimeAsrSql = await readFile(realtimeAsrMigrationPath, "utf8");
+  publicRealtimeAsrSql = await readFile(publicRealtimeAsrMigrationPath, "utf8");
   catalogTestSql = await readFile(catalogTestPath, "utf8");
   audioTestSql = await readFile(audioTestPath, "utf8");
 });
@@ -223,8 +226,8 @@ test("AI provider keys are write-only to the client and configured state is a bo
 });
 
 test("realtime ASR migration preserves saved keys while fixing the endpoint and model", () => {
-  const source = realtimeAsrSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
-  assert.match(source, /update public\.ai_provider_credentials set transcription_base_url = 'wss:\/\/llm-gctiyfgr4e625ujt\.cn-beijing\.maas\.aliyuncs\.com\/api-ws\/v1\/realtime', transcription_model = 'qwen3-asr-flash-realtime'/);
+  const source = `${realtimeAsrSql} ${publicRealtimeAsrSql}`.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
+  assert.match(source, /update public\.ai_provider_credentials set transcription_base_url = 'wss:\/\/dashscope\.aliyuncs\.com\/api-ws\/v1\/realtime', transcription_model = 'qwen3-asr-flash-realtime'/);
   assert.doesNotMatch(source, /transcription_api_key\s*=/);
   assert.match(source, /check \(transcription_base_url ~ '\^wss:\/\/\[\^\[:space:\]\]\+\$'\)/);
 });
