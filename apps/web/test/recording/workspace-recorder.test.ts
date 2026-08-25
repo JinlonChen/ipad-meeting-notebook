@@ -95,3 +95,23 @@ test("clears the live controller when capture is interrupted", async () => {
   expect(stop).not.toHaveBeenCalled();
   expect(recording.completeRecovery).toHaveBeenCalledWith("meeting", "2026-08-24T00:10:00.000Z");
 });
+
+test("publishes realtime transcription state without changing recording state", async () => {
+  const recording = repository();
+  let update: (value: { type: "status"; status: "streaming" } | { type: "partial"; text: string } | { type: "final"; segment: Record<string, unknown> }) => void = () => undefined;
+  const workspace = new WorkspaceRecorder(recording, (options) => {
+    update = options.onTranscription;
+    return { start: vi.fn().mockResolvedValue(undefined), stop: vi.fn().mockResolvedValue(undefined) };
+  }, () => "2026-08-24T00:00:00.000Z");
+  const listener = vi.fn();
+  workspace.subscribeTranscription(listener);
+  await workspace.start("meeting");
+
+  update({ type: "status", status: "streaming" });
+  update({ type: "partial", text: "实时文字" });
+  update({ type: "final", segment: { id: "segment-1", text: "最终文字" } });
+
+  expect(workspace.transcriptionState("meeting")).toEqual({ status: "streaming", partial: "", revision: 1 });
+  expect(listener).toHaveBeenLastCalledWith("meeting", { status: "streaming", partial: "", revision: 1 });
+  expect(workspace.hasActiveRecording()).toBe(true);
+});

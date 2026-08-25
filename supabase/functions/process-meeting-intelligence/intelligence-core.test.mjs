@@ -1,27 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { processMeetingIntelligence } from "./intelligence-core.mjs";
+import { generateMeetingMinutes } from "./intelligence-core.mjs";
 
 const meetingId = "00000000-0000-4000-8000-000000000001";
 
-test("turns provider transcription and position evidence into durable meeting intelligence", async () => {
-  const result = await processMeetingIntelligence({
-    meetingId,
-    transcriptionModel: "whisper-1",
+test("turns an existing realtime transcript into durable meeting minutes", async () => {
+  const transcript = [
+    { id: "00000000-0000-4000-8000-000000000010", position: 0, text: "确认下周发布。" },
+    { id: "00000000-0000-4000-8000-000000000011", position: 1, text: "李明负责公告。" },
+  ];
+  const result = await generateMeetingMinutes({
     summaryModel: "gpt-4.1-mini",
-    mimeType: "audio/webm",
-    audio: new Blob(["meeting audio"], { type: "audio/webm" }),
-    durationMs: 12_000,
+    transcript,
   }, {
-    transcribe: async ({ model, audio }) => {
-      assert.equal(model, "whisper-1");
-      assert.equal(audio.type, "audio/webm");
-      return {
-        text: "确认下周发布。李明负责公告。",
-        segments: [{ text: "确认下周发布。", start: 0, end: 4 }, { text: "李明负责公告。", start: 4, end: 8 }],
-      };
-    },
     summarize: async ({ model, transcript }) => {
       assert.equal(model, "gpt-4.1-mini");
       assert.match(transcript, /\[0\] 确认下周发布。/);
@@ -35,23 +27,15 @@ test("turns provider transcription and position evidence into durable meeting in
     },
   });
 
-  assert.equal(result.transcript.length, 2);
-  assert.equal(result.transcript[0].startedOffsetMs, 0);
-  assert.equal(result.transcript[1].endedOffsetMs, 8_000);
-  assert.deepEqual(result.minutes.actions[0].evidenceSegmentIds, [result.transcript[1].id]);
-  assert.equal(result.minutes.actions[0].dueDate, null);
+  assert.deepEqual(result.actions[0].evidenceSegmentIds, [transcript[1].id]);
+  assert.equal(result.actions[0].dueDate, null);
 });
 
 test("rejects a provider summary that cites transcript positions that do not exist", async () => {
-  await assert.rejects(() => processMeetingIntelligence({
-    meetingId,
-    transcriptionModel: "whisper-1",
+  await assert.rejects(() => generateMeetingMinutes({
     summaryModel: "gpt-4.1-mini",
-    mimeType: "audio/webm",
-    audio: new Blob(["meeting audio"], { type: "audio/webm" }),
-    durationMs: 12_000,
+    transcript: [{ id: "00000000-0000-4000-8000-000000000010", position: 0, text: "确认下周发布。" }],
   }, {
-    transcribe: async () => ({ text: "确认下周发布。" }),
     summarize: async () => ({
       summary: "团队确认下周发布。",
       topics: [],
@@ -60,4 +44,10 @@ test("rejects a provider summary that cites transcript positions that do not exi
       actions: [],
     }),
   }), /INVALID_EVIDENCE_POSITION/);
+});
+
+test("rejects summary generation when the realtime transcript is empty", async () => {
+  await assert.rejects(() => generateMeetingMinutes({ summaryModel: "gpt-4.1-mini", transcript: [] }, {
+    summarize: async () => assert.fail("summary provider must not run"),
+  }), /EMPTY_TRANSCRIPTION/);
 });

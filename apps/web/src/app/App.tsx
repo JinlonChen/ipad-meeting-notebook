@@ -473,7 +473,14 @@ function CatalogRoutes({ repository, recordingStorage, recorder, intelligence, r
     return {
       userId,
       worker,
-      recorder: recorder ?? createBrowserWorkspaceRecorder(repository.recordingDatabase(), now, scheduleUpload),
+      recorder: recorder ?? createBrowserWorkspaceRecorder(
+        repository.recordingDatabase(),
+        now,
+        scheduleUpload,
+        intelligence?.createRealtimeSession
+          ? (meetingId, onUpdate) => intelligence.createRealtimeSession!(meetingId, onUpdate)
+          : undefined,
+      ),
     };
   });
   useEffect(() => {

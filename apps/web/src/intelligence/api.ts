@@ -3,6 +3,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { Database } from "../supabase/types.js";
 import type { MeetingIntelligencePort, MeetingIntelligenceSnapshot } from "./MeetingIntelligencePanel.js";
+import { BrowserRealtimeTranscriptionSession, type RealtimeTranscriptionUpdate } from "../transcription/browser-session.js";
+
+export const ALIBABA_REALTIME_BASE_URL = "wss://llm-gctiyfgr4e625ujt.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime";
+export const ALIBABA_REALTIME_MODEL = "qwen3-asr-flash-realtime";
 
 export type AiProviderConfiguration = {
   transcriptionBaseUrl: string;
@@ -16,7 +20,7 @@ export type AiProviderConfiguration = {
 function failed(): Error { return new Error("INTELLIGENCE_REQUEST_FAILED"); }
 
 export class SupabaseMeetingIntelligenceApi implements MeetingIntelligencePort {
-  constructor(private readonly client: SupabaseClient<Database>) {}
+  constructor(private readonly client: SupabaseClient<Database>, private readonly supabaseUrl: string) {}
 
   async configured(): Promise<boolean> {
     const { data, error } = await this.client.rpc("ai_provider_configured", {});
@@ -29,9 +33,21 @@ export class SupabaseMeetingIntelligenceApi implements MeetingIntelligencePort {
     if (error) throw failed();
   }
 
-  async process(meetingId: string): Promise<void> {
+  async summarize(meetingId: string): Promise<void> {
     const { error } = await this.client.functions.invoke("process-meeting-intelligence-v3", { body: { meetingId } });
     if (error) throw failed();
+  }
+
+  createRealtimeSession(meetingId: string, onUpdate: (update: RealtimeTranscriptionUpdate) => void): BrowserRealtimeTranscriptionSession {
+    return new BrowserRealtimeTranscriptionSession({
+      supabaseUrl: this.supabaseUrl,
+      meetingId,
+      accessToken: async () => {
+        const { data, error } = await this.client.auth.getSession();
+        return error ? null : data.session?.access_token ?? null;
+      },
+      onUpdate,
+    });
   }
 
   async read(meetingId: string): Promise<MeetingIntelligenceSnapshot> {
@@ -53,6 +69,6 @@ export class SupabaseMeetingIntelligenceApi implements MeetingIntelligencePort {
   }
 }
 
-export function createSupabaseMeetingIntelligenceApi(client: SupabaseClient<Database>): SupabaseMeetingIntelligenceApi {
-  return new SupabaseMeetingIntelligenceApi(client);
+export function createSupabaseMeetingIntelligenceApi(client: SupabaseClient<Database>, supabaseUrl: string): SupabaseMeetingIntelligenceApi {
+  return new SupabaseMeetingIntelligenceApi(client, supabaseUrl);
 }

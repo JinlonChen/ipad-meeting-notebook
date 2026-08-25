@@ -6,6 +6,8 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
 };
 const JSON_HEADERS = { ...CORS_HEADERS, "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" };
+const REALTIME_BASE_URL = "wss://llm-gctiyfgr4e625ujt.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime";
+const REALTIME_MODEL = "qwen3-asr-flash-realtime";
 
 function response(body: Record<string, unknown>, status: number): Response {
   return new Response(JSON.stringify(body), { headers: JSON_HEADERS, status });
@@ -43,19 +45,17 @@ Deno.serve(async (request) => {
   const body: unknown = await request.json().catch(() => null);
   if (!body || typeof body !== "object" || Array.isArray(body)) return response({ error: "invalid_request" }, 400);
   const input = body as Record<string, unknown>;
-  const transcriptionBaseUrl = validBaseUrl(input.transcriptionBaseUrl);
-  const transcriptionModel = requiredText(input.transcriptionModel, 200);
   const transcriptionApiKey = requiredText(input.transcriptionApiKey, 4_096);
   const summaryBaseUrl = validBaseUrl(input.summaryBaseUrl);
   const summaryModel = requiredText(input.summaryModel, 200);
   const summaryApiKey = requiredText(input.summaryApiKey, 4_096);
-  if (!transcriptionBaseUrl || !transcriptionModel || !transcriptionApiKey || !summaryBaseUrl || !summaryModel || !summaryApiKey) return response({ error: "invalid_request" }, 400);
+  if (!transcriptionApiKey || !summaryBaseUrl || !summaryModel || !summaryApiKey) return response({ error: "invalid_request" }, 400);
 
   const service = createClient(supabaseUrl, serviceRoleKey, { auth: { autoRefreshToken: false, persistSession: false } });
   const { error } = await service.from("ai_provider_credentials").upsert({
     user_id: data.user.id,
-    transcription_base_url: transcriptionBaseUrl,
-    transcription_model: transcriptionModel,
+    transcription_base_url: REALTIME_BASE_URL,
+    transcription_model: REALTIME_MODEL,
     transcription_api_key: transcriptionApiKey,
     summary_base_url: summaryBaseUrl,
     summary_model: summaryModel,

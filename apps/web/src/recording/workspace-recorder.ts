@@ -1,4 +1,5 @@
 import type { MeetingRecorderPort } from "./MeetingRecordingControls.js";
+import type { RealtimeTranscriptionSnapshot, RealtimeTranscriptionUpdate } from "../transcription/browser-session.js";
 
 type RecordingRepositoryPort = {
   deleteExpiredAudio(now: string): Promise<number>;
@@ -16,11 +17,16 @@ type ControllerFactory = (options: {
   meetingId: string;
   persistChunk(blob: Blob, startedOffsetMs: number, endedOffsetMs: number): Promise<void>;
   onInterrupted(): Promise<void>;
+  onTranscription(update: RealtimeTranscriptionUpdate): void;
 }) => ControllerPort;
+
+const EMPTY_TRANSCRIPTION: RealtimeTranscriptionSnapshot = { status: "idle", partial: "", revision: 0 };
 
 export class WorkspaceRecorder implements MeetingRecorderPort {
   private active: { meetingId: string; controller: ControllerPort } | null = null;
   private readonly listeners = new Set<(meetingId: string, state: "idle" | "recoverable") => void>();
+  private readonly transcriptionListeners = new Set<(meetingId: string, snapshot: RealtimeTranscriptionSnapshot) => void>();
+  private readonly transcriptionSnapshots = new Map<string, RealtimeTranscriptionSnapshot>();
   private initialization: Promise<void> | null = null;
 
   constructor(
@@ -33,6 +39,28 @@ export class WorkspaceRecorder implements MeetingRecorderPort {
   subscribe(listener: (meetingId: string, state: "idle" | "recoverable") => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  subscribeTranscription(listener: (meetingId: string, snapshot: RealtimeTranscriptionSnapshot) => void): () => void {
+    this.transcriptionListeners.add(listener);
+    return () => this.transcriptionListeners.delete(listener);
+  }
+
+  transcriptionState(meetingId: string): RealtimeTranscriptionSnapshot {
+    return this.transcriptionSnapshots.get(meetingId) ?? EMPTY_TRANSCRIPTION;
+  }
+
+  private updateTranscription(meetingId: string, update: RealtimeTranscriptionUpdate): void {
+    const current = this.transcriptionState(meetingId);
+    const next: RealtimeTranscriptionSnapshot = update.type === "status"
+      ? { ...current, status: update.status }
+      : update.type === "partial"
+        ? { ...current, partial: update.text }
+        : update.type === "final"
+          ? { ...current, partial: "", revision: current.revision + 1 }
+          : { ...current, status: "failed" };
+    this.transcriptionSnapshots.set(meetingId, next);
+    for (const listener of this.transcriptionListeners) listener(meetingId, next);
   }
 
   private publish(meetingId: string, state: "idle" | "recoverable"): void {
@@ -77,6 +105,7 @@ export class WorkspaceRecorder implements MeetingRecorderPort {
           this.publish(meetingId, "recoverable");
         }
       },
+      onTranscription: (update) => this.updateTranscription(meetingId, update),
     });
     this.active = { meetingId, controller };
     try {
