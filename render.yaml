@@ -2,6 +2,7 @@ services:
   - type: web
     name: ipad-meeting-transcription
     runtime: docker
+    plan: free
     dockerContext: .
     dockerfilePath: ./services/transcription-relay/Dockerfile
     healthCheckPath: /health
