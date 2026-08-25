@@ -126,6 +126,13 @@ test("environment example exposes only placeholder public browser variables", as
   assert.match(environment, /VITE_BASE_PATH=\//);
 });
 
+test("Render transcription relay uses the free compute plan", async () => {
+  const blueprint = await read("render.yaml");
+
+  assert.match(blueprint, /name:\s*ipad-meeting-transcription/);
+  assert.match(blueprint, /plan:\s*free/);
+});
+
 test("operator guide covers local setup, safe provisioning, Pages, and iPad offline acceptance", async () => {
   const readme = await read("README.md");
 
