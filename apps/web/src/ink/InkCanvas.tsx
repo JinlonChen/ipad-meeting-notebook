@@ -70,8 +70,17 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
   const [width, setWidth] = useState(4);
   const [error, setError] = useState("");
   const [isWriting, setIsWriting] = useState(false);
+  const [scrollPosition, setScrollPosition] = useState(0);
+  const [scrollMaximum, setScrollMaximum] = useState(0);
   historyRef.current = history;
   canvasHeightRef.current = canvasHeight;
+
+  const updateScrollMetrics = useCallback(() => {
+    const surface = surfaceRef.current;
+    if (!surface) return;
+    setScrollMaximum(Math.max(0, surface.scrollHeight - surface.clientHeight));
+    setScrollPosition(surface.scrollTop);
+  }, []);
 
   useEffect(() => {
     const revision = strokeRevision(initialStrokes);
@@ -121,18 +130,21 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
     const bounds = canvas?.getBoundingClientRect();
     if (!canvas || !bounds || bounds.width <= 0) return;
     redraw();
-  }, [redraw]);
+    updateScrollMetrics();
+  }, [redraw, updateScrollMetrics]);
 
   useEffect(() => {
     resizeAndRedraw();
+    const frame = requestAnimationFrame(updateScrollMetrics);
     const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resizeAndRedraw);
     if (canvasRef.current) resizeObserver?.observe(canvasRef.current);
     window.addEventListener("resize", resizeAndRedraw);
     return () => {
       resizeObserver?.disconnect();
+      cancelAnimationFrame(frame);
       window.removeEventListener("resize", resizeAndRedraw);
     };
-  }, [resizeAndRedraw]);
+  }, [resizeAndRedraw, updateScrollMetrics]);
 
   useEffect(() => {
     redraw();
@@ -257,7 +269,18 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
   const keepSurfaceStationary = () => {
     const surface = surfaceRef.current;
     const lockedScrollTop = lockedScrollTopRef.current;
-    if (surface && lockedScrollTop !== null && surface.scrollTop !== lockedScrollTop) surface.scrollTop = lockedScrollTop;
+    if (surface && lockedScrollTop !== null && surface.scrollTop !== lockedScrollTop) {
+      surface.scrollTop = lockedScrollTop;
+      return;
+    }
+    if (surface) setScrollPosition(surface.scrollTop);
+  };
+
+  const setSurfaceScroll = (value: number) => {
+    const surface = surfaceRef.current;
+    if (!surface) return;
+    surface.scrollTop = value;
+    setScrollPosition(value);
   };
 
   useEffect(() => {
@@ -303,17 +326,31 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
       tool={tool} color={color} width={width} canUndo={history.undo.length > 0} canRedo={history.redo.length > 0} disabled={Boolean(error) || isWriting}
       onTool={setTool} onColor={setColor} onWidth={setWidth} onUndo={() => void undo()} onRedo={() => void redo()}
     />
-    <div ref={surfaceRef} className="ink-surface" onScroll={keepSurfaceStationary}>
-      <canvas
-        ref={canvasRef}
-        className="ink-canvas"
-        style={{ height: `${canvasHeight}px` }}
-        aria-label="手写画布"
-        aria-disabled={Boolean(error)}
-        onPointerDown={pointerDown}
-        onPointerMove={pointerMove}
-        onPointerUp={(event) => void finishPointer(event)}
-        onPointerCancel={cancelPointer}
+    <div className="ink-surface-frame">
+      <div ref={surfaceRef} className="ink-surface" onScroll={keepSurfaceStationary}>
+        <canvas
+          ref={canvasRef}
+          className="ink-canvas"
+          style={{ height: `${canvasHeight}px` }}
+          aria-label="手写画布"
+          aria-disabled={Boolean(error)}
+          onContextMenu={(event) => event.preventDefault()}
+          onPointerDown={pointerDown}
+          onPointerMove={pointerMove}
+          onPointerUp={(event) => void finishPointer(event)}
+          onPointerCancel={cancelPointer}
+        />
+      </div>
+      <input
+        className="ink-scrollbar"
+        aria-label="画布滚动"
+        type="range"
+        min="0"
+        max={scrollMaximum}
+        step="1"
+        value={Math.min(scrollPosition, scrollMaximum)}
+        disabled={isWriting}
+        onChange={(event) => setSurfaceScroll(Number(event.target.value))}
       />
     </div>
     {error && <div className="ink-error" role="alert"><span>{error}</span><button className="text-button" onClick={() => void retrySave()}>重试保存手写</button></div>}

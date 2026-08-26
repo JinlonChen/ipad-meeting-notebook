@@ -324,6 +324,21 @@ test("prevents palm touch gestures from scrolling the handwriting surface", () =
   expect(touch.defaultPrevented).toBe(true);
 });
 
+test("blocks Safari long-press menus on the handwriting canvas", () => {
+  render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={vi.fn()} />);
+  const canvas = screen.getByLabelText("手写画布");
+  const contextMenu = new Event("contextmenu", { bubbles: true, cancelable: true });
+  fireEvent(canvas, contextMenu);
+  expect(contextMenu.defaultPrevented).toBe(true);
+});
+
+test("exposes a separate scroll control for the fixed handwriting canvas", () => {
+  render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={vi.fn()} />);
+  const scrollbar = screen.getByLabelText("画布滚动");
+  expect(scrollbar).toHaveAttribute("type", "range");
+  expect(scrollbar).toBeEnabled();
+});
+
 test("locks the toolbar while a Pencil stroke is in progress", async () => {
   const save = vi.fn().mockResolvedValue(undefined);
   render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={save} />);
