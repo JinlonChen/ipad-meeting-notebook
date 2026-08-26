@@ -201,9 +201,7 @@ function MeetingEditor({ meeting, folders, noteSyncState, repository, recorder, 
       transcriptRevision={transcriptRevision}
       handwriting={ink.loading
         ? <p className="workspace-panel-message">正在载入手写笔记...</p>
-        : ink.error
-          ? <p className="workspace-panel-message" role="alert">{ink.error}</p>
-          : <InkCanvas meetingId={meeting.id} initialStrokes={ink.strokes} onSave={ink.saveMany} />}
+        : <InkCanvas meetingId={meeting.id} initialStrokes={ink.strokes} onSave={ink.saveMany} />}
       keyboard={<label className="note-editor"><span>会议笔记</span><textarea aria-label="会议笔记" value={note.draft} onChange={(event) => note.setDraft(event.target.value)} onBlur={() => void note.flush()} /></label>}
       summary={intelligence
         ? <MeetingIntelligencePanel api={intelligence} meetingId={meeting.id} online={online} view="summary" hasKeyboardNote={note.draft.trim().length > 0} beforeSummarize={flushNoteBeforeSummary} />
