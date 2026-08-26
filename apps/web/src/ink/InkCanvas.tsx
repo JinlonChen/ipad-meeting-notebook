@@ -6,9 +6,7 @@ import {
   applyInkAction,
   createInkHistory,
   hitStroke,
-  INK_CANVAS_MIN_HEIGHT,
   inkCanvasHeightAfterResize,
-  nextInkCanvasHeight,
   pressureWidth,
   redoInkAction,
   splitLongStroke,
@@ -18,6 +16,7 @@ import {
 } from "./model.js";
 
 type Draft = { pointerId: number; startedAt: number; stroke: InkStroke };
+const INK_CANVAS_DEFAULT_HEIGHT = 2_400;
 
 function strokeRevision(strokes: InkStroke[]): string {
   return JSON.stringify([...strokes]
@@ -56,14 +55,16 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
   onSave(strokes: InkStroke[]): Promise<void>;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const draftRef = useRef<Draft | null>(null);
+  const lockedScrollTopRef = useRef<number | null>(null);
   const versionsRef = useRef(new Map(initialStrokes.map((stroke) => [stroke.id, stroke.version])));
   const localEchoesRef = useRef(new Map<string, string>());
   const failedStrokesRef = useRef<InkStroke[] | null>(null);
   const incomingRevisionRef = useRef(strokeRevision(initialStrokes));
   const [history, setHistory] = useState<InkHistory>(() => createInkHistory(initialStrokes));
   const historyRef = useRef(history);
-  const [canvasHeight, setCanvasHeight] = useState(INK_CANVAS_MIN_HEIGHT);
+  const [canvasHeight, setCanvasHeight] = useState(INK_CANVAS_DEFAULT_HEIGHT);
   const canvasHeightRef = useRef(canvasHeight);
   const [tool, setTool] = useState<InkTool>("pen");
   const [color, setColor] = useState("#1d2529");
@@ -124,7 +125,7 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
     const strokes = draftRef.current
       ? [...historyRef.current.strokes, draftRef.current.stroke]
       : historyRef.current.strokes;
-    const nextHeight = inkCanvasHeightAfterResize(bounds.height, strokes, scale);
+    const nextHeight = inkCanvasHeightAfterResize(canvasHeightRef.current, strokes, scale);
     if (nextHeight !== canvasHeightRef.current) {
       canvasHeightRef.current = nextHeight;
       setCanvasHeight(nextHeight);
@@ -169,13 +170,7 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
 
   const pointFromEvent = (event: React.PointerEvent<HTMLCanvasElement>, startedAt: number): InkPoint => {
     const bounds = event.currentTarget.getBoundingClientRect();
-    const point = toLogicalPoint(event, bounds, performance.now() - startedAt);
-    const nextHeight = nextInkCanvasHeight(canvasHeightRef.current, point.y, bounds.width / INK_LOGICAL_WIDTH);
-    if (nextHeight > canvasHeightRef.current) {
-      canvasHeightRef.current = nextHeight;
-      setCanvasHeight(nextHeight);
-    }
-    return point;
+    return toLogicalPoint(event, bounds, performance.now() - startedAt);
   };
 
   const erase = async (point: InkPoint) => {
@@ -187,8 +182,8 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
   };
 
   const pointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
     if (event.pointerType === "touch") {
-      event.preventDefault();
       return;
     }
     if (error) return;
@@ -203,6 +198,7 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
       void erase(point);
       return;
     }
+    lockedScrollTopRef.current = surfaceRef.current?.scrollTop ?? 0;
     setIsWriting(true);
     draftRef.current = {
       pointerId: event.pointerId,
@@ -217,8 +213,8 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
   };
 
   const pointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
     if (event.pointerType === "touch") {
-      event.preventDefault();
       return;
     }
     const draft = draftRef.current;
@@ -242,6 +238,7 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
     }
     const strokes = splitLongStroke({ ...draft.stroke, points }, () => crypto.randomUUID());
     draftRef.current = null;
+    lockedScrollTopRef.current = null;
     setIsWriting(false);
     for (const stroke of strokes) versionsRef.current.set(stroke.id, 1);
     setHistory((current) => strokes.reduce(
@@ -252,13 +249,21 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
   }, [persist]);
 
   const finishPointer = async (event: React.PointerEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
     const draft = draftRef.current;
     if (!draft || draft.pointerId !== event.pointerId) return;
     await finishDraft(pointFromEvent(event, draft.startedAt));
   };
 
   const cancelPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
     if (draftRef.current?.pointerId === event.pointerId) void finishDraft();
+  };
+
+  const keepSurfaceStationary = () => {
+    const surface = surfaceRef.current;
+    const lockedScrollTop = lockedScrollTopRef.current;
+    if (surface && lockedScrollTop !== null && surface.scrollTop !== lockedScrollTop) surface.scrollTop = lockedScrollTop;
   };
 
   useEffect(() => {
@@ -304,7 +309,7 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
       tool={tool} color={color} width={width} canUndo={history.undo.length > 0} canRedo={history.redo.length > 0} disabled={Boolean(error) || isWriting}
       onTool={setTool} onColor={setColor} onWidth={setWidth} onUndo={() => void undo()} onRedo={() => void redo()}
     />
-    <div className="ink-surface">
+    <div ref={surfaceRef} className="ink-surface" onScroll={keepSurfaceStationary}>
       <canvas
         ref={canvasRef}
         className="ink-canvas"
