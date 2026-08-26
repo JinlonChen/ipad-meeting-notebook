@@ -489,6 +489,22 @@ test("fixed ink canvas can be scrolled with the dedicated side control", async (
   await expect(page.getByLabel("手写画布")).toHaveCSS("height", "2400px");
 });
 
+test("scroll control increases downward with the visual slider direction", async ({ page }) => {
+  const meeting = offlineMeeting();
+  const fixture = createSupabaseFixtureState([meeting]);
+  await page.setViewportSize({ width: 744, height: 1133 });
+  await openCatalog(page, fixture);
+  await openMeeting(page, meeting);
+
+  const surface = page.locator(".ink-surface");
+  const scrollbar = page.getByLabel("画布滚动");
+  await expect.poll(() => scrollbar.getAttribute("max")).not.toBe("0");
+  await scrollbar.focus();
+  await scrollbar.press("Home");
+  await scrollbar.press("ArrowDown");
+  await expect.poll(() => surface.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+});
+
 test("live partial transcript growth follows until paused and the iPad workspace stays unclipped", async ({ page }, testInfo) => {
   const meeting = offlineMeeting();
   const fixture = createSupabaseFixtureState([meeting]);
