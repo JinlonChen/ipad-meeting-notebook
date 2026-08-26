@@ -619,6 +619,10 @@ export async function openCatalog(page: Page, input: RemoteMeeting[] | SupabaseF
   await page.getByLabel("密码").fill("e2e-password");
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await expect(page.getByRole("heading", { name: "会议本", exact: true })).toBeVisible();
+  const meetings = Array.isArray(input) ? input : input.meetings;
+  for (const meeting of meetings) {
+    await expect(page.locator(".meeting-main", { hasText: meeting.title }).first()).toBeVisible();
+  }
 }
 
 export function offlineMeeting(): RemoteMeeting {
