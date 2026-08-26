@@ -28,6 +28,7 @@ beforeEach(() => {
   };
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
   Object.defineProperty(HTMLCanvasElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
+  Object.defineProperty(HTMLCanvasElement.prototype, "releasePointerCapture", { configurable: true, value: vi.fn() });
   vi.spyOn(HTMLCanvasElement.prototype, "getBoundingClientRect").mockReturnValue({
     left: 0, top: 0, width: 512, height: 720, right: 512, bottom: 720, x: 0, y: 0, toJSON: () => ({}),
   });
@@ -53,6 +54,29 @@ test("preserves every sampled point and pressure in a Pencil stroke", async () =
     expect.objectContaining({ x: 160, y: 200, pressure: 0.6 }),
     expect.objectContaining({ x: 200, y: 240, pressure: 0.4 }),
   ]);
+});
+
+test("releases Pencil pointer capture before allowing the next rapid stroke", async () => {
+  const saves: InkStroke[][] = [];
+  let releaseSave: (() => void) | undefined;
+  const save = vi.fn((values: InkStroke[]) => new Promise<void>((resolve) => {
+    saves.push(values);
+    releaseSave = resolve;
+  }));
+  render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={save} />);
+  const canvas = screen.getByLabelText("手写画布");
+  const release = HTMLCanvasElement.prototype.releasePointerCapture as unknown as ReturnType<typeof vi.fn>;
+
+  pointer(canvas, "pointerdown", { pointerId: 101, pointerType: "pen", clientX: 10, clientY: 20, pressure: 0.5 });
+  pointer(canvas, "pointerup", { pointerId: 101, pointerType: "pen", clientX: 30, clientY: 40, pressure: 0.5 });
+  pointer(canvas, "pointerdown", { pointerId: 102, pointerType: "pen", clientX: 40, clientY: 50, pressure: 0.5 });
+  pointer(canvas, "pointerup", { pointerId: 102, pointerType: "pen", clientX: 60, clientY: 70, pressure: 0.5 });
+
+  expect(release).toHaveBeenCalledWith(101);
+  expect(release).toHaveBeenCalledWith(102);
+  expect(saves).toHaveLength(2);
+  releaseSave?.();
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
 });
 
 test("keeps a fixed writing canvas instead of growing under the Pencil", async () => {
@@ -322,6 +346,21 @@ test("prevents palm touch gestures from scrolling the handwriting surface", () =
   const touch = pointer(canvas, "pointerdown", { pointerId: 29, pointerType: "touch", clientX: 20, clientY: 30, pressure: 0.5 });
 
   expect(touch.defaultPrevented).toBe(true);
+});
+
+test("uses non-passive canvas touch handling to suppress Safari long press", () => {
+  render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={vi.fn()} />);
+  const canvas = screen.getByLabelText("手写画布");
+  const touchStart = new Event("touchstart", { bubbles: true, cancelable: true });
+  fireEvent(canvas, touchStart);
+  expect(touchStart.defaultPrevented).toBe(true);
+});
+
+test("blocks selection gestures before Safari can move them to the page", () => {
+  render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={vi.fn()} />);
+  const selectStart = new Event("selectstart", { bubbles: true, cancelable: true });
+  fireEvent(document, selectStart);
+  expect(selectStart.defaultPrevented).toBe(true);
 });
 
 test("blocks Safari long-press menus on the handwriting canvas", () => {

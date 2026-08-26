@@ -258,11 +258,21 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
     event.preventDefault();
     const draft = draftRef.current;
     if (!draft || draft.pointerId !== event.pointerId) return;
+    try {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    } catch {
+      // Safari can have already released capture when a Pencil leaves the screen.
+    }
     await finishDraft(pointFromEvent(event, draft.startedAt));
   };
 
   const cancelPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
     event.preventDefault();
+    try {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    } catch {
+      // Safari can have already released capture for a cancelled Pencil gesture.
+    }
     if (draftRef.current?.pointerId === event.pointerId) void finishDraft();
   };
 
@@ -297,9 +307,43 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
   }, [finishDraft]);
 
   useEffect(() => {
-    const preventContextMenu = (event: Event) => event.preventDefault();
-    document.addEventListener("contextmenu", preventContextMenu, true);
-    return () => document.removeEventListener("contextmenu", preventContextMenu, true);
+    const editor = canvasRef.current?.closest<HTMLElement>(".ink-editor");
+    if (!editor) return;
+    const isVisible = () => !editor.closest("[hidden]");
+    const preventBrowserSelection = (event: Event) => {
+      if (isVisible()) event.preventDefault();
+    };
+    document.addEventListener("contextmenu", preventBrowserSelection, true);
+    document.addEventListener("selectstart", preventBrowserSelection, true);
+    document.addEventListener("dragstart", preventBrowserSelection, true);
+    document.addEventListener("gesturestart", preventBrowserSelection, true);
+    return () => {
+      document.removeEventListener("contextmenu", preventBrowserSelection, true);
+      document.removeEventListener("selectstart", preventBrowserSelection, true);
+      document.removeEventListener("dragstart", preventBrowserSelection, true);
+      document.removeEventListener("gesturestart", preventBrowserSelection, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const preventSafariGesture = (event: TouchEvent) => event.preventDefault();
+    const preventPointerGesture = (event: PointerEvent) => event.preventDefault();
+    canvas.addEventListener("touchstart", preventSafariGesture, { passive: false });
+    canvas.addEventListener("touchmove", preventSafariGesture, { passive: false });
+    canvas.addEventListener("touchend", preventSafariGesture, { passive: false });
+    canvas.addEventListener("touchcancel", preventSafariGesture, { passive: false });
+    canvas.addEventListener("pointerdown", preventPointerGesture, { capture: true, passive: false });
+    canvas.addEventListener("pointermove", preventPointerGesture, { capture: true, passive: false });
+    return () => {
+      canvas.removeEventListener("touchstart", preventSafariGesture);
+      canvas.removeEventListener("touchmove", preventSafariGesture);
+      canvas.removeEventListener("touchend", preventSafariGesture);
+      canvas.removeEventListener("touchcancel", preventSafariGesture);
+      canvas.removeEventListener("pointerdown", preventPointerGesture, true);
+      canvas.removeEventListener("pointermove", preventPointerGesture, true);
+    };
   }, []);
 
   const undo = async () => {
