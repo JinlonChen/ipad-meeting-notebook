@@ -78,10 +78,14 @@ export function useMeetingInk({ meetingId, repository, synchronizer, online }: O
     }
     setState("pending-sync");
     const result = await synchronizer.flush();
-    if (result === "idle") {
+    if (result !== "idle") {
+      setState("saved-local");
+      return;
+    }
+    try {
       await reload();
       setState("synced");
-    } else {
+    } catch {
       setState("saved-local");
     }
   }, [reload, repository, synchronizer]);
