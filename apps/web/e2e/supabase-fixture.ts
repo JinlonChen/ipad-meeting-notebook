@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { InkStrokeSchema, type InkStroke } from "@meeting/contracts";
 import { expect, type Page } from "@playwright/test";
 
 export const supabaseOrigin = "http://127.0.0.1:54321";
@@ -31,6 +32,27 @@ export type MeetingNoteMutation = {
   p_expected_user_id: string | null;
 };
 
+export type MeetingInkMutation = {
+  p_mutation_id: string;
+  p_stroke: InkStroke;
+  p_expected_user_id: string;
+};
+
+export type RemoteInkStroke = {
+  user_id: string;
+  id: InkStroke["id"];
+  meeting_id: InkStroke["meetingId"];
+  stroke_order: InkStroke["order"];
+  tool: InkStroke["tool"];
+  color: InkStroke["color"];
+  width: InkStroke["width"];
+  points: InkStroke["points"];
+  version: InkStroke["version"];
+  deleted_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 type NoteTerminalResponse =
   | { status: 200; meeting: RemoteMeeting & { user_id: string } }
   | { status: 400; code: "INVALID_REQUEST" }
@@ -52,6 +74,9 @@ export type SupabaseFixtureState = {
   noteMutations: MeetingNoteMutation[];
   noteReplays: Map<string, NoteReplay>;
   noteMutationBarrier: PendingNoteMutationBarrier | null;
+  inkStrokes: RemoteInkStroke[];
+  inkMutations: MeetingInkMutation[];
+  inkReplays: Map<string, InkStroke>;
   audioChunks: RemoteAudioChunk[];
   audioObjects: Map<string, RemoteAudioObject>;
   audioObjectUploads: string[];
@@ -101,6 +126,10 @@ function base64Url(value: unknown): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
 
+function hasValidBearer(value: string | undefined, accessToken: string): boolean {
+  return /^Bearer\s+(\S+)$/i.exec(value ?? "")?.[1] === accessToken;
+}
+
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -117,6 +146,30 @@ function parseNoteMutation(value: unknown): MeetingNoteMutation | null {
   if (body.p_expected_sync_version !== null && !Number.isInteger(body.p_expected_sync_version)) return null;
   if (body.p_expected_user_id !== null && !isUuid(body.p_expected_user_id)) return null;
   return body as MeetingNoteMutation;
+}
+
+function parseInkMutation(value: unknown): MeetingInkMutation | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const body = value as Record<string, unknown>;
+  const keys = ["p_mutation_id", "p_stroke", "p_expected_user_id"];
+  if (Object.keys(body).length !== keys.length || keys.some((key) => !Object.prototype.hasOwnProperty.call(body, key))) return null;
+  if (!isUuid(body.p_mutation_id) || !isUuid(body.p_expected_user_id)) return null;
+  const stroke = InkStrokeSchema.safeParse(body.p_stroke);
+  return stroke.success ? { p_mutation_id: body.p_mutation_id, p_stroke: stroke.data, p_expected_user_id: body.p_expected_user_id } : null;
+}
+
+function canonicalInkStroke(row: RemoteInkStroke): InkStroke {
+  return {
+    id: row.id,
+    meetingId: row.meeting_id,
+    order: row.stroke_order,
+    tool: row.tool,
+    color: row.color,
+    width: row.width,
+    points: row.points,
+    deleted: row.deleted_at !== null,
+    version: row.version,
+  };
 }
 
 function exceedsCodePointLimit(value: string, limit: number): boolean {
@@ -228,6 +281,9 @@ export function createSupabaseFixtureState(meetings: RemoteMeeting[] = []): Supa
     noteMutations: [],
     noteReplays: new Map(),
     noteMutationBarrier: null,
+    inkStrokes: [],
+    inkMutations: [],
+    inkReplays: new Map(),
     audioChunks: [],
     audioObjects: new Map(),
     audioObjectUploads: [],
@@ -248,9 +304,9 @@ function fixtureState(input: RemoteMeeting[] | SupabaseFixtureState): SupabaseFi
   return Array.isArray(input) ? createSupabaseFixtureState(input) : input;
 }
 
-export async function installSupabaseRoutes(page: Page, input: RemoteMeeting[] | SupabaseFixtureState = []): Promise<void> {
+export async function installSupabaseRoutes(page: Page, input: RemoteMeeting[] | SupabaseFixtureState = []): Promise<string> {
   const state = fixtureState(input);
-  const expiresAt = Math.floor(Date.now() / 1_000) + 3_600;
+  const expiresAt = 4_102_444_800;
   const user = { id: userId, aud: "authenticated", role: "authenticated", email: "owner@example.com" };
   const accessToken = `${base64Url({ alg: "none", typ: "JWT" })}.${base64Url({ sub: userId, role: "authenticated", exp: expiresAt })}.e2e`;
 
@@ -364,8 +420,89 @@ export async function installSupabaseRoutes(page: Page, input: RemoteMeeting[] |
       await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) });
       return;
     }
+    if (url.pathname === "/rest/v1/rpc/apply_meeting_ink_mutation") {
+      if (!hasValidBearer(request.headers().authorization, accessToken)) {
+        await route.fulfill({ status: 401, contentType: "application/json", body: JSON.stringify({ code: "42501", message: "Unauthorized" }) });
+        return;
+      }
+      let rawBody: unknown;
+      try {
+        rawBody = request.postDataJSON();
+      } catch {
+        rawBody = null;
+      }
+      const unparsed = typeof rawBody === "object" && rawBody !== null && !Array.isArray(rawBody)
+        ? rawBody as Record<string, unknown>
+        : null;
+      if (unparsed?.p_expected_user_id !== userId) {
+        await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ code: "P0001", message: "AUTH_REQUIRED" }) });
+        return;
+      }
+      const mutation = parseInkMutation(rawBody);
+      if (mutation) state.inkMutations.push(structuredClone(mutation));
+      const replayKey = typeof unparsed?.p_mutation_id === "string" ? `${userId}:${unparsed.p_mutation_id}` : "";
+      const replay = replayKey ? state.inkReplays.get(replayKey) : undefined;
+      if (replay) {
+        await route.fulfill({ contentType: "application/json", body: JSON.stringify(replay) });
+        return;
+      }
+      const meeting = mutation && state.meetings.find((candidate) => candidate.id === mutation.p_stroke.meetingId && candidate.status !== "trashed");
+      if (!mutation || !meeting) {
+        await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ code: "P0001", message: "INVALID_INK_STROKE" }) });
+        return;
+      }
+      const stroke = mutation.p_stroke;
+      let row = state.inkStrokes.find((candidate) => candidate.user_id === userId && candidate.id === stroke.id);
+      if (!row || stroke.version >= row.version) {
+        const timestamp = new Date().toISOString();
+        const next: RemoteInkStroke = {
+          user_id: userId,
+          id: stroke.id,
+          meeting_id: stroke.meetingId,
+          stroke_order: stroke.order,
+          tool: stroke.tool,
+          color: stroke.color.toLowerCase(),
+          width: stroke.width,
+          points: structuredClone(stroke.points),
+          version: stroke.version,
+          deleted_at: stroke.deleted ? timestamp : null,
+          created_at: row?.created_at ?? timestamp,
+          updated_at: timestamp,
+        };
+        if (row) state.inkStrokes[state.inkStrokes.indexOf(row)] = next;
+        else state.inkStrokes.push(next);
+        row = next;
+      }
+      const response = canonicalInkStroke(row);
+      state.inkReplays.set(replayKey, response);
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) });
+      return;
+    }
     if (url.pathname === "/rest/v1/folders") {
       await route.fulfill({ contentType: "application/json", body: "[]" });
+      return;
+    }
+    if (url.pathname === "/rest/v1/meeting_ink_strokes" && request.method() === "GET") {
+      if (!hasValidBearer(request.headers().authorization, accessToken)) {
+        await route.fulfill({ status: 401, contentType: "application/json", body: JSON.stringify({ code: "42501", message: "Unauthorized" }) });
+        return;
+      }
+      const meetingId = url.searchParams.get("meeting_id")?.replace(/^eq\./, "") ?? null;
+      const rows = state.inkStrokes
+        .filter((row) => row.user_id === userId && row.meeting_id === meetingId)
+        .sort((left, right) => left.stroke_order - right.stroke_order)
+        .map((row) => ({
+          id: row.id,
+          meeting_id: row.meeting_id,
+          stroke_order: row.stroke_order,
+          tool: row.tool,
+          color: row.color,
+          width: row.width,
+          points: row.points,
+          version: row.version,
+          deleted_at: row.deleted_at,
+        }));
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify(rows) });
       return;
     }
     if (url.pathname === "/rest/v1/meeting_audio_chunks" && request.method() === "GET") {
@@ -468,6 +605,7 @@ export async function installSupabaseRoutes(page: Page, input: RemoteMeeting[] |
     }
     await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ message: "E2E route not configured" }) });
   });
+  return accessToken;
 }
 
 export async function removeSupabaseRoutes(page: Page): Promise<void> {
@@ -481,6 +619,10 @@ export async function openCatalog(page: Page, input: RemoteMeeting[] | SupabaseF
   await page.getByLabel("密码").fill("e2e-password");
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await expect(page.getByRole("heading", { name: "会议本", exact: true })).toBeVisible();
+  const meetings = Array.isArray(input) ? input : input.meetings;
+  for (const meeting of meetings) {
+    await expect(page.locator(".meeting-main", { hasText: meeting.title }).first()).toBeVisible();
+  }
 }
 
 export function offlineMeeting(): RemoteMeeting {

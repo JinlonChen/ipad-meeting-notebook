@@ -12,8 +12,11 @@ const intelligenceMigrationPath = resolve(root, "supabase/migrations/20260824000
 const splitIntelligenceMigrationPath = resolve(root, "supabase/migrations/202608240004_split_ai_provider_credentials.sql");
 const realtimeAsrMigrationPath = resolve(root, "supabase/migrations/202608250001_realtime_asr_config.sql");
 const publicRealtimeAsrMigrationPath = resolve(root, "supabase/migrations/202608250002_public_realtime_asr_endpoint.sql");
+const inkMigrationPath = resolve(root, "supabase/migrations/202608250004_meeting_ink.sql");
+const inkHardeningMigrationPath = resolve(root, "supabase/migrations/202608260001_harden_meeting_ink_validation.sql");
 const catalogTestPath = resolve(root, "supabase/tests/meeting_catalog.sql");
 const audioTestPath = resolve(root, "supabase/tests/meeting_audio.sql");
+const inkTestPath = resolve(root, "supabase/tests/meeting_ink.sql");
 
 let sql;
 let noteSql;
@@ -22,8 +25,10 @@ let intelligenceSql;
 let splitIntelligenceSql;
 let realtimeAsrSql;
 let publicRealtimeAsrSql;
+let inkSql;
 let catalogTestSql;
 let audioTestSql;
+let inkTestSql;
 test.before(async () => {
   sql = await readFile(migrationPath, "utf8");
   noteSql = await readFile(noteMigrationPath, "utf8");
@@ -32,8 +37,10 @@ test.before(async () => {
   splitIntelligenceSql = await readFile(splitIntelligenceMigrationPath, "utf8");
   realtimeAsrSql = await readFile(realtimeAsrMigrationPath, "utf8");
   publicRealtimeAsrSql = await readFile(publicRealtimeAsrMigrationPath, "utf8");
+  inkSql = await readFile(inkMigrationPath, "utf8");
   catalogTestSql = await readFile(catalogTestPath, "utf8");
   audioTestSql = await readFile(audioTestPath, "utf8");
+  inkTestSql = await readFile(inkTestPath, "utf8");
 });
 
 function normalizedSql() {
@@ -54,6 +61,10 @@ function normalizedAudioSql() {
 
 function normalizedAudioTestSql() {
   return audioTestSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizedInkTestSql() {
+  return inkTestSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
 }
 
 function normalizedIntelligenceSql() {
@@ -209,6 +220,68 @@ test("meeting intelligence stores generated results by meeting owner", () => {
   }
   assert.match(source, /unique \(user_id, meeting_id, position\)/);
   assert.match(source, /check \(ended_offset_ms > started_offset_ms\)/);
+});
+
+test("meeting ink is owner-scoped, bounded, tombstoned, and mutated idempotently", () => {
+  const source = inkSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
+  assert.match(source, /create table public\.meeting_ink_strokes/i);
+  assert.match(source, /foreign key \(user_id, meeting_id\) references public\.meetings\(user_id, id\)/i);
+  assert.match(source, /jsonb_array_length\(points\) between 2 and 2048/i);
+  assert.match(source, /jsonb_array_length\(v_points\) not between 2 and 2048/);
+  assert.match(source, /octet_length\(v_points::text\) > 524288/);
+  assert.match(source, /deleted_at timestamptz/i);
+  assert.match(source, /enable row level security/i);
+  assert.match(source, /auth\.uid\(\) = user_id/i);
+  assert.match(source, /create table public\.meeting_ink_mutations/i);
+  assert.match(source, /create or replace function public\.apply_meeting_ink_mutation/i);
+  assert.match(source, /jsonb_object_keys/i);
+  assert.match(source, /on conflict \(user_id, mutation_id\)/i);
+  assert.match(source, /grant execute on function public\.apply_meeting_ink_mutation/i);
+  assert.match(source, /v_allowed_point_keys text\[\] := array\['x','y','pressure','elapsedms'\]/);
+  assert.match(source, /from jsonb_array_elements\(v_points\) point/);
+  assert.match(source, /jsonb_typeof\(point->'x'\) is distinct from 'number'/);
+  assert.match(source, /jsonb_typeof\(point->'elapsedms'\) is distinct from 'number'/);
+  assert.match(source, /jsonb_object_keys\(point\)/);
+  assert.match(source, /not \(point \?& v_allowed_point_keys\)/);
+  assert.match(source, /\(point->>'x'\)::numeric not between 0 and 2048/);
+  assert.match(source, /\(point->>'y'\)::numeric not between 0 and 200000/);
+  assert.match(source, /\(point->>'pressure'\)::numeric not between 0 and 1/);
+  assert.match(source, /\(point->>'elapsedms'\)::numeric not between 0 and 86400000/);
+  assert.match(source, /return jsonb_build_object\('status', 400, 'code', 'invalid_request'\)/);
+  assert.doesNotMatch(source, /raise exception 'invalid_ink_stroke'/);
+});
+
+test("meeting ink pgTAP rejects malformed point values with typed failures", () => {
+  const source = normalizedInkTestSql();
+  assert.match(source, /set local role anon/);
+  assert.match(source, /permission denied for function apply_meeting_ink_mutation/);
+  for (const fixture of [
+    '"points":{}', '"points":[[],[]]', '"extra":1',
+    '"x":"nan"', '"pressure":"infinity"', '"elapsedms":1.5',
+    '"x":2049', '"y":200001', '"pressure":1.1', '"elapsedms":86400001',
+  ]) assert.ok(source.includes(fixture), `missing pgTAP fixture ${fixture}`);
+  assert.match(source, /invalid_request/g);
+});
+
+test("applied meeting ink schemas receive strict validation through an incremental migration", async () => {
+  const legacySchema = inkSql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
+  const hardening = (await readFile(inkHardeningMigrationPath, "utf8"))
+    .replace(/--[^\n]*/g, "").replace(/\s+/g, " ").toLowerCase();
+
+  assert.match(legacySchema, /create table public\.meeting_ink_strokes/);
+  assert.doesNotMatch(hardening, /create table public\.meeting_ink_(?:strokes|mutations)/);
+  assert.match(hardening, /create or replace function public\.apply_meeting_ink_mutation\(/);
+  assert.match(hardening, /jsonb_typeof\(p_stroke\) is distinct from 'object'/);
+  assert.match(hardening, /v_allowed_point_keys text\[\] := array\['x','y','pressure','elapsedms'\]/);
+  assert.match(hardening, /jsonb_typeof\(point->'x'\) is distinct from 'number'/);
+  assert.match(hardening, /jsonb_typeof\(point->'elapsedms'\) is distinct from 'number'/);
+  assert.match(hardening, /\(point->>'x'\)::numeric not between 0 and 2048/);
+  assert.match(hardening, /\(point->>'y'\)::numeric not between 0 and 200000/);
+  assert.match(hardening, /\(point->>'pressure'\)::numeric not between 0 and 1/);
+  assert.match(hardening, /\(point->>'elapsedms'\)::numeric not between 0 and 86400000/);
+  assert.match(hardening, /return jsonb_build_object\('status', 400, 'code', 'invalid_request'\)/);
+  assert.match(hardening, /revoke all on function public\.apply_meeting_ink_mutation\(uuid, jsonb, uuid\) from public, anon/);
+  assert.match(hardening, /grant execute on function public\.apply_meeting_ink_mutation\(uuid, jsonb, uuid\) to authenticated/);
 });
 
 test("AI provider keys are write-only to the client and configured state is a boolean RPC", () => {

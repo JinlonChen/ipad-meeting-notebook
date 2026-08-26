@@ -1,4 +1,4 @@
-import type { Folder, Meeting, Minutes, TranscriptSegment } from "@meeting/contracts";
+import type { Folder, InkStroke, Meeting, Minutes, TranscriptSegment } from "@meeting/contracts";
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
@@ -102,6 +102,29 @@ export type AiProviderCredentialsRow = {
   updated_at: string;
 };
 
+export type MeetingInkStrokeRow = {
+  user_id: string;
+  id: InkStroke["id"];
+  meeting_id: InkStroke["meetingId"];
+  stroke_order: InkStroke["order"];
+  tool: InkStroke["tool"];
+  color: InkStroke["color"];
+  width: InkStroke["width"];
+  points: InkStroke["points"];
+  version: InkStroke["version"];
+  deleted_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type MeetingInkMutationRow = {
+  user_id: string;
+  mutation_id: string;
+  stroke_id: string;
+  response: Json;
+  created_at: string;
+};
+
 export type ApplyCatalogMutationArgs = {
   p_operation_id: string;
   p_kind: string;
@@ -203,6 +226,18 @@ export type Database = {
         Update: Partial<AiProviderCredentialsRow>;
         Relationships: [];
       };
+      meeting_ink_strokes: {
+        Row: MeetingInkStrokeRow;
+        Insert: MeetingInkStrokeRow;
+        Update: Partial<MeetingInkStrokeRow>;
+        Relationships: [];
+      };
+      meeting_ink_mutations: {
+        Row: MeetingInkMutationRow;
+        Insert: MeetingInkMutationRow;
+        Update: Partial<MeetingInkMutationRow>;
+        Relationships: [];
+      };
     };
     Views: { [_ in never]: never };
     Functions: {
@@ -221,6 +256,14 @@ export type Database = {
       ai_provider_configured: {
         Args: Record<string, never>;
         Returns: boolean;
+      };
+      apply_meeting_ink_mutation: {
+        Args: {
+          p_mutation_id: string;
+          p_stroke: Json;
+          p_expected_user_id: string;
+        };
+        Returns: Json;
       };
     };
     Enums: { [_ in never]: never };

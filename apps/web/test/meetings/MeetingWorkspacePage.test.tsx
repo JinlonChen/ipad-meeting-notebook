@@ -103,6 +103,12 @@ async function flushPromises(): Promise<void> {
   });
 }
 
+async function openKeyboardNote() {
+  const tab = await screen.findByRole("tab", { name: "键盘" });
+  if (tab.getAttribute("aria-selected") !== "true") fireEvent.click(tab);
+  return screen.getByRole("textbox", { name: "会议笔记" });
+}
+
 afterEach(async () => {
   vi.useRealTimers();
   Object.defineProperty(document, "hidden", { configurable: true, value: false });
@@ -163,7 +169,7 @@ describe("MeetingWorkspacePage", () => {
 
     expect(screen.getByRole("status")).toHaveTextContent("正在载入会议");
     expect(await screen.findByRole("heading", { name: "云端会议" })).toBeVisible();
-    expect(screen.getByRole("textbox", { name: "会议笔记" })).toHaveValue("云端笔记");
+    expect((await openKeyboardNote())).toHaveValue("云端笔记");
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
@@ -184,7 +190,7 @@ describe("MeetingWorkspacePage", () => {
 
     renderWorkspace(repository, created.id, { online: true, refresh });
 
-    expect(await screen.findByRole("textbox", { name: "会议笔记" })).toHaveValue("服务端确认的新笔记");
+    expect(await openKeyboardNote()).toHaveValue("服务端确认的新笔记");
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
@@ -196,7 +202,7 @@ describe("MeetingWorkspacePage", () => {
 
     renderWorkspace(repository, meeting.id, { online: false, refresh });
 
-    expect(await screen.findByRole("textbox", { name: "会议笔记" })).toHaveValue("本地可编辑内容");
+    expect(await openKeyboardNote()).toHaveValue("本地可编辑内容");
     expect(refresh).not.toHaveBeenCalled();
   });
 
@@ -214,7 +220,7 @@ describe("MeetingWorkspacePage", () => {
     rendered.rerender(workspace(repository, pulled.id, true, refresh, scheduleRefresh));
 
     expect(await screen.findByRole("heading", { name: "重连拉取会议" })).toBeVisible();
-    expect(screen.getByRole("textbox", { name: "会议笔记" })).toHaveValue("重连后的云端笔记");
+    expect((await openKeyboardNote())).toHaveValue("重连后的云端笔记");
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(scheduleRefresh).not.toHaveBeenCalled();
 
@@ -254,7 +260,7 @@ describe("MeetingWorkspacePage", () => {
 
     renderWorkspace(repository, meeting.id, { online: true, refresh });
 
-    expect(await screen.findByRole("textbox", { name: "会议笔记" })).toHaveValue("网络失败也可编辑");
+    expect(await openKeyboardNote()).toHaveValue("网络失败也可编辑");
     expect(screen.queryByRole("heading", { name: "无法载入会议" })).not.toBeInTheDocument();
   });
 
@@ -273,7 +279,7 @@ describe("MeetingWorkspacePage", () => {
     const meeting = await repository.create("稳定加载", null, now);
     const firstRefresh = vi.fn().mockResolvedValue({ state: "idle" as const });
     const rendered = renderWorkspace(repository, meeting.id, { online: true, refresh: firstRefresh });
-    await screen.findByRole("textbox", { name: "会议笔记" });
+    await openKeyboardNote();
     const replacementRefresh = vi.fn().mockResolvedValue({ state: "idle" as const });
 
     rendered.rerender(workspace(repository, meeting.id, true, replacementRefresh, rendered.scheduleRefresh));
@@ -295,7 +301,7 @@ describe("MeetingWorkspacePage", () => {
     expect(screen.getByLabelText("会议信息")).toHaveTextContent("草稿");
     expect(screen.getByLabelText("会议信息")).toHaveTextContent("产品组");
     expect(screen.getByText(/更新于/)).toHaveAttribute("datetime", later);
-    expect(screen.getByRole("textbox", { name: "会议笔记" })).toHaveValue("结论\n下一步");
+    expect((await openKeyboardNote())).toHaveValue("结论\n下一步");
   });
 
   test("saves locally once after 600ms of inactivity and not before", async () => {
@@ -303,7 +309,7 @@ describe("MeetingWorkspacePage", () => {
     const meeting = await repository.create("自动保存", null, now);
     const saveNote = vi.spyOn(repository, "saveNote");
     renderWorkspace(repository, meeting.id);
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
     vi.useFakeTimers();
 
     fireEvent.change(editor, { target: { value: "第一版" } });
@@ -321,7 +327,7 @@ describe("MeetingWorkspacePage", () => {
     const meeting = await repository.create("失焦保存", null, now);
     const saveNote = vi.spyOn(repository, "saveNote");
     renderWorkspace(repository, meeting.id);
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     fireEvent.change(editor, { target: { value: "最新文字" } });
     fireEvent.blur(editor);
@@ -335,7 +341,7 @@ describe("MeetingWorkspacePage", () => {
     const meeting = await repository.create("切后台保存", null, now);
     const saveNote = vi.spyOn(repository, "saveNote");
     renderWorkspace(repository, meeting.id);
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     fireEvent.change(editor, { target: { value: "切到后台前" } });
     Object.defineProperty(document, "hidden", { configurable: true, value: true });
@@ -352,7 +358,7 @@ describe("MeetingWorkspacePage", () => {
       .mockRejectedValueOnce(new Error("disk full"))
       .mockImplementation(originalSave);
     renderWorkspace(repository, meeting.id);
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     fireEvent.change(editor, { target: { value: "不能丢失的草稿" } });
     fireEvent.click(screen.getByRole("button", { name: "返回会议" }));
@@ -375,7 +381,7 @@ describe("MeetingWorkspacePage", () => {
     const meeting = await repository.create("本地成功即可返回", null, now);
     const synchronization = deferred<SyncResult>();
     renderWorkspace(repository, meeting.id, { online: true, scheduleRefresh: vi.fn(() => synchronization.promise) });
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     fireEvent.change(editor, { target: { value: "已落盘，云端仍在等待" } });
     fireEvent.click(screen.getByRole("button", { name: "返回会议" }));
@@ -391,7 +397,7 @@ describe("MeetingWorkspacePage", () => {
     const refresh = vi.fn().mockResolvedValue({ state: "idle" as const });
     const scheduleRefresh = vi.fn().mockResolvedValue({ state: "idle" as const });
     renderWorkspace(repository, meeting.id, { online: false, refresh, scheduleRefresh });
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     fireEvent.change(editor, { target: { value: "离线内容" } });
     fireEvent.blur(editor);
@@ -409,7 +415,7 @@ describe("MeetingWorkspacePage", () => {
 
     renderWorkspace(repository, meeting.id, { online: false, scheduleRefresh });
 
-    expect(await screen.findByRole("textbox", { name: "会议笔记" })).toHaveValue("重开后仍待同步");
+    expect(await openKeyboardNote()).toHaveValue("重开后仍待同步");
     expect(screen.getByRole("status")).toHaveTextContent("已保存到本机，待同步");
     expect(scheduleRefresh).not.toHaveBeenCalled();
   });
@@ -423,7 +429,7 @@ describe("MeetingWorkspacePage", () => {
 
     renderWorkspace(repository, meeting.id, { online: false });
 
-    expect(await screen.findByRole("textbox", { name: "会议笔记" })).toHaveValue("冲突笔记");
+    expect(await openKeyboardNote()).toHaveValue("冲突笔记");
     expect(screen.getByRole("status")).toHaveTextContent("冲突");
     expect(screen.getByRole("alert")).toHaveTextContent("会议笔记存在同步冲突");
   });
@@ -436,14 +442,14 @@ describe("MeetingWorkspacePage", () => {
     const refresh = vi.fn().mockResolvedValue({ state: "idle" as const });
     const scheduleRefresh = vi.fn().mockResolvedValue({ state: "idle" as const });
     const rendered = renderWorkspace(repository, meeting.id, { online: false, refresh, scheduleRefresh });
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
     expect(editor).toHaveValue("上次启动留下的笔记");
 
     rendered.rerender(workspace(repository, meeting.id, true, refresh, scheduleRefresh));
 
     await waitFor(() => expect(scheduleRefresh).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已同步"));
-    expect(screen.getByRole("textbox", { name: "会议笔记" })).toBe(editor);
+    expect((await openKeyboardNote())).toBe(editor);
     expect(editor).toHaveValue("上次启动留下的笔记");
     expect(refresh).not.toHaveBeenCalled();
 
@@ -465,7 +471,7 @@ describe("MeetingWorkspacePage", () => {
       return { state: "idle" as const };
     });
     const rendered = renderWorkspace(repository, local.id, { online: false, scheduleRefresh });
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
     expect(editor).toHaveValue("v1");
 
     rendered.rerender(workspace(repository, local.id, true, rendered.refresh, scheduleRefresh));
@@ -497,7 +503,7 @@ describe("MeetingWorkspacePage", () => {
       return synchronization.promise;
     });
     const rendered = renderWorkspace(repository, local.id, { online: false, scheduleRefresh });
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     rendered.rerender(workspace(repository, local.id, true, rendered.refresh, scheduleRefresh));
     await act(async () => remoteApplied.promise);
@@ -527,7 +533,7 @@ describe("MeetingWorkspacePage", () => {
     const local = await syncedMeeting(repository, `安全回退-${_case}`, "不能清空的本地笔记");
     const scheduleRefresh = vi.fn().mockResolvedValue({ state: "idle" as const });
     const rendered = renderWorkspace(repository, local.id, { online: false, scheduleRefresh });
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
     const get = vi.spyOn(repository, "get");
     const refreshed = refreshedMeeting(local);
     if (refreshed instanceof Error) get.mockRejectedValueOnce(refreshed);
@@ -548,7 +554,7 @@ describe("MeetingWorkspacePage", () => {
     const pendingCount = (await repository.pendingOperations()).length;
     const scheduleRefresh = vi.fn().mockResolvedValue({ state: "error" as const });
     const rendered = renderWorkspace(repository, meeting.id, { online: false, scheduleRefresh });
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     rendered.rerender(workspace(repository, meeting.id, true, rendered.refresh, scheduleRefresh));
 
@@ -567,7 +573,7 @@ describe("MeetingWorkspacePage", () => {
     const synchronization = deferred<SyncResult>();
     const scheduleRefresh = vi.fn(() => synchronization.promise);
     const rendered = renderWorkspace(repository, meeting.id, { online: false, scheduleRefresh });
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     fireEvent.change(editor, { target: { value: "离线时保存的内容" } });
     fireEvent.blur(editor);
@@ -598,7 +604,7 @@ describe("MeetingWorkspacePage", () => {
     });
     const scheduleRefresh = vi.fn().mockResolvedValue({ state: "idle" as const });
     const rendered = renderWorkspace(repository, meeting.id, { online: false, scheduleRefresh });
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     fireEvent.change(editor, { target: { value: "旧内容" } });
     fireEvent.blur(editor);
@@ -623,7 +629,7 @@ describe("MeetingWorkspacePage", () => {
       .mockResolvedValueOnce({ state: "error" as const })
       .mockResolvedValueOnce({ state: "idle" as const });
     const rendered = renderWorkspace(repository, meeting.id, { online: false, scheduleRefresh });
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     fireEvent.change(editor, { target: { value: "同步失败也不丢失" } });
     fireEvent.blur(editor);
@@ -650,7 +656,7 @@ describe("MeetingWorkspacePage", () => {
     const synchronization = deferred<SyncResult>();
     const scheduleRefresh = vi.fn(() => synchronization.promise);
     renderWorkspace(repository, meeting.id, { online: true, scheduleRefresh });
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     fireEvent.change(editor, { target: { value: "在线内容" } });
     fireEvent.blur(editor);
@@ -668,7 +674,7 @@ describe("MeetingWorkspacePage", () => {
       online: true,
       scheduleRefresh: vi.fn().mockResolvedValue({ state: "error" as const }),
     });
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     fireEvent.change(editor, { target: { value: "本地已安全保存" } });
     fireEvent.blur(editor);
@@ -688,7 +694,7 @@ describe("MeetingWorkspacePage", () => {
       .mockImplementationOnce(() => second.promise)
       .mockImplementationOnce(() => latest.promise);
     renderWorkspace(repository, meeting.id, { online: true, scheduleRefresh });
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     fireEvent.change(editor, { target: { value: "A" } });
     fireEvent.blur(editor);
@@ -716,7 +722,7 @@ describe("MeetingWorkspacePage", () => {
     const meeting = await repository.create("字符边界", null, now);
     const saveNote = vi.spyOn(repository, "saveNote");
     renderWorkspace(repository, meeting.id);
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     fireEvent.change(editor, { target: { value: "字".repeat(200_001) } });
     fireEvent.blur(editor);
@@ -749,7 +755,7 @@ describe("MeetingWorkspacePage", () => {
       }
     });
     renderWorkspace(repository, meeting.id);
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
     vi.useFakeTimers();
 
     fireEvent.change(editor, { target: { value: "旧草稿" } });
@@ -775,7 +781,7 @@ describe("MeetingWorkspacePage", () => {
     const pending = (await repository.pendingOperations())[0]!;
     await repository.syncRecordFailure(pending, "CONFLICT");
     renderWorkspace(repository, meeting.id);
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     fireEvent.change(editor, { target: { value: "本地冲突内容" } });
     fireEvent.blur(editor);
@@ -791,7 +797,7 @@ describe("MeetingWorkspacePage", () => {
     const saveNote = vi.spyOn(repository, "saveNote");
     const scheduleRefresh = vi.fn().mockResolvedValue({ state: "idle" as const });
     const rendered = renderWorkspace(repository, meeting.id, { online: true, scheduleRefresh });
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     fireEvent.change(editor, { target: { value: "尚未到期" } });
     rendered.unmount();
@@ -814,7 +820,7 @@ describe("MeetingWorkspacePage", () => {
     });
     const scheduleRefresh = vi.fn().mockResolvedValue({ state: "idle" as const });
     const rendered = renderWorkspace(repository, meeting.id, { online: true, scheduleRefresh });
-    const editor = await screen.findByRole("textbox", { name: "会议笔记" });
+    const editor = await openKeyboardNote();
 
     fireEvent.change(editor, { target: { value: "写入中的旧稿" } });
     fireEvent.blur(editor);

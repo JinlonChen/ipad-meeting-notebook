@@ -104,6 +104,7 @@ async function installFakeBrowserMedia(page: Page): Promise<void> {
 
 async function openMeeting(page: Page, meeting: ReturnType<typeof offlineMeeting>): Promise<void> {
   await page.locator(".meeting-main", { hasText: meeting.title }).click();
+  await page.getByRole("tab", { name: "键盘" }).click();
   await expect(page.getByRole("textbox", { name: "会议笔记" })).toBeVisible();
 }
 
@@ -438,6 +439,7 @@ test("removes expired local audio while preserving the meeting and its note", as
 
   await page.reload();
 
+  await page.getByRole("tab", { name: "键盘" }).click();
   await expect(page.getByRole("textbox", { name: "会议笔记" })).toHaveValue(meeting.note);
   await expect.poll(() => recordingRows(page, "audioChunks")).toEqual([]);
   await expect.poll(() => recordingRows(page, "recordingSessions")).toEqual([]);

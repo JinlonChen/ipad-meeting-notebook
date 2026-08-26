@@ -15,6 +15,8 @@ import { RecordingUploadWorker, type RecordingStoragePort } from "../recording/s
 import type { MeetingIntelligencePort } from "../intelligence/MeetingIntelligencePanel.js";
 import { AiSettingsPage } from "../intelligence/AiSettingsPage.js";
 import { normalizeBasePath } from "./base-path.js";
+import type { InkRepository } from "../ink/repository.js";
+import type { InkSynchronizer } from "../ink/sync.js";
 
 const defaultNow = () => new Date().toISOString();
 const noopSynchronizer: CatalogSynchronizer = {
@@ -31,6 +33,8 @@ type Props = {
   recordingStorage?: RecordingStoragePort;
   recorder?: MeetingRecorderPort;
   intelligence?: MeetingIntelligencePort;
+  inkRepository?: InkRepository;
+  inkSynchronizer?: InkSynchronizer;
   now?: () => string;
   configurationError?: boolean;
   startupError?: boolean;
@@ -48,7 +52,7 @@ function isUnauthorized(error: unknown): boolean {
   return error instanceof AuthApiError ? error.status === 401 : typeof error === "object" && error !== null && "status" in error && error.status === 401;
 }
 
-export function App({ repository, auth, catalog, synchronizer, recordingStorage, recorder, intelligence, now, configurationError = false, startupError = false, onStartupRetry }: Props) {
+export function App({ repository, auth, catalog, synchronizer, recordingStorage, recorder, intelligence, inkRepository, inkSynchronizer, now, configurationError = false, startupError = false, onStartupRetry }: Props) {
   const resolvedSynchronizer = useMemo(() => {
     if (synchronizer) return synchronizer;
     if (repository && catalog) return new CatalogSync(repository, catalog);
@@ -60,7 +64,7 @@ export function App({ repository, auth, catalog, synchronizer, recordingStorage,
   if (configurationError || !repository || !auth) {
     return <ConfigurationPanel />;
   }
-  return <SessionApp repository={repository} auth={auth} synchronizer={resolvedSynchronizer} recordingStorage={recordingStorage} recorder={recorder} intelligence={intelligence} now={now ?? defaultNow} />;
+  return <SessionApp repository={repository} auth={auth} synchronizer={resolvedSynchronizer} recordingStorage={recordingStorage} recorder={recorder} intelligence={intelligence} inkRepository={inkRepository} inkSynchronizer={inkSynchronizer} now={now ?? defaultNow} />;
 }
 
 function ConfigurationPanel() {
@@ -78,10 +82,12 @@ type SessionProps = {
   recordingStorage: RecordingStoragePort | undefined;
   recorder: MeetingRecorderPort | undefined;
   intelligence: MeetingIntelligencePort | undefined;
+  inkRepository: InkRepository | undefined;
+  inkSynchronizer: InkSynchronizer | undefined;
   now: () => string;
 };
 
-function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder, intelligence, now }: SessionProps) {
+function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder, intelligence, inkRepository, inkSynchronizer, now }: SessionProps) {
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [gate, setGate] = useState<Gate>("loading");
   const [deviceExpiresAt, setDeviceExpiresAt] = useState<string | null>(null);
@@ -97,6 +103,14 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder
   const activeRecorder = useRef<MeetingRecorderPort | null>(recorder ?? null);
   const nextGeneration = useCallback(() => ++generation.current, []);
   const owns = useCallback((value: number) => mounted.current && generation.current === value, []);
+  const pauseSynchronizers = useCallback(() => {
+    synchronizer.pauseForUserChange();
+    inkSynchronizer?.pauseForUserChange();
+  }, [inkSynchronizer, synchronizer]);
+  const resumeSynchronizers = useCallback((userId: string) => {
+    synchronizer.resumeAfterLogin();
+    inkSynchronizer?.resumeAfterLogin(userId);
+  }, [inkSynchronizer, synchronizer]);
   const updateDeviceExpiry = useCallback((expiresAt: string | null) => {
     deviceExpiresAtRef.current = expiresAt;
     setDeviceExpiresAt(expiresAt);
@@ -152,7 +166,7 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder
     authorizationsInFlight.current += 1;
     try {
       const currentGeneration = nextGeneration();
-      synchronizer.pauseForUserChange();
+      pauseSynchronizers();
       try {
         const session = await auth.me();
         if (!owns(currentGeneration) || explicitLogout.current) return;
@@ -169,7 +183,7 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder
         }
         updateDeviceExpiry(access.expiresAt);
         setOnline(true);
-        synchronizer.resumeAfterLogin();
+        resumeSynchronizers(session.id);
         setGate("catalog");
       } catch (error) {
         if (!owns(currentGeneration) || explicitLogout.current) return;
@@ -238,7 +252,7 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder
     } finally {
       authorizationsInFlight.current -= 1;
     }
-  }, [auth, clearAuthorization, hasProtectedRecording, nextGeneration, now, owns, repository, synchronizer, updateDeviceExpiry]);
+  }, [auth, clearAuthorization, hasProtectedRecording, nextGeneration, now, owns, pauseSynchronizers, repository, resumeSynchronizers, updateDeviceExpiry]);
 
   useEffect(() => { void authorize(); }, [authorize]);
   useEffect(() => auth.onSessionChange((change) => {
@@ -247,7 +261,7 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder
       if (!acceptInitialSession.current) return;
       observedInitialUserId.current = change.userId;
       if (activeUserId.current !== null && activeUserId.current !== change.userId) {
-        synchronizer.pauseForUserChange();
+        pauseSynchronizers();
         lockInitialMismatch(activeUserId.current, change.userId);
       }
       return;
@@ -272,7 +286,7 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder
       return;
     }
     if (!transition && change.event === "session" && activeUserId.current === change.userId) return;
-    synchronizer.pauseForUserChange();
+    pauseSynchronizers();
     if (change.event === "session" || change.event === "token_refreshed") {
       nextGeneration();
       setGate("loading");
@@ -287,7 +301,7 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder
     void clearAuthorization(currentGeneration).then((cleared) => {
       if (cleared) setGate(change.event === "signed_out" ? "login" : "error");
     });
-  }), [auth, authorize, clearAuthorization, lockInitialMismatch, nextGeneration, owns, repository, synchronizer, updateDeviceExpiry]);
+  }), [auth, authorize, clearAuthorization, lockInitialMismatch, nextGeneration, owns, pauseSynchronizers, repository, updateDeviceExpiry]);
   useEffect(() => {
     const becameOnline = () => {
       if (!explicitLogout.current) void authorize();
@@ -368,7 +382,7 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder
     acceptInitialSession.current = false;
     authTransition.current = transition;
     const currentGeneration = nextGeneration();
-    synchronizer.pauseForUserChange();
+    pauseSynchronizers();
     try {
       await auth.login(email, password);
       if (!owns(currentGeneration)) return;
@@ -395,12 +409,12 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder
       }
       updateDeviceExpiry(access.expiresAt);
       explicitLogout.current = false;
-      synchronizer.resumeAfterLogin();
+      resumeSynchronizers(session.id);
       setGate("catalog");
     } finally {
       if (authTransition.current?.token === transition.token) authTransition.current = null;
     }
-  }, [auth, clearAuthorization, nextGeneration, now, owns, repository, synchronizer, updateDeviceExpiry]);
+  }, [auth, clearAuthorization, nextGeneration, now, owns, pauseSynchronizers, repository, resumeSynchronizers, updateDeviceExpiry]);
   const guardSync = useCallback(async (request: () => Promise<SyncResult>) => {
     const currentGeneration = generation.current;
     const result = await request();
@@ -418,7 +432,7 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder
     const transition = { kind: "logout" as const, token: Symbol("logout") };
     authTransition.current = transition;
     explicitLogout.current = true;
-    synchronizer.pauseForUserChange();
+    pauseSynchronizers();
     const currentGeneration = nextGeneration();
     if (mounted.current) setGate("logging-out");
     const remoteLogout = auth.logout().catch(() => undefined);
@@ -436,7 +450,7 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder
     } finally {
       if (authTransition.current?.token === transition.token) authTransition.current = null;
     }
-  }, [auth, nextGeneration, owns, repository, synchronizer, updateDeviceExpiry]);
+  }, [auth, nextGeneration, owns, pauseSynchronizers, repository, updateDeviceExpiry]);
   const registerRecorder = useCallback((recorder: MeetingRecorderPort | null) => {
     activeRecorder.current = recorder;
   }, []);
@@ -446,14 +460,16 @@ function SessionApp({ repository, auth, synchronizer, recordingStorage, recorder
   if (gate === "logout-error") return <main className="login-page"><section className="login-panel"><h1>无法安全退出</h1><p>本地访问权限尚未清除。</p><button className="primary-button" onClick={() => void logout()}>重试退出</button></section></main>;
   if (gate === "login" || gate === "offline-lock") return <LoginPage onLogin={login} offline={gate === "offline-lock"} />;
   if (gate === "error") return <main className="login-page"><section className="login-panel"><h1>无法验证访问权限</h1><button className="primary-button" onClick={() => void authorize()}>重试</button></section></main>;
-  return <CatalogRoutes repository={repository} recordingStorage={recordingStorage} recorder={recorder} intelligence={intelligence} refresh={guardedRefresh} scheduleRefresh={guardedScheduledRefresh} now={now} online={online} onLogout={() => void logout()} onRecorderChange={registerRecorder} />;
+  return <CatalogRoutes repository={repository} recordingStorage={recordingStorage} recorder={recorder} intelligence={intelligence} inkRepository={inkRepository} inkSynchronizer={inkSynchronizer} refresh={guardedRefresh} scheduleRefresh={guardedScheduledRefresh} now={now} online={online} onLogout={() => void logout()} onRecorderChange={registerRecorder} />;
 }
 
-function CatalogRoutes({ repository, recordingStorage, recorder, intelligence, refresh, scheduleRefresh, now, online, onLogout, onRecorderChange }: {
+function CatalogRoutes({ repository, recordingStorage, recorder, intelligence, inkRepository, inkSynchronizer, refresh, scheduleRefresh, now, online, onLogout, onRecorderChange }: {
   repository: MeetingCatalogRepository;
   recordingStorage: RecordingStoragePort | undefined;
   recorder: MeetingRecorderPort | undefined;
   intelligence: MeetingIntelligencePort | undefined;
+  inkRepository: InkRepository | undefined;
+  inkSynchronizer: InkSynchronizer | undefined;
   refresh: () => Promise<SyncResult>;
   scheduleRefresh: () => Promise<SyncResult>;
   now: () => string;
@@ -492,5 +508,5 @@ function CatalogRoutes({ repository, recordingStorage, recorder, intelligence, r
       void recording.worker.run(recording.userId).catch(() => undefined);
     }
   }, [online, recording]);
-  return <BrowserRouter basename={normalizeBasePath(import.meta.env.BASE_URL)}><Routes><Route path="/settings/ai" element={intelligence ? <AiSettingsPage api={intelligence as never} /> : <MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} onLogout={onLogout} />} /><Route path="/meetings/:id" element={<MeetingWorkspacePage repository={repository} recorder={recording.recorder} {...(intelligence ? { intelligence } : {})} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} />} /><Route path="*" element={<MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} onLogout={onLogout} />} /></Routes></BrowserRouter>;
+  return <BrowserRouter basename={normalizeBasePath(import.meta.env.BASE_URL)}><Routes><Route path="/settings/ai" element={intelligence ? <AiSettingsPage api={intelligence as never} /> : <MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} onLogout={onLogout} />} /><Route path="/meetings/:id" element={<MeetingWorkspacePage repository={repository} recorder={recording.recorder} {...(intelligence ? { intelligence } : {})} {...(inkRepository ? { inkRepository } : {})} {...(inkSynchronizer ? { inkSynchronizer } : {})} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} />} /><Route path="*" element={<MeetingListPage repository={repository} refresh={refresh} scheduleRefresh={scheduleRefresh} now={now} online={online} onLogout={onLogout} />} /></Routes></BrowserRouter>;
 }

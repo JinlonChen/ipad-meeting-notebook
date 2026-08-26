@@ -43,4 +43,37 @@ describe("MeetingIntelligencePanel", () => {
     report(meetingId, { status: "streaming", partial: "", revision: 1 });
     await vi.waitFor(() => expect(api.read).toHaveBeenCalledTimes(2));
   });
+
+  test("allows an on-demand summary from keyboard notes without a transcript", async () => {
+    const user = userEvent.setup();
+    const api = {
+      configured: vi.fn().mockResolvedValue(true),
+      summarize: vi.fn().mockResolvedValue(undefined),
+      read: vi.fn().mockResolvedValue({ job: null, transcript: [], minutes: null }),
+    };
+    render(<MeetingIntelligencePanel api={api} meetingId={meetingId} online view="summary" hasKeyboardNote />);
+
+    const button = await screen.findByRole("button", { name: "生成 AI 总结" });
+    expect(button).toBeEnabled();
+    await user.click(button);
+    expect(api.summarize).toHaveBeenCalledWith(meetingId);
+  });
+
+  test("waits for keyboard notes to sync before requesting the summary", async () => {
+    const user = userEvent.setup();
+    let release!: (value: boolean) => void;
+    const beforeSummarize = vi.fn(() => new Promise<boolean>((resolve) => { release = resolve; }));
+    const api = {
+      configured: vi.fn().mockResolvedValue(true),
+      summarize: vi.fn().mockResolvedValue(undefined),
+      read: vi.fn().mockResolvedValue({ job: null, transcript: [], minutes: null }),
+    };
+    render(<MeetingIntelligencePanel api={api} meetingId={meetingId} online view="summary" hasKeyboardNote beforeSummarize={beforeSummarize} />);
+
+    await user.click(await screen.findByRole("button", { name: "生成 AI 总结" }));
+    expect(beforeSummarize).toHaveBeenCalledOnce();
+    expect(api.summarize).not.toHaveBeenCalled();
+    release(true);
+    await vi.waitFor(() => expect(api.summarize).toHaveBeenCalledWith(meetingId));
+  });
 });

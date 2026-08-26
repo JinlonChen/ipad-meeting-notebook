@@ -15,6 +15,12 @@ const userDatabaseName = "meeting-catalog--user--00000000-0000-4000-8000-0000000
 
 async function openMeeting(page: Page, meeting: ReturnType<typeof offlineMeeting>): Promise<void> {
   await page.locator(".meeting-main", { hasText: meeting.title }).click();
+  await page.getByRole("tab", { name: "键盘" }).click();
+  await expect(page.getByRole("textbox", { name: "会议笔记" })).toBeVisible();
+}
+
+async function openKeyboardTab(page: Page): Promise<void> {
+  await page.getByRole("tab", { name: "键盘" }).click();
   await expect(page.getByRole("textbox", { name: "会议笔记" })).toBeVisible();
 }
 
@@ -84,7 +90,7 @@ async function expectWorkspaceLayout(page: Page, testInfo: TestInfo, width: numb
   expect(layout.recordingFits).toBe(true);
   expect(layout.back.width).toBe(34);
   expect(layout.back.height).toBe(34);
-  expect(layout.textarea.height).toBeGreaterThanOrEqual(360);
+  expect(layout.textarea.height).toBeGreaterThanOrEqual(180);
   expect(layout.topbar.bottom).toBeLessThanOrEqual(layout.metadata.top);
   expect(layout.metadata.bottom).toBeLessThanOrEqual(layout.recording.top);
   expect(layout.recording.bottom).toBeLessThanOrEqual(layout.editor.top);
@@ -140,6 +146,7 @@ test("meeting notes survive offline navigation and synchronize after reconnect",
   await expect(page.getByRole("textbox", { name: "会议笔记" })).toHaveValue(noteText);
   await expect(page.getByRole("status")).toHaveText("已保存到本机，待同步");
   await page.reload();
+  await openKeyboardTab(page);
   await expect(page.getByRole("textbox", { name: "会议笔记" })).toHaveValue(noteText);
   await expect(page.getByRole("status")).toHaveText("已保存到本机，待同步");
   expect(noteRpcRequests).toHaveLength(0);
@@ -204,6 +211,7 @@ test("meeting notes save online automatically and remain authoritative after rel
   expect(noteRpcRequests).toBe(1);
 
   await page.reload();
+  await openKeyboardTab(page);
   await expect(page.getByRole("textbox", { name: "会议笔记" })).toHaveValue("在线结论");
 });
 

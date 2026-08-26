@@ -9,7 +9,7 @@ const CORS_HEADERS = {
 const JSON_HEADERS = { ...CORS_HEADERS, "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" };
 const ALLOWED_FAILURE_CODES = new Set([
   "AI_CONFIGURATION_REQUIRED",
-  "EMPTY_TRANSCRIPTION",
+  "EMPTY_MEETING_CONTENT",
   "MINUTES_FAILED",
   "INVALID_MINUTES_RESPONSE",
   "INVALID_EVIDENCE_POSITION",
@@ -74,11 +74,12 @@ async function callerId(supabaseUrl: string, anonKey: string, authorization: str
 
 function minutesPrompt(): string {
   return [
-    "You are a meeting assistant. Use only the supplied transcript.",
+    "You are a meeting assistant. Use only the supplied transcript and keyboard notes.",
     "Return JSON only with summary, topics, decisions, risks, actions.",
     "Every topic/decision/risk/action has text and evidencePositions (integer array).",
+    "evidencePositions may cite only numbered transcript lines. Facts supported only by keyboard notes must use an empty evidencePositions array.",
     "Every action has text, owner, dueDate, evidencePositions. Use null for unknown owner or dueDate; never guess.",
-    "dueDate is YYYY-MM-DD or null. Do not add facts absent from the transcript.",
+    "dueDate is YYYY-MM-DD or null. Do not add facts absent from the supplied content.",
   ].join(" ");
 }
 
@@ -101,20 +102,19 @@ Deno.serve(async (request) => {
     }
     meetingId = (body as { meetingId: string }).meetingId;
     const [{ data: meeting, error: meetingError }, { data: credentials, error: credentialError }, { data: transcript, error: transcriptError }] = await Promise.all([
-      service.from("meetings").select("id").eq("user_id", userId).eq("id", meetingId).maybeSingle(),
+      service.from("meetings").select("id,note").eq("user_id", userId).eq("id", meetingId).maybeSingle(),
       service.from("ai_provider_credentials").select("summary_base_url,summary_model,summary_api_key").eq("user_id", userId).maybeSingle(),
-      service.from("meeting_transcript_segments").select("id,position,text").eq("user_id", userId).eq("meeting_id", meetingId).order("position"),
+      service.from("meeting_transcript_segments").select("id,position,speaker,text").eq("user_id", userId).eq("meeting_id", meetingId).order("position"),
     ]);
     if (meetingError || !meeting) throw requestError("MEETING_NOT_FOUND", 404);
     if (credentialError || !credentials) throw requestError("AI_CONFIGURATION_REQUIRED", 422);
     if (transcriptError) throw requestError("PROCESSING_FAILED", 500);
-    if (!transcript?.length) throw requestError("EMPTY_TRANSCRIPTION", 422);
 
     const requestedAt = new Date().toISOString();
     await service.from("meeting_intelligence_jobs").upsert({ user_id: userId, meeting_id: meetingId, status: "processing", error_code: null, requested_at: requestedAt, completed_at: null });
     await service.from("meetings").update({ status: "processing" }).eq("user_id", userId).eq("id", meetingId);
     const config = credentials as Credentials;
-    const minutes = await generateMeetingMinutes({ summaryModel: config.summary_model, transcript }, {
+    const minutes = await generateMeetingMinutes({ summaryModel: config.summary_model, transcript: transcript ?? [], note: meeting.note }, {
       summarize: async ({ model, transcript: transcriptText }) => {
         const response = await providerJson(await fetch(endpoint(config.summary_base_url, "chat/completions"), {
           method: "POST",

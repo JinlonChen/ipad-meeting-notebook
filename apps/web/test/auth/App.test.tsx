@@ -49,6 +49,29 @@ afterEach(async () => {
 });
 
 describe("App session gate", () => {
+  test("pauses and resumes handwriting synchronization with the authenticated user", async () => {
+    const catalog = repository();
+    const inkSynchronizer = {
+      refresh: vi.fn().mockResolvedValue("idle" as const),
+      flush: vi.fn().mockResolvedValue("idle" as const),
+      pauseForUserChange: vi.fn(),
+      resumeAfterLogin: vi.fn(),
+    };
+
+    render(<App
+      repository={catalog}
+      auth={api()}
+      synchronizer={synchronizer()}
+      inkRepository={{} as never}
+      inkSynchronizer={inkSynchronizer}
+      now={() => now}
+    />);
+
+    await screen.findByRole("heading", { name: "会议本" });
+    expect(inkSynchronizer.pauseForUserChange).toHaveBeenCalledOnce();
+    expect(inkSynchronizer.resumeAfterLogin).toHaveBeenCalledWith(userA);
+  });
+
   test("uploads pending local audio after the authenticated catalog opens", async () => {
     const catalog = repository();
     await catalog.activateUser(userA);
@@ -73,6 +96,7 @@ describe("App session gate", () => {
     render(<App repository={catalog} auth={api()} synchronizer={synchronizer()} now={() => now} />);
 
     expect(await screen.findByRole("heading", { name: "路由会议" })).toBeVisible();
+    await userEvent.setup().click(screen.getByRole("tab", { name: "键盘" }));
     expect(screen.getByRole("textbox", { name: "会议笔记" })).toBeVisible();
     expect(screen.queryByText("会议工作区将在录音阶段启用")).not.toBeInTheDocument();
   });
