@@ -17,6 +17,7 @@ function pointer(target: Element, type: string, values: Record<string, unknown>)
   const event = new Event(type, { bubbles: true, cancelable: true });
   Object.defineProperties(event, Object.fromEntries(Object.entries(values).map(([key, value]) => [key, { value }])));
   fireEvent(target, event);
+  return event;
 }
 
 beforeEach(() => {
@@ -287,6 +288,49 @@ test("commits a cancelled Pencil stroke at its last valid point", async () => {
   await waitFor(() => expect(save).toHaveBeenCalledOnce());
   const saved = save.mock.calls[0]?.[0][0];
   expect(saved?.points.at(-1)).toMatchObject({ x: 160, y: 200, pressure: 0.6 });
+});
+
+test("keeps an active Pencil stroke when a palm pointer is cancelled", async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={save} />);
+  const canvas = screen.getByLabelText("手写画布");
+
+  pointer(canvas, "pointerdown", { pointerId: 16, pointerType: "pen", clientX: 20, clientY: 30, pressure: 0.4 });
+  pointer(canvas, "pointermove", { pointerId: 16, pointerType: "pen", clientX: 40, clientY: 50, pressure: 0.6 });
+  pointer(canvas, "pointercancel", { pointerId: 28, pointerType: "touch", clientX: 0, clientY: 0, pressure: 0.5 });
+
+  expect(save).not.toHaveBeenCalled();
+  pointer(canvas, "pointermove", { pointerId: 16, pointerType: "pen", clientX: 60, clientY: 70, pressure: 0.7 });
+  pointer(canvas, "pointerup", { pointerId: 16, pointerType: "pen", clientX: 80, clientY: 90, pressure: 0.5 });
+
+  await waitFor(() => expect(save).toHaveBeenCalledOnce());
+  expect(save.mock.calls[0]?.[0][0].points).toEqual(expect.arrayContaining([
+    expect.objectContaining({ x: 240, y: 280, pressure: 0.7 }),
+    expect.objectContaining({ x: 320, y: 360, pressure: 0.5 }),
+  ]));
+});
+
+test("prevents palm touch gestures from scrolling the handwriting surface", () => {
+  render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={vi.fn()} />);
+  const canvas = screen.getByLabelText("手写画布");
+
+  const touch = pointer(canvas, "pointerdown", { pointerId: 29, pointerType: "touch", clientX: 20, clientY: 30, pressure: 0.5 });
+
+  expect(touch.defaultPrevented).toBe(true);
+});
+
+test("locks the toolbar while a Pencil stroke is in progress", async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={save} />);
+  const canvas = screen.getByLabelText("手写画布");
+
+  pointer(canvas, "pointerdown", { pointerId: 30, pointerType: "pen", clientX: 20, clientY: 30, pressure: 0.5 });
+  expect(screen.getByRole("button", { name: "撤销" })).toBeDisabled();
+  expect(screen.getByLabelText("笔迹粗细")).toBeDisabled();
+
+  pointer(canvas, "pointerup", { pointerId: 30, pointerType: "pen", clientX: 30, clientY: 40, pressure: 0.5 });
+  await waitFor(() => expect(save).toHaveBeenCalledOnce());
+  expect(screen.getByLabelText("笔迹粗细")).toBeEnabled();
 });
 
 test("commits the active Pencil stroke when the page becomes hidden", async () => {
