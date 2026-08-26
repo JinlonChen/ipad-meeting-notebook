@@ -6,7 +6,6 @@ import {
   applyInkAction,
   createInkHistory,
   hitStroke,
-  inkCanvasHeightAfterResize,
   pressureWidth,
   redoInkAction,
   splitLongStroke,
@@ -64,7 +63,7 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
   const incomingRevisionRef = useRef(strokeRevision(initialStrokes));
   const [history, setHistory] = useState<InkHistory>(() => createInkHistory(initialStrokes));
   const historyRef = useRef(history);
-  const [canvasHeight, setCanvasHeight] = useState(INK_CANVAS_DEFAULT_HEIGHT);
+  const [canvasHeight] = useState(INK_CANVAS_DEFAULT_HEIGHT);
   const canvasHeightRef = useRef(canvasHeight);
   const [tool, setTool] = useState<InkTool>("pen");
   const [color, setColor] = useState("#1d2529");
@@ -121,15 +120,6 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
     const canvas = canvasRef.current;
     const bounds = canvas?.getBoundingClientRect();
     if (!canvas || !bounds || bounds.width <= 0) return;
-    const scale = bounds.width / INK_LOGICAL_WIDTH;
-    const strokes = draftRef.current
-      ? [...historyRef.current.strokes, draftRef.current.stroke]
-      : historyRef.current.strokes;
-    const nextHeight = inkCanvasHeightAfterResize(canvasHeightRef.current, strokes, scale);
-    if (nextHeight !== canvasHeightRef.current) {
-      canvasHeightRef.current = nextHeight;
-      setCanvasHeight(nextHeight);
-    }
     redraw();
   }, [redraw]);
 
@@ -142,7 +132,11 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
       resizeObserver?.disconnect();
       window.removeEventListener("resize", resizeAndRedraw);
     };
-  }, [history, resizeAndRedraw]);
+  }, [resizeAndRedraw]);
+
+  useEffect(() => {
+    redraw();
+  }, [history, redraw]);
 
   const nextVersion = (id: string): number => {
     const version = (versionsRef.current.get(id) ?? 0) + 1;
