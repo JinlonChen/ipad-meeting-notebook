@@ -43,7 +43,7 @@ function Harness({ repository, synchronizer, online }: {
   online: boolean;
 }) {
   const ink = useMeetingInk({ meetingId, repository, synchronizer, online });
-  return <><span role="status">{ink.state}</span><button onClick={() => void ink.save(stroke)}>保存笔画</button></>;
+  return <><span role="status">{ink.state}</span><span role="alert">{ink.error}</span><button onClick={() => void ink.save(stroke)}>保存笔画</button></>;
 }
 
 function BatchHarness({ repository, synchronizer, snapshots }: {
@@ -89,6 +89,30 @@ test("flushes an online stroke and keeps the local copy when cloud sync fails", 
   await waitFor(() => expect(synchronizer.flush).toHaveBeenCalledOnce());
   await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("saved-local"));
   await expect(repository.list(meetingId)).resolves.toEqual([stroke]);
+});
+
+test("keeps a local stroke when the post-sync refresh fails", async () => {
+  const repository = createRepository();
+  let failReload = false;
+  const originalList = repository.list.bind(repository);
+  vi.spyOn(repository, "list").mockImplementation((id, includeDeleted) =>
+    failReload ? Promise.reject(new Error("refresh failed")) : originalList(id, includeDeleted),
+  );
+  const synchronizer = {
+    flush: vi.fn().mockImplementation(() => {
+      failReload = true;
+      return Promise.resolve("idle" as const);
+    }),
+    refresh: vi.fn().mockResolvedValue("error" as const),
+  };
+  render(<Harness repository={repository} synchronizer={synchronizer} online />);
+  await waitFor(() => expect(synchronizer.refresh).toHaveBeenCalledOnce());
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("idle"));
+
+  fireEvent.click(screen.getByRole("button", { name: "保存笔画" }));
+
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("saved-local"));
+  expect(synchronizer.flush).toHaveBeenCalledOnce();
 });
 
 test("publishes a continuation batch once and triggers one cloud flush", async () => {
