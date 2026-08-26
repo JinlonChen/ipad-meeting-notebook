@@ -299,7 +299,7 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
         onPointerDown={pointerDown}
         onPointerMove={pointerMove}
         onPointerUp={(event) => void finishPointer(event)}
-        onPointerCancel={(event) => void finishPointer(event)}
+        onPointerCancel={() => void finishDraft()}
       />
     </div>
     {error && <div className="ink-error" role="alert"><span>{error}</span><button className="text-button" onClick={() => void retrySave()}>重试保存手写</button></div>}

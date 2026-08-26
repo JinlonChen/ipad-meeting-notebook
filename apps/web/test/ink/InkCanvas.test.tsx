@@ -275,19 +275,18 @@ test("locks new input and reports when local persistence fails", async () => {
   expect(canvas).toHaveAttribute("aria-disabled", "false");
 });
 
-test("clamps an out-of-bounds Pencil cancellation point before saving", async () => {
+test("commits a cancelled Pencil stroke at its last valid point", async () => {
   const save = vi.fn().mockResolvedValue(undefined);
   render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={save} />);
   const canvas = screen.getByLabelText("手写画布");
 
   pointer(canvas, "pointerdown", { pointerId: 15, pointerType: "pen", clientX: 20, clientY: 30, pressure: 0.4 });
-  pointer(canvas, "pointercancel", { pointerId: 15, pointerType: "pen", clientX: -1, clientY: Number.NaN, pressure: Number.POSITIVE_INFINITY });
+  pointer(canvas, "pointermove", { pointerId: 15, pointerType: "pen", clientX: 40, clientY: 50, pressure: 0.6 });
+  pointer(canvas, "pointercancel", { pointerId: 15, pointerType: "pen", clientX: 0, clientY: 0, pressure: 0.5 });
 
   await waitFor(() => expect(save).toHaveBeenCalledOnce());
   const saved = save.mock.calls[0]?.[0][0];
-  expect(saved?.points).toEqual(expect.arrayContaining([
-    expect.objectContaining({ x: 0, y: 0, pressure: 0.5 }),
-  ]));
+  expect(saved?.points.at(-1)).toMatchObject({ x: 160, y: 200, pressure: 0.6 });
 });
 
 test("commits the active Pencil stroke when the page becomes hidden", async () => {
