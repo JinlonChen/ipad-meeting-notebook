@@ -261,13 +261,33 @@ test("erases a whole stroke and supports undo and redo", async () => {
 });
 
 test("locks new input and reports when local persistence fails", async () => {
-  const save = vi.fn().mockRejectedValue(new Error("disk"));
+  const save = vi.fn().mockRejectedValueOnce(new Error("disk")).mockResolvedValue(undefined);
   render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={save} />);
   const canvas = screen.getByLabelText("手写画布");
   pointer(canvas, "pointerdown", { pointerId: 1, pointerType: "pen", clientX: 10, clientY: 20, pressure: 0.3 });
   pointer(canvas, "pointerup", { pointerId: 1, pointerType: "pen", clientX: 12, clientY: 22, pressure: 0.3 });
   expect(await screen.findByRole("alert")).toHaveTextContent("手写未保存");
   expect(canvas).toHaveAttribute("aria-disabled", "true");
+
+  fireEvent.click(screen.getByRole("button", { name: "重试保存手写" }));
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(canvas).toHaveAttribute("aria-disabled", "false");
+});
+
+test("clamps an out-of-bounds Pencil cancellation point before saving", async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={save} />);
+  const canvas = screen.getByLabelText("手写画布");
+
+  pointer(canvas, "pointerdown", { pointerId: 15, pointerType: "pen", clientX: 20, clientY: 30, pressure: 0.4 });
+  pointer(canvas, "pointercancel", { pointerId: 15, pointerType: "pen", clientX: -1, clientY: Number.NaN, pressure: Number.POSITIVE_INFINITY });
+
+  await waitFor(() => expect(save).toHaveBeenCalledOnce());
+  const saved = save.mock.calls[0]?.[0][0];
+  expect(saved?.points).toEqual(expect.arrayContaining([
+    expect.objectContaining({ x: 0, y: 0, pressure: 0.5 }),
+  ]));
 });
 
 test("commits the active Pencil stroke when the page becomes hidden", async () => {

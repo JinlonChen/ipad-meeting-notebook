@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { MeetingNoteOperationSchema, type Meeting } from "@meeting/contracts";
 import { MeetingWorkspacePage } from "../../src/meetings/MeetingWorkspacePage.js";
 import { MeetingCatalogRepository } from "../../src/meetings/repository.js";
+import { InkRepository } from "../../src/ink/repository.js";
 import type { SyncResult } from "../../src/meetings/sync.js";
 import { createBrowserWorkspaceRecorder } from "../../src/recording/browser-recorder.js";
 import "../../src/app/styles.css";
@@ -68,6 +69,7 @@ type RenderOptions = {
   online?: boolean;
   refresh?: () => Promise<SyncResult>;
   scheduleRefresh?: () => Promise<SyncResult>;
+  inkRepository?: InkRepository;
 };
 
 function workspace(
@@ -76,13 +78,14 @@ function workspace(
   online: boolean,
   refresh: () => Promise<SyncResult>,
   scheduleRefresh: () => Promise<SyncResult>,
+  inkRepository?: InkRepository,
 ) {
   const recorder = createBrowserWorkspaceRecorder(repository.recordingDatabase(), () => later);
   return <MemoryRouter initialEntries={[`/meetings/${id}`]}>
     <Routes>
       <Route
         path="/meetings/:id"
-        element={<MeetingWorkspacePage repository={repository} recorder={recorder} refresh={refresh} scheduleRefresh={scheduleRefresh} online={online} now={() => later} />}
+        element={<MeetingWorkspacePage repository={repository} recorder={recorder} refresh={refresh} scheduleRefresh={scheduleRefresh} online={online} now={() => later} {...(inkRepository ? { inkRepository } : {})} />}
       />
       <Route path="/meetings" element={<main><h1>会议列表</h1></main>} />
     </Routes>
@@ -92,7 +95,7 @@ function workspace(
 function renderWorkspace(repository: MeetingCatalogRepository, id: string, options: RenderOptions = {}) {
   const refresh = options.refresh ?? vi.fn().mockResolvedValue({ state: "idle" as const });
   const scheduleRefresh = options.scheduleRefresh ?? vi.fn().mockResolvedValue({ state: "idle" as const });
-  const rendered = render(workspace(repository, id, options.online ?? false, refresh, scheduleRefresh));
+  const rendered = render(workspace(repository, id, options.online ?? false, refresh, scheduleRefresh, options.inkRepository));
   return { ...rendered, refresh, scheduleRefresh };
 }
 
@@ -204,6 +207,30 @@ describe("MeetingWorkspacePage", () => {
 
     expect(await openKeyboardNote()).toHaveValue("本地可编辑内容");
     expect(refresh).not.toHaveBeenCalled();
+  });
+
+  test("keeps the handwriting canvas mounted when its local save is rejected", async () => {
+    const repository = catalog();
+    const meeting = await repository.create("手写保存失败", null, now);
+    const inkRepository = new InkRepository(() => repository.recordingDatabase());
+    vi.spyOn(inkRepository, "saveMany").mockRejectedValue(new Error("disk"));
+
+    renderWorkspace(repository, meeting.id, { online: false, inkRepository });
+
+    const canvas = await screen.findByLabelText("手写画布");
+    const down = new Event("pointerdown", { bubbles: true, cancelable: true });
+    Object.defineProperties(down, {
+      pointerId: { value: 21 }, pointerType: { value: "pen" }, clientX: { value: 10 }, clientY: { value: 20 }, pressure: { value: 0.5 },
+    });
+    const up = new Event("pointerup", { bubbles: true, cancelable: true });
+    Object.defineProperties(up, {
+      pointerId: { value: 21 }, pointerType: { value: "pen" }, clientX: { value: 12 }, clientY: { value: 24 }, pressure: { value: 0.5 },
+    });
+    fireEvent(canvas, down);
+    fireEvent(canvas, up);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("手写未保存，请重试");
+    expect(screen.getByLabelText("手写画布")).toBeVisible();
   });
 
   test("recovers an offline missing deep link once and leaves later ready reconnects to the editor", async () => {

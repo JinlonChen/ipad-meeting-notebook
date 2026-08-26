@@ -59,6 +59,7 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
   const draftRef = useRef<Draft | null>(null);
   const versionsRef = useRef(new Map(initialStrokes.map((stroke) => [stroke.id, stroke.version])));
   const localEchoesRef = useRef(new Map<string, string>());
+  const failedStrokesRef = useRef<InkStroke[] | null>(null);
   const incomingRevisionRef = useRef(strokeRevision(initialStrokes));
   const [history, setHistory] = useState<InkHistory>(() => createInkHistory(initialStrokes));
   const historyRef = useRef(history);
@@ -152,11 +153,14 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
     for (const [id, revision] of revisions) localEchoesRef.current.set(id, revision);
     try {
       await onSave(strokes);
+      failedStrokesRef.current = null;
+      setError("");
       return true;
     } catch {
       for (const [id, revision] of revisions) {
         if (localEchoesRef.current.get(id) === revision) localEchoesRef.current.delete(id);
       }
+      failedStrokesRef.current = strokes;
       setError("手写未保存，请重试");
       return false;
     }
@@ -183,7 +187,11 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
 
   const pointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (error || event.pointerType === "touch") return;
-    event.currentTarget.setPointerCapture(event.pointerId);
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // iPad Safari can reject pointer capture for a Pencil cancellation; the stroke itself remains valid.
+    }
     const startedAt = performance.now();
     const point = pointFromEvent(event, startedAt);
     if (tool === "eraser") {
@@ -271,6 +279,11 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
     await persist([restored]);
   };
 
+  const retrySave = async () => {
+    const failed = failedStrokesRef.current;
+    if (failed) await persist(failed);
+  };
+
   return <section className="ink-editor" aria-label="手写笔记">
     <InkToolbar
       tool={tool} color={color} width={width} canUndo={history.undo.length > 0} canRedo={history.redo.length > 0} disabled={Boolean(error)}
@@ -289,6 +302,6 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
         onPointerCancel={(event) => void finishPointer(event)}
       />
     </div>
-    {error && <div className="ink-error" role="alert">{error}</div>}
+    {error && <div className="ink-error" role="alert"><span>{error}</span><button className="text-button" onClick={() => void retrySave()}>重试保存手写</button></div>}
   </section>;
 }

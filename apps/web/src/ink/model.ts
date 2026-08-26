@@ -41,12 +41,17 @@ export function toLogicalPoint(
   bounds: { left: number; top: number; width: number },
   elapsedMs: number,
 ): InkPoint {
-  const scale = INK_LOGICAL_WIDTH / bounds.width;
+  const clamp = (value: number, minimum: number, maximum: number, fallback: number) =>
+    Number.isFinite(value) ? Math.min(maximum, Math.max(minimum, value)) : fallback;
+  const width = Number.isFinite(bounds.width) && bounds.width > 0 ? bounds.width : INK_LOGICAL_WIDTH;
+  const left = Number.isFinite(bounds.left) ? bounds.left : 0;
+  const top = Number.isFinite(bounds.top) ? bounds.top : 0;
+  const scale = INK_LOGICAL_WIDTH / width;
   return {
-    x: (input.clientX - bounds.left) * scale,
-    y: (input.clientY - bounds.top) * scale,
-    pressure: input.pressure > 0 ? input.pressure : 0.5,
-    elapsedMs: Math.max(0, Math.round(elapsedMs)),
+    x: clamp((input.clientX - left) * scale, 0, INK_LOGICAL_WIDTH, 0),
+    y: clamp((input.clientY - top) * scale, 0, INK_LOGICAL_HEIGHT, 0),
+    pressure: clamp(input.pressure, 0, 1, 0.5) || 0.5,
+    elapsedMs: clamp(Math.round(elapsedMs), 0, 86_400_000, 0),
   };
 }
 
