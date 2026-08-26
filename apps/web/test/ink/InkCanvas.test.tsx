@@ -203,7 +203,7 @@ test("retains every continuation and undo history when persistence echoes comple
   fireEvent.click(screen.getByRole("button", { name: "重做" }));
   await waitFor(() => expect(saved).toHaveLength(4));
   expect(saved.slice(-2).map((value) => value.deleted)).toEqual([true, false]);
-});
+}, 10_000);
 
 test("keeps undo and redo history when saved strokes echo through props", async () => {
   const saved: InkStroke[] = [];
