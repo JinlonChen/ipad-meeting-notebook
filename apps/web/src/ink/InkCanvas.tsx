@@ -296,6 +296,12 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
     };
   }, [finishDraft]);
 
+  useEffect(() => {
+    const preventContextMenu = (event: Event) => event.preventDefault();
+    document.addEventListener("contextmenu", preventContextMenu, true);
+    return () => document.removeEventListener("contextmenu", preventContextMenu, true);
+  }, []);
+
   const undo = async () => {
     const action = historyRef.current.undo.at(-1);
     if (!action) return;
