@@ -55,21 +55,33 @@ test("preserves every sampled point and pressure in a Pencil stroke", async () =
   ]);
 });
 
-test("grows near the bottom without changing fixed logical coordinates", async () => {
+test("keeps a fixed writing canvas instead of growing under the Pencil", async () => {
   const save = vi.fn().mockResolvedValue(undefined);
   render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={save} />);
   const canvas = screen.getByLabelText("手写画布") as HTMLCanvasElement;
 
-  expect(canvas.style.height).toBe("720px");
-  pointer(canvas, "pointerdown", { pointerId: 12, pointerType: "pen", clientX: 20, clientY: 650, pressure: 0.5 });
-  expect(canvas.style.height).toBe("1200px");
-  pointer(canvas, "pointerup", { pointerId: 12, pointerType: "pen", clientX: 30, clientY: 660, pressure: 0.5 });
+  expect(canvas.style.height).toBe("2400px");
+  pointer(canvas, "pointerdown", { pointerId: 12, pointerType: "pen", clientX: 20, clientY: 2_300, pressure: 0.5 });
+  expect(canvas.style.height).toBe("2400px");
+  pointer(canvas, "pointerup", { pointerId: 12, pointerType: "pen", clientX: 30, clientY: 2_320, pressure: 0.5 });
 
   await waitFor(() => expect(save).toHaveBeenCalledOnce());
   expect(save.mock.calls[0]?.[0][0].points).toEqual([
-    expect.objectContaining({ x: 80, y: 2_600 }),
-    expect.objectContaining({ x: 120, y: 2_640 }),
+    expect.objectContaining({ x: 80, y: 9_200 }),
+    expect.objectContaining({ x: 120, y: 9_280 }),
   ]);
+});
+
+test("locks the writing surface scroll position during a Pencil stroke", () => {
+  render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={vi.fn()} />);
+  const canvas = screen.getByLabelText("手写画布");
+  const surface = canvas.parentElement!;
+
+  pointer(canvas, "pointerdown", { pointerId: 31, pointerType: "pen", clientX: 20, clientY: 30, pressure: 0.5 });
+  surface.scrollTop = 180;
+  fireEvent.scroll(surface);
+
+  expect(surface.scrollTop).toBe(0);
 });
 
 test("expands for restored deep vectors and redraws them", () => {
@@ -86,7 +98,7 @@ test("expands for restored deep vectors and redraws them", () => {
 
   render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[deepStroke]} onSave={vi.fn()} />);
 
-  expect(screen.getByLabelText("手写画布")).toHaveStyle({ height: "1440px" });
+  expect(screen.getByLabelText("手写画布")).toHaveStyle({ height: "2400px" });
   expect(context.lineTo).toHaveBeenCalledWith(100, 5_000);
 });
 
