@@ -73,6 +73,8 @@ export class BrowserRealtimeTranscriptionSession implements RealtimeTranscriptio
   private processor: ScriptProcessorNode | null = null;
   private unsubscribeNetwork: (() => void) | null = null;
   private reconnectTimer: number | null = null;
+  private connecting: Promise<void> | null = null;
+  private connectionGeneration = 0;
   private reconnectAttempts = 0;
   private providerReady = false;
   private stopped = true;
@@ -84,6 +86,7 @@ export class BrowserRealtimeTranscriptionSession implements RealtimeTranscriptio
   async start(stream: MediaStream): Promise<void> {
     if (!this.stopped) throw new Error("TRANSCRIPTION_ALREADY_ACTIVE");
     this.stopped = false;
+    this.connectionGeneration += 1;
     this.createAudioGraph(stream);
     this.unsubscribeNetwork = this.network.subscribe(
       () => { this.reconnectAttempts = 0; void this.connect().catch(() => undefined); },
@@ -113,8 +116,19 @@ export class BrowserRealtimeTranscriptionSession implements RealtimeTranscriptio
     this.processor = processor;
   }
 
-  private async connect(): Promise<void> {
-    if (this.stopped || this.socket || !this.network.online()) {
+  private connect(): Promise<void> {
+    if (this.connecting) return this.connecting;
+    const connecting = this.openConnection(this.connectionGeneration);
+    this.connecting = connecting;
+    void connecting.then(
+      () => { if (this.connecting === connecting) this.connecting = null; },
+      () => { if (this.connecting === connecting) this.connecting = null; },
+    );
+    return connecting;
+  }
+
+  private async openConnection(generation: number): Promise<void> {
+    if (this.stopped || generation !== this.connectionGeneration || this.socket || !this.network.online()) {
       if (!this.stopped && !this.network.online()) this.emitStatus("paused");
       return;
     }
@@ -125,7 +139,10 @@ export class BrowserRealtimeTranscriptionSession implements RealtimeTranscriptio
       this.emitStatus("failed");
       throw new Error("AUTH_REQUIRED");
     }
-    if (this.stopped) return;
+    if (this.stopped || generation !== this.connectionGeneration || this.socket || !this.network.online()) {
+      if (!this.stopped && !this.network.online()) this.emitStatus("paused");
+      return;
+    }
     const socket = (this.dependencies.createSocket ?? ((url: string) => new WebSocket(url)))(relayUrl(this.dependencies.relayUrl, this.dependencies.meetingId));
     this.socket = socket;
     socket.addEventListener("open", () => {
@@ -139,11 +156,11 @@ export class BrowserRealtimeTranscriptionSession implements RealtimeTranscriptio
       this.socket = null;
       this.providerReady = false;
       if (this.stopped) return;
-      this.emitStatus("paused");
+      if (!this.network.online()) {
+        this.emitStatus("paused");
+        return;
+      }
       this.scheduleReconnect();
-    });
-    socket.addEventListener("error", () => {
-      if (!this.stopped) this.emitStatus("failed");
     });
   }
 
@@ -185,6 +202,8 @@ export class BrowserRealtimeTranscriptionSession implements RealtimeTranscriptio
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.connectionGeneration += 1;
+    this.connecting = null;
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     this.unsubscribeNetwork?.();
