@@ -91,6 +91,21 @@ test("flushes an online stroke and keeps the local copy when cloud sync fails", 
   await expect(repository.list(meetingId)).resolves.toEqual([stroke]);
 });
 
+test("keeps a local stroke when cloud sync throws", async () => {
+  const repository = createRepository();
+  const synchronizer = {
+    flush: vi.fn().mockRejectedValue(new Error("network failed")),
+    refresh: vi.fn().mockResolvedValue("idle" as const),
+  };
+  render(<Harness repository={repository} synchronizer={synchronizer} online />);
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("synced"));
+
+  fireEvent.click(screen.getByRole("button", { name: "保存笔画" }));
+
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("saved-local"));
+  await expect(repository.list(meetingId)).resolves.toEqual([stroke]);
+});
+
 test("keeps a local stroke when the post-sync refresh fails", async () => {
   const repository = createRepository();
   let failReload = false;
