@@ -1,5 +1,7 @@
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
+
 
 class PcmBatcher:
     def __init__(self, batch_bytes: int):
@@ -18,6 +20,25 @@ class PcmBatcher:
         self.buffer = self.buffer[self.batch_bytes:]
         self.started_offset_ms = batch_start + round(self.batch_bytes / 32)
         return batch_start, batch
+
+
+class DiarizationClient:
+    def __init__(self, base_url: str, client: Optional[httpx.AsyncClient] = None):
+        self.base_url = base_url.rstrip("/")
+        self.client = client or httpx.AsyncClient(timeout=90, trust_env=False)
+
+    async def diarize(self, batch_started_offset_ms: int, pcm: bytes) -> Dict[str, Any]:
+        response = await self.client.post(
+            f"{self.base_url}/v1/diarize",
+            content=pcm,
+            headers={"Content-Type": "application/octet-stream", "X-Batch-Started-Offset-Ms": str(batch_started_offset_ms)},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"intervals": [], "duration_ms": 0}
+
+    async def close(self) -> None:
+        await self.client.aclose()
 
 
 def speaker_updates(

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -9,14 +10,18 @@ from fastapi import FastAPI, Query, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 from .core import ConnectionState
+from .diarization import DiarizationClient, PcmBatcher, speaker_updates
 from .provider import DashScopeRealtimeProvider
 from .supabase import SupabaseBackend
 
+
+logger = logging.getLogger(__name__)
 
 MAX_AUDIO_BYTES = 64 * 1024
 AUTH_TIMEOUT_SECONDS = 10
 IDLE_TIMEOUT_SECONDS = 30
 SESSION_TIMEOUT_SECONDS = 90 * 60
+DIARIZATION_BATCH_BYTES = 30 * 16_000 * 2
 
 
 @dataclass(frozen=True)
@@ -44,6 +49,7 @@ class Settings:
 
 
 async def _error(socket: WebSocket, message: str, code: int = 1008) -> None:
+    logger.warning("realtime transcription session ended: %s (close code %s)", message, code)
     try:
         await socket.send_json({"type": "error", "message": message})
     finally:
@@ -67,6 +73,8 @@ def create_app(
     settings: Settings,
     backend: Optional[Any] = None,
     provider_factory: Optional[Callable[[str], Any]] = None,
+    diarization_client_factory: Optional[Callable[[], Any]] = None,
+    diarization_batch_bytes: int = DIARIZATION_BATCH_BYTES,
 ) -> FastAPI:
     app = FastAPI()
     resolved_backend = backend or SupabaseBackend(
@@ -75,6 +83,9 @@ def create_app(
         settings.supabase_service_role_key,
     )
     resolved_provider_factory = provider_factory or (lambda key: DashScopeRealtimeProvider(key))
+    resolved_diarization_factory = diarization_client_factory or (
+        lambda: DiarizationClient(os.environ.get("DIARIZATION_URL", "http://127.0.0.1:8001"))
+    )
     active_sessions = set()
 
     @app.get("/health")
@@ -93,6 +104,8 @@ def create_app(
         await socket.accept()
 
         provider = None
+        diarizer = None
+        diarization_tasks = set()
         session_key = None
         try:
             try:
@@ -128,11 +141,44 @@ def create_app(
                 audio_offset_ms=previous_end_ms,
                 segment_start_ms=previous_end_ms,
             )
+            diarizer = resolved_diarization_factory()
+            diarization_batcher = PcmBatcher(diarization_batch_bytes)
+            diarization_events = asyncio.Queue()
+            session_segments = []
+            pending_diarization = []
+
+            async def apply_diarization(batch_started_offset_ms: int, payload: Dict[str, Any]) -> None:
+                intervals = payload.get("intervals", []) if isinstance(payload, dict) else []
+                for update in speaker_updates(session_segments, intervals, batch_started_offset_ms):
+                    label = state.speaker_label(update["speaker_id"])
+                    current_index = next((index for index, item in enumerate(session_segments) if item.get("id") == update["id"]), None)
+                    if current_index is None or not label or session_segments[current_index].get("speaker") == label:
+                        continue
+                    current = session_segments[current_index]
+                    try:
+                        persisted = await resolved_backend.update_segment_speaker(user_id, current["id"], label)
+                    except Exception:
+                        logger.exception("realtime transcription speaker update failed")
+                        continue
+                    session_segments[current_index] = {**current, **persisted, "speaker": label}
+                    await diarization_events.put({"type": "final", "segment": session_segments[current_index]})
+
+            async def run_diarization(batch_started_offset_ms: int, pcm: bytes) -> None:
+                try:
+                    payload = await diarizer.diarize(batch_started_offset_ms, pcm)
+                    pending_diarization.append((batch_started_offset_ms, payload))
+                    if session_segments:
+                        batch = pending_diarization.pop(0)
+                        await apply_diarization(*batch)
+                except Exception:
+                    logger.exception("realtime transcription diarization batch failed")
+
             provider = resolved_provider_factory(api_key)
             try:
                 await provider.start()
                 ready = await asyncio.wait_for(provider.next_event(), 10)
             except Exception:
+                logger.exception("realtime transcription provider startup failed")
                 await _error(socket, "provider_connection_failed", code=1011)
                 return
             if ready.get("type") != "ready":
@@ -153,8 +199,9 @@ def create_app(
                     return
                 browser_task = asyncio.create_task(socket.receive())
                 provider_task = asyncio.create_task(provider.next_event())
+                diarization_task = asyncio.create_task(diarization_events.get())
                 done, pending = await asyncio.wait(
-                    {browser_task, provider_task},
+                    {browser_task, provider_task, diarization_task},
                     timeout=remaining,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
@@ -187,12 +234,24 @@ def create_app(
                             and persisted.get("position") == segment["position"]
                         ):
                             state.accept(segment)
+                        existing_index = next((index for index, item in enumerate(session_segments) if item.get("id") == persisted.get("id")), None)
+                        if existing_index is None:
+                            session_segments.append(persisted)
+                        else:
+                            session_segments[existing_index] = persisted
+                        if pending_diarization:
+                            for batch in pending_diarization[:]:
+                                pending_diarization.remove(batch)
+                                await apply_diarization(*batch)
                         await socket.send_json({"type": "final", "segment": persisted})
                     elif event_type in ("error", "closed"):
                         await _error(socket, "provider_response_failed", code=1011)
                         return
                     elif event_type == "finished":
                         return
+
+                if diarization_task in done:
+                    await socket.send_json(diarization_task.result())
 
                 if browser_task in done:
                     message = browser_task.result()
@@ -207,12 +266,20 @@ def create_app(
                         return
                     if not chunk:
                         continue
+                    batch_started_offset_ms = state.audio_offset_ms
                     state.record_audio(len(chunk))
                     last_audio_at = time.monotonic()
                     await provider.send_audio(chunk)
+                    batch = diarization_batcher.append(chunk, batch_started_offset_ms)
+                    if batch is not None and diarizer is not None:
+                        batch_started, batch_pcm = batch
+                        task = asyncio.create_task(run_diarization(batch_started, batch_pcm))
+                        diarization_tasks.add(task)
+                        task.add_done_callback(diarization_tasks.discard)
         except WebSocketDisconnect:
             return
         except Exception:
+            logger.exception("realtime transcription relay failed")
             try:
                 await _error(socket, "relay_failed", code=1011)
             except Exception:
@@ -220,6 +287,10 @@ def create_app(
         finally:
             if provider is not None:
                 await provider.stop()
+            for task in diarization_tasks:
+                task.cancel()
+            if diarizer is not None and hasattr(diarizer, "close"):
+                await diarizer.close()
             if session_key is not None:
                 active_sessions.discard(session_key)
 

@@ -10,6 +10,7 @@ MEETING_ID = "00000000-0000-4000-8000-000000000001"
 class FakeBackend:
     def __init__(self):
         self.persisted = []
+        self.speaker_updates = []
         self.allow_user = True
         self.allow_meeting = True
 
@@ -28,6 +29,15 @@ class FakeBackend:
     async def persist_segment(self, segment):
         self.persisted.append(segment)
         return segment
+
+    async def update_segment_speaker(self, user_id, segment_id, speaker):
+        self.speaker_updates.append((user_id, segment_id, speaker))
+        for index, segment in enumerate(self.persisted):
+            if segment["id"] == segment_id:
+                updated = {**segment, "speaker": speaker}
+                self.persisted[index] = updated
+                return updated
+        return {"id": segment_id, "speaker": speaker}
 
     async def close(self):
         return None
@@ -73,7 +83,7 @@ def harness(backend=None, include_second_final=False):
         supabase_service_role_key="private-service-role",
         allowed_origins=("https://jinlonchen.github.io",),
     )
-    app = create_app(settings, backend=backend, provider_factory=provider_factory)
+    app = create_app(settings, backend=backend, provider_factory=provider_factory, diarization_client_factory=lambda: None)
     return TestClient(app), backend, providers
 
 
@@ -175,3 +185,76 @@ def test_duplicate_provider_final_does_not_consume_the_next_position():
     assert new_segment["segment"]["position"] == 3
     assert new_segment["segment"]["text"] == "新增结论"
     assert [segment["position"] for segment in backend.persisted] == [3, 3]
+
+
+def test_diarization_failure_does_not_close_realtime_recording_socket():
+    class FailingDiarizer:
+        async def diarize(self, _batch_started_offset_ms, _pcm):
+            raise RuntimeError("sidecar_unavailable")
+
+    backend = FakeBackend()
+    providers = []
+
+    def provider_factory(_key):
+        provider = FakeProvider()
+        providers.append(provider)
+        return provider
+
+    settings = Settings(
+        supabase_url="https://project.supabase.co",
+        supabase_anon_key="public-anon",
+        supabase_service_role_key="private-service-role",
+        allowed_origins=("https://jinlonchen.github.io",),
+    )
+    client = TestClient(create_app(
+        settings,
+        backend=backend,
+        provider_factory=provider_factory,
+        diarization_client_factory=lambda: FailingDiarizer(),
+        diarization_batch_bytes=4,
+    ))
+    with client.websocket_connect(
+        f"/v1/realtime-transcription?meetingId={MEETING_ID}",
+        headers={"origin": "https://jinlonchen.github.io"},
+    ) as socket:
+        socket.send_json({"type": "authenticate", "accessToken": "valid-token"})
+        assert socket.receive_json() == {"type": "ready"}
+        socket.send_bytes(b"\x01\x02" * 2)
+        assert socket.receive_json()["type"] == "partial"
+        assert socket.receive_json()["type"] == "final"
+
+
+def test_diarization_updates_persisted_segment_and_notifies_browser():
+    class WorkingDiarizer:
+        async def diarize(self, _batch_started_offset_ms, _pcm):
+            return {"intervals": [{"started_offset_ms": 0, "ended_offset_ms": 1_000, "speaker_id": "7"}]}
+
+    backend = FakeBackend()
+    settings = Settings(
+        supabase_url="https://project.supabase.co",
+        supabase_anon_key="public-anon",
+        supabase_service_role_key="private-service-role",
+        allowed_origins=("https://jinlonchen.github.io",),
+    )
+    client = TestClient(create_app(
+        settings,
+        backend=backend,
+        provider_factory=lambda _key: FakeProvider(),
+        diarization_client_factory=lambda: WorkingDiarizer(),
+        diarization_batch_bytes=4,
+    ))
+    with client.websocket_connect(
+        f"/v1/realtime-transcription?meetingId={MEETING_ID}",
+        headers={"origin": "https://jinlonchen.github.io"},
+    ) as socket:
+        socket.send_json({"type": "authenticate", "accessToken": "valid-token"})
+        assert socket.receive_json() == {"type": "ready"}
+        socket.send_bytes(b"\x01\x02" * 2)
+        assert socket.receive_json()["type"] == "partial"
+        final = socket.receive_json()
+        assert final["type"] == "final"
+        update = socket.receive_json()
+        assert update["type"] == "final"
+        assert update["segment"]["speaker"] == "发言人 1"
+
+    assert backend.speaker_updates == [("user-1", final["segment"]["id"], "发言人 1")]

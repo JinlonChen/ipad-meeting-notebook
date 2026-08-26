@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 from uuid import NAMESPACE_URL, uuid5
 
@@ -43,7 +43,17 @@ class ConnectionState:
     next_position: int = 0
     audio_offset_ms: int = 0
     segment_start_ms: int = 0
+    speaker_labels: Dict[str, str] = field(default_factory=dict)
 
+    def speaker_label(self, provider_speaker_id: Optional[str]) -> Optional[str]:
+        if provider_speaker_id is None:
+            return None
+        key = str(provider_speaker_id).strip()
+        if not key:
+            return None
+        if key not in self.speaker_labels:
+            self.speaker_labels[key] = f"发言人 {len(self.speaker_labels) + 1}"
+        return self.speaker_labels[key]
     def record_audio(self, byte_count: int) -> None:
         self.audio_offset_ms += pcm_duration_ms(byte_count)
 
