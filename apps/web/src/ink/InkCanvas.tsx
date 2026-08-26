@@ -69,6 +69,7 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
   const [color, setColor] = useState("#1d2529");
   const [width, setWidth] = useState(4);
   const [error, setError] = useState("");
+  const [isWriting, setIsWriting] = useState(false);
   historyRef.current = history;
   canvasHeightRef.current = canvasHeight;
 
@@ -186,7 +187,11 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
   };
 
   const pointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
-    if (error || event.pointerType === "touch") return;
+    if (event.pointerType === "touch") {
+      event.preventDefault();
+      return;
+    }
+    if (error) return;
     try {
       event.currentTarget.setPointerCapture?.(event.pointerId);
     } catch {
@@ -198,6 +203,7 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
       void erase(point);
       return;
     }
+    setIsWriting(true);
     draftRef.current = {
       pointerId: event.pointerId,
       startedAt,
@@ -211,6 +217,10 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
   };
 
   const pointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (event.pointerType === "touch") {
+      event.preventDefault();
+      return;
+    }
     const draft = draftRef.current;
     if (!draft || draft.pointerId !== event.pointerId) return;
     const point = pointFromEvent(event, draft.startedAt);
@@ -232,6 +242,7 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
     }
     const strokes = splitLongStroke({ ...draft.stroke, points }, () => crypto.randomUUID());
     draftRef.current = null;
+    setIsWriting(false);
     for (const stroke of strokes) versionsRef.current.set(stroke.id, 1);
     setHistory((current) => strokes.reduce(
       (next, stroke) => applyInkAction(next, { kind: "put", before: null, after: stroke }),
@@ -244,6 +255,10 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
     const draft = draftRef.current;
     if (!draft || draft.pointerId !== event.pointerId) return;
     await finishDraft(pointFromEvent(event, draft.startedAt));
+  };
+
+  const cancelPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (draftRef.current?.pointerId === event.pointerId) void finishDraft();
   };
 
   useEffect(() => {
@@ -284,9 +299,9 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
     if (failed) await persist(failed);
   };
 
-  return <section className="ink-editor" aria-label="手写笔记">
+  return <section className="ink-editor" aria-label="手写笔记" data-writing={isWriting ? "true" : "false"}>
     <InkToolbar
-      tool={tool} color={color} width={width} canUndo={history.undo.length > 0} canRedo={history.redo.length > 0} disabled={Boolean(error)}
+      tool={tool} color={color} width={width} canUndo={history.undo.length > 0} canRedo={history.redo.length > 0} disabled={Boolean(error) || isWriting}
       onTool={setTool} onColor={setColor} onWidth={setWidth} onUndo={() => void undo()} onRedo={() => void redo()}
     />
     <div className="ink-surface">
@@ -299,7 +314,7 @@ export function InkCanvas({ meetingId, initialStrokes, onSave }: {
         onPointerDown={pointerDown}
         onPointerMove={pointerMove}
         onPointerUp={(event) => void finishPointer(event)}
-        onPointerCancel={() => void finishDraft()}
+        onPointerCancel={cancelPointer}
       />
     </div>
     {error && <div className="ink-error" role="alert"><span>{error}</span><button className="text-button" onClick={() => void retrySave()}>重试保存手写</button></div>}
