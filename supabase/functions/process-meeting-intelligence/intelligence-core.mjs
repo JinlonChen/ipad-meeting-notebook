@@ -48,19 +48,31 @@ function normalizeActions(value, segmentIds) {
 }
 
 /**
- * @param {{ summaryModel: string, transcript: Array<{ id: string, position: number, text: string }> }} input
+ * @param {{ summaryModel: string, transcript: Array<{ id: string, position: number, speaker?: string | null, text: string }>, note?: string }} input
  * @param {{ summarize: (input: { model: string, transcript: string }) => Promise<{ summary: string, topics: Array<{ text: string, evidencePositions: number[] }>, decisions: Array<{ text: string, evidencePositions: number[] }>, risks: Array<{ text: string, evidencePositions: number[] }>, actions: Array<{ text: string, owner: string | null, dueDate: string | null, evidencePositions: number[] }> }> }} provider
  */
 export async function generateMeetingMinutes(input, provider) {
   if (!input || typeof input !== "object" || !Array.isArray(input.transcript)) throw failure("INVALID_PROCESSING_INPUT");
-  if (input.transcript.length === 0) throw failure("EMPTY_TRANSCRIPTION");
+  if (input.note !== undefined && typeof input.note !== "string") throw failure("INVALID_PROCESSING_INPUT");
+  const note = input.note?.trim() ?? "";
+  if (input.transcript.length === 0 && !note) throw failure("EMPTY_MEETING_CONTENT");
   const transcript = input.transcript.map((segment, expectedPosition) => {
     if (!segment || typeof segment !== "object" || segment.position !== expectedPosition) throw failure("INVALID_PROCESSING_INPUT");
-    return { id: text(segment.id, "INVALID_PROCESSING_INPUT"), position: segment.position, text: text(segment.text, "EMPTY_TRANSCRIPTION") };
+    if (segment.speaker !== undefined && segment.speaker !== null && typeof segment.speaker !== "string") throw failure("INVALID_PROCESSING_INPUT");
+    return {
+      id: text(segment.id, "INVALID_PROCESSING_INPUT"),
+      position: segment.position,
+      speaker: segment.speaker?.trim() || "发言人未标记",
+      text: text(segment.text, "EMPTY_MEETING_CONTENT"),
+    };
   });
+  const content = [
+    ...transcript.map((segment) => `[转写 ${segment.position}] ${segment.speaker}: ${segment.text}`),
+    ...(note ? [`[键盘笔记] ${note}`] : []),
+  ].join("\n");
   const summary = await provider.summarize({
     model: text(input.summaryModel, "INVALID_PROCESSING_INPUT"),
-    transcript: transcript.map((segment) => `[${segment.position}] ${segment.text}`).join("\n"),
+    transcript: content,
   });
   if (!summary || typeof summary !== "object") throw failure("INVALID_MINUTES_RESPONSE");
   const segmentIds = transcript.map((segment) => segment.id);

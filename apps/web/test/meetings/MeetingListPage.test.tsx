@@ -61,7 +61,7 @@ afterEach(async () => {
 });
 
 describe("MeetingListPage", () => {
-  test("keeps one recording service across list and workspace navigation", async () => {
+  test("shares one recording database across list and workspace navigation", async () => {
     const user = userEvent.setup();
     const repository = catalog();
     const recordingDatabase = vi.spyOn(repository, "recordingDatabase");
@@ -78,7 +78,8 @@ describe("MeetingListPage", () => {
     await user.click(meetingButton!);
     await screen.findByRole("button", { name: "开始录音" }, { timeout: 3_000 });
 
-    expect(recordingDatabase).toHaveBeenCalledOnce();
+    expect(recordingDatabase).toHaveBeenCalled();
+    expect(new Set(recordingDatabase.mock.results.map((result) => result.value)).size).toBe(1);
   });
 
   test("uses portrait drawer mode at 744x1133 and landscape rail mode at 1133x744", async () => {
@@ -194,6 +195,7 @@ describe("MeetingListPage", () => {
     await user.click(screen.getByRole("button", { name: "创建" }));
 
     expect(await screen.findByRole("heading", { name: "Sprint planning" })).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "键盘" }));
     expect(screen.getByRole("textbox", { name: "会议笔记" })).toBeVisible();
     expect(screen.queryByText("会议工作区将在录音阶段启用")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "返回会议" }));
@@ -276,6 +278,7 @@ describe("MeetingListPage", () => {
     await user.type(screen.getByLabelText("会议名称"), "导航前同步");
     await user.click(screen.getByRole("button", { name: "创建" }));
 
+    await user.click(await screen.findByRole("tab", { name: "键盘" }));
     expect(await screen.findByRole("textbox", { name: "会议笔记" })).toBeVisible();
     expect(refresh).toHaveBeenCalledTimes(2);
     expect(scheduleRefresh).toHaveBeenCalledTimes(1);

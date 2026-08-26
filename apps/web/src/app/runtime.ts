@@ -4,6 +4,9 @@ import { MeetingCatalogRepository } from "../meetings/repository.js";
 import { CatalogSync } from "../meetings/sync.js";
 import { createSupabaseRecordingStorage } from "../recording/storage.js";
 import { createSupabaseMeetingIntelligenceApi } from "../intelligence/api.js";
+import { SupabaseInkApi } from "../ink/api.js";
+import { InkRepository } from "../ink/repository.js";
+import { InkSync } from "../ink/sync.js";
 import {
   createMeetingSupabaseClient,
   readSupabaseConfig,
@@ -20,6 +23,9 @@ export type RuntimeDependencies = {
   createSynchronizer: (repository: MeetingCatalogRepository, catalog: MeetingCatalogSupabaseApi) => CatalogSync;
   createRecordingStorage: typeof createSupabaseRecordingStorage;
   createIntelligence: typeof createSupabaseMeetingIntelligenceApi;
+  createInkApi: (client: ReturnType<typeof createMeetingSupabaseClient>) => SupabaseInkApi;
+  createInkRepository: (repository: MeetingCatalogRepository) => InkRepository;
+  createInkSynchronizer: (repository: InkRepository, api: SupabaseInkApi) => InkSync;
 };
 
 const defaultDependencies: RuntimeDependencies = {
@@ -31,6 +37,9 @@ const defaultDependencies: RuntimeDependencies = {
   createSynchronizer: (repository, catalog) => new CatalogSync(repository, catalog),
   createRecordingStorage: createSupabaseRecordingStorage,
   createIntelligence: createSupabaseMeetingIntelligenceApi,
+  createInkApi: (client) => new SupabaseInkApi(client),
+  createInkRepository: (repository) => new InkRepository(() => repository.recordingDatabase()),
+  createInkSynchronizer: (repository, api) => new InkSync(repository, api),
 };
 
 export function composeProductionApp(environment: SupabaseEnvironment, dependencies: RuntimeDependencies = defaultDependencies) {
@@ -51,7 +60,10 @@ export function composeProductionApp(environment: SupabaseEnvironment, dependenc
     const synchronizer = dependencies.createSynchronizer(repository, catalog);
     const recordingStorage = dependencies.createRecordingStorage(client);
     const intelligence = dependencies.createIntelligence(client, config.transcriptionRelayUrl);
-    return { repository, auth, catalog, synchronizer, recordingStorage, intelligence };
+    const inkApi = dependencies.createInkApi(client);
+    const inkRepository = dependencies.createInkRepository(repository);
+    const inkSynchronizer = dependencies.createInkSynchronizer(inkRepository, inkApi);
+    return { repository, auth, catalog, synchronizer, recordingStorage, intelligence, inkRepository, inkSynchronizer };
   } catch {
     return { startupError: true as const };
   }
