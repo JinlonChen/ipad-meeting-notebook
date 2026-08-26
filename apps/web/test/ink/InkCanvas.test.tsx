@@ -332,6 +332,13 @@ test("blocks Safari long-press menus on the handwriting canvas", () => {
   expect(contextMenu.defaultPrevented).toBe(true);
 });
 
+test("blocks long-press menus at the document boundary while handwriting is open", () => {
+  render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={vi.fn()} />);
+  const contextMenu = new Event("contextmenu", { bubbles: true, cancelable: true });
+  fireEvent(document, contextMenu);
+  expect(contextMenu.defaultPrevented).toBe(true);
+});
+
 test("exposes a separate scroll control for the fixed handwriting canvas", () => {
   render(<InkCanvas meetingId={stroke.meetingId} initialStrokes={[]} onSave={vi.fn()} />);
   const scrollbar = screen.getByLabelText("画布滚动");
