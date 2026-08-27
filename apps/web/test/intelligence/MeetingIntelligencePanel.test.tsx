@@ -7,6 +7,30 @@ import { MeetingIntelligencePanel } from "../../src/intelligence/MeetingIntellig
 const meetingId = "00000000-0000-4000-8000-000000000001";
 
 describe("MeetingIntelligencePanel", () => {
+  test("groups consecutive transcript sentences from the same speaker into one paragraph", async () => {
+    const api = {
+      configured: vi.fn().mockResolvedValue(true),
+      summarize: vi.fn().mockResolvedValue(undefined),
+      read: vi.fn().mockResolvedValue({
+        job: null,
+        transcript: [
+          { id: "00000000-0000-4000-8000-000000000011", meetingId, position: 0, text: "第一句", startedOffsetMs: 0, endedOffsetMs: 2_000, speaker: "发言人 1", source: "asr", confidence: null },
+          { id: "00000000-0000-4000-8000-000000000012", meetingId, position: 1, text: "第二句", startedOffsetMs: 2_000, endedOffsetMs: 4_000, speaker: "发言人 1", source: "asr", confidence: null },
+          { id: "00000000-0000-4000-8000-000000000013", meetingId, position: 2, text: "第三句", startedOffsetMs: 4_000, endedOffsetMs: 6_000, speaker: "发言人 2", source: "asr", confidence: null },
+        ],
+        minutes: null,
+      }),
+    };
+
+    render(<MeetingIntelligencePanel api={api} meetingId={meetingId} online view="transcript" />);
+
+    const transcript = await screen.findByLabelText("会议转写");
+    const paragraphs = transcript.querySelectorAll(":scope > p");
+    expect(paragraphs).toHaveLength(2);
+    expect(paragraphs[0]).toHaveTextContent("发言人 1第一句第二句");
+    expect(paragraphs[1]).toHaveTextContent("发言人 2第三句");
+  });
+
   test("generates AI minutes on demand from the existing transcript", async () => {
     const user = userEvent.setup();
     const api = {

@@ -124,4 +124,64 @@ describe("BrowserRealtimeTranscriptionSession", () => {
     expect(unsubscribe).toHaveBeenCalledOnce();
     expect(updates.at(-1)).toEqual({ type: "status", status: "idle" });
   });
+
+  test("keeps an online relay reconnect in connecting state instead of pausing", async () => {
+    vi.useFakeTimers();
+    try {
+      const firstSocket = new FakeSocket();
+      const secondSocket = new FakeSocket();
+      const updates: RealtimeTranscriptionUpdate[] = [];
+      const createSocket = vi.fn()
+        .mockReturnValueOnce(firstSocket as unknown as WebSocket)
+        .mockReturnValueOnce(secondSocket as unknown as WebSocket);
+      const session = new BrowserRealtimeTranscriptionSession({
+        relayUrl: "https://relay.example.com",
+        meetingId: "00000000-0000-4000-8000-000000000001",
+        accessToken: async () => "token",
+        createSocket,
+        createAudioContext: () => audioHarness().context,
+        onUpdate: (update) => updates.push(update),
+        network: { online: () => true, subscribe: () => () => undefined },
+      });
+
+      await session.start({} as MediaStream);
+      firstSocket.close();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(createSocket).toHaveBeenCalledTimes(2);
+      expect(updates.filter((update) => update.type === "status" && update.status === "paused")).toHaveLength(0);
+      expect(updates.at(-1)).toEqual({ type: "status", status: "connecting" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("does not open a second socket when an online event arrives during startup", async () => {
+    let resolveToken: (token: string) => void = () => undefined;
+    const token = new Promise<string>((resolve) => { resolveToken = resolve; });
+    const socket = new FakeSocket();
+    const updates: RealtimeTranscriptionUpdate[] = [];
+    let online: () => void = () => undefined;
+    const createSocket = vi.fn(() => socket as unknown as WebSocket);
+    const session = new BrowserRealtimeTranscriptionSession({
+      relayUrl: "https://relay.example.com",
+      meetingId: "00000000-0000-4000-8000-000000000001",
+      accessToken: () => token,
+      createSocket,
+      createAudioContext: () => audioHarness().context,
+      onUpdate: (update) => updates.push(update),
+      network: {
+        online: () => true,
+        subscribe: (nextOnline) => { online = nextOnline; return () => undefined; },
+      },
+    });
+
+    const start = session.start({} as MediaStream);
+    online();
+    resolveToken("token");
+    await start;
+
+    expect(createSocket).toHaveBeenCalledTimes(1);
+    expect(updates.filter((update) => update.type === "status" && update.status === "connecting")).toHaveLength(1);
+  });
 });

@@ -23,6 +23,25 @@ function stateLabel(status: "queued" | "processing" | "ready" | "failed"): strin
 
 type TranscriptionRecorder = Pick<MeetingRecorderPort, "transcriptionState" | "subscribeTranscription">;
 
+type TranscriptParagraph = Pick<TranscriptSegment, "id" | "startedOffsetMs" | "speaker"> & { text: string };
+
+function transcriptParagraphs(segments: TranscriptSegment[]): TranscriptParagraph[] {
+  return segments.reduce<TranscriptParagraph[]>((paragraphs, segment) => {
+    const previous = paragraphs.at(-1);
+    if (previous && previous.speaker === segment.speaker) {
+      previous.text += segment.text;
+      return paragraphs;
+    }
+    paragraphs.push({
+      id: segment.id,
+      startedOffsetMs: segment.startedOffsetMs,
+      speaker: segment.speaker,
+      text: segment.text,
+    });
+    return paragraphs;
+  }, []);
+}
+
 export function MeetingIntelligencePanel({ api, meetingId, online, recorder, view = "all", hasKeyboardNote = false, beforeSummarize, onTranscriptRevision }: {
   api: MeetingIntelligencePort;
   meetingId: string;
@@ -78,6 +97,7 @@ export function MeetingIntelligencePanel({ api, meetingId, online, recorder, vie
   const actionLabel = snapshot?.minutes ? "重新生成 AI 总结" : "生成 AI 总结";
   const showTranscript = view === "all" || view === "transcript";
   const showSummary = view === "all" || view === "summary";
+  const paragraphs = snapshot ? transcriptParagraphs(snapshot.transcript) : [];
   return <section className={`intelligence-panel intelligence-${view}`} aria-label={showTranscript && showSummary ? "转写与 AI 纪要" : showTranscript ? "实时转写" : "AI 总结"}>
     {showSummary && <div className="intelligence-heading"><div><span>AI 总结</span>{snapshot?.job && <small role="status">{stateLabel(snapshot.job.status)}</small>}</div>
       <button className="text-button" disabled={!online || configured !== true || processing || (!snapshot?.transcript.length && !hasKeyboardNote)} onClick={() => void summarize()}>{processing ? "正在生成 AI 总结" : actionLabel}</button>
@@ -89,7 +109,7 @@ export function MeetingIntelligencePanel({ api, meetingId, online, recorder, vie
       {snapshot.minutes.risks.length > 0 && <MinutesList title="风险" items={snapshot.minutes.risks.map((item) => item.text)} />}
       {snapshot.minutes.actions.length > 0 && <MinutesList title="待办" items={snapshot.minutes.actions.map((item) => `${item.text}${item.owner ? ` · ${item.owner}` : " · 待确认"}`)} />}
     </section>}
-    {showTranscript && (snapshot?.transcript.length || live.partial) ? <section className="transcript-result" aria-label="会议转写"><h2>会议转写</h2>{snapshot?.transcript.map((segment) => <p key={segment.id}><time>{Math.floor(segment.startedOffsetMs / 60_000).toString().padStart(2, "0")}:{Math.floor(segment.startedOffsetMs / 1_000 % 60).toString().padStart(2, "0")}</time><span>{segment.speaker && <strong>{segment.speaker}</strong>}{segment.text}</span></p>)}{live.partial && <p className="transcript-partial"><span>{live.partial}</span></p>}</section> : showTranscript ? <p className="intelligence-hint">开始录音后，实时转写会显示在这里。</p> : null}
+    {showTranscript && (snapshot?.transcript.length || live.partial) ? <section className="transcript-result" aria-label="会议转写"><h2>会议转写</h2>{paragraphs.map((paragraph) => <p key={paragraph.id}><time>{Math.floor(paragraph.startedOffsetMs / 60_000).toString().padStart(2, "0")}:{Math.floor(paragraph.startedOffsetMs / 1_000 % 60).toString().padStart(2, "0")}</time><span>{paragraph.speaker && <strong>{paragraph.speaker}</strong>}{paragraph.text}</span></p>)}{live.partial && <p className="transcript-partial"><span>{live.partial}</span></p>}</section> : showTranscript ? <p className="intelligence-hint">开始录音后，实时转写会显示在这里。</p> : null}
     {error && <p className="workspace-error" aria-live="polite">{error}</p>}
   </section>;
 }

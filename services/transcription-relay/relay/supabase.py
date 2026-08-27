@@ -8,7 +8,7 @@ class SupabaseBackend:
         self.url = url.rstrip("/")
         self.anon_key = anon_key
         self.service_role_key = service_role_key
-        self.client = client or httpx.AsyncClient(timeout=10)
+        self.client = client or httpx.AsyncClient(timeout=10, trust_env=False)
 
     async def authenticate(self, token: str) -> Optional[str]:
         response = await self.client.get(
@@ -97,6 +97,24 @@ class SupabaseBackend:
         if len(existing_rows) != 1:
             raise RuntimeError("segment_persistence_conflict")
         return existing_rows[0]
+
+    async def update_segment_speaker(self, user_id: str, segment_id: str, speaker: str) -> Dict[str, Any]:
+        headers = {
+            **self._service_headers(),
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+        }
+        response = await self.client.patch(
+            f"{self.url}/rest/v1/meeting_transcript_segments",
+            headers=headers,
+            params={"user_id": f"eq.{user_id}", "id": f"eq.{segment_id}"},
+            json={"speaker": speaker},
+        )
+        response.raise_for_status()
+        rows = response.json()
+        if len(rows) != 1:
+            raise RuntimeError("speaker_update_not_found")
+        return rows[0]
 
     async def close(self) -> None:
         await self.client.aclose()
