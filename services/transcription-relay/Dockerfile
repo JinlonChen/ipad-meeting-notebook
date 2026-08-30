@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM docker.m.daocloud.io/library/python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && adduser --system --ingroup relay relay
 
 COPY services/transcription-relay/relay ./relay
+RUN chown -R relay:relay /app
 
 USER relay
 EXPOSE 8000
